@@ -1,0 +1,350 @@
+//! The `/character` window: every field of the character card in one form,
+//! with Cancel and Save. State and text editing live here; drawing is in
+//! `ui::draw_card_modal`, key / mouse routing and saving in `app.rs`.
+
+use crate::character::Character;
+use crate::input::{Input, Mode};
+use crate::ui;
+use ratatui::layout::Rect;
+use serde_json::Value;
+
+/// One section of the form.
+pub struct CardField {
+    /// Card field written on save (`edit-attribute`); empty when not editable.
+    pub key: &'static str,
+    pub label: String,
+    pub text: String,
+    /// The text as it is on the card, to tell what changed.
+    pub orig: String,
+    pub editable: bool,
+    /// One of the card's alternate greetings (they are saved as one list).
+    pub alt: bool,
+}
+
+/// What a screen row of the form shows (set by `ui::draw_card_modal`).
+pub struct Hit {
+    pub y: u16,
+    pub field: usize,
+    /// Display row inside the field's text, `None` for the field's title row.
+    pub row: Option<usize>,
+}
+
+pub struct CardModal {
+    pub fields: Vec<CardField>,
+    /// Field being edited (always an editable one).
+    pub focus: usize,
+    /// The editor of the focused field: text, cursor and vim mode live here
+    /// (the same box as the chat input, so every vim motion works). Its text
+    /// is copied back into `fields[focus]` by `sync` after every key.
+    pub input: Input,
+    /// One-line message in the window (errors, `:s` results, discard warning).
+    pub note: String,
+    pub note_err: bool,
+    /// Esc was pressed with unsaved changes; Esc again discards them.
+    pub discard_armed: bool,
+    /// First visible line of the form (`ui::draw_card_modal` keeps it in range).
+    pub scroll: usize,
+    /// Keep the cursor in view when drawing (off while the wheel scrolls).
+    pub follow: bool,
+    /// Text width and visible rows, set by `ui::draw_card_modal`.
+    pub text_w: usize,
+    pub view_h: usize,
+    pub text_x: u16,
+    pub cancel_btn: Rect,
+    pub save_btn: Rect,
+    pub hits: Vec<Hit>,
+}
+
+fn norm(s: &str) -> String {
+    s.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+impl CardModal {
+    pub fn new(ch: &Character, cfg: &Input) -> CardModal {
+        let mut fields: Vec<CardField> = Vec::new();
+        let mut info = |label: &str, text: String| {
+            fields.push(CardField {
+                key: "",
+                label: label.to_string(),
+                orig: text.clone(),
+                text,
+                editable: false,
+                alt: false,
+            });
+        };
+        info("Name", ch.name.clone());
+        if !ch.avatar.trim().is_empty() {
+            info("Card file", ch.avatar.clone());
+        }
+
+        let plain: [(&'static str, &str, &String); 7] = [
+            ("description", "Description", &ch.description),
+            ("personality", "Personality", &ch.personality),
+            ("scenario", "Scenario", &ch.scenario),
+            ("first_mes", "First message", &ch.first_mes),
+            ("mes_example", "Example dialogue", &ch.mes_example),
+            ("system_prompt", "System prompt", &ch.system_prompt),
+            (
+                "post_history_instructions",
+                "Post-history instructions",
+                &ch.post_history_instructions,
+            ),
+        ];
+        for (key, label, value) in plain {
+            let t = norm(value);
+            fields.push(CardField {
+                key,
+                label: label.to_string(),
+                orig: t.clone(),
+                text: t,
+                editable: true,
+                alt: false,
+            });
+        }
+        for (n, g) in ch.alternate_greetings.iter().enumerate() {
+            let t = norm(g);
+            fields.push(CardField {
+                key: "alternate_greetings",
+                label: format!("Alternate greeting {}", n + 1),
+                orig: t.clone(),
+                text: t,
+                editable: true,
+                alt: true,
+            });
+        }
+        if let Some(d) = &ch.depth_prompt {
+            let t = format!("{}\n(depth {}, role {})", norm(&d.prompt), d.depth, d.role);
+            fields.push(CardField {
+                key: "",
+                label: "Depth prompt".to_string(),
+                orig: t.clone(),
+                text: t,
+                editable: false,
+                alt: false,
+            });
+        }
+
+        let focus = fields.iter().position(|f| f.editable).unwrap_or(0);
+        let mut input = Input::default();
+        input.copy_config(cfg);
+        input.text = fields[focus].text.clone();
+        input.cursor = input.len_chars();
+        input.enter_insert();
+        CardModal {
+            fields,
+            focus,
+            input,
+            note: String::new(),
+            note_err: false,
+            discard_armed: false,
+            scroll: 0,
+            follow: true,
+            text_w: 60,
+            view_h: 10,
+            text_x: 0,
+            cancel_btn: Rect::default(),
+            save_btn: Rect::default(),
+            hits: Vec::new(),
+        }
+    }
+
+    /// Is anything different from the card?
+    pub fn dirty(&self) -> bool {
+        self.fields.iter().any(|f| f.editable && f.text != f.orig)
+    }
+
+    /// The card fields to write: `(field, value)`. The alternate greetings go
+    /// out as one list (empty ones left out).
+    pub fn changes(&self) -> Vec<(&'static str, Value)> {
+        let mut out: Vec<(&'static str, Value)> = Vec::new();
+        for f in &self.fields {
+            if f.editable && !f.alt && f.text != f.orig {
+                out.push((f.key, Value::String(f.text.clone())));
+            }
+        }
+        if self.fields.iter().any(|f| f.alt && f.text != f.orig) {
+            let arr: Vec<Value> = self
+                .fields
+                .iter()
+                .filter(|f| f.alt && !f.text.trim().is_empty())
+                .map(|f| Value::String(f.text.clone()))
+                .collect();
+            out.push(("alternate_greetings", Value::Array(arr)));
+        }
+        out
+    }
+
+    /// A field was written to the card: it is the new baseline.
+    pub fn mark_saved(&mut self, key: &str) {
+        for f in self.fields.iter_mut() {
+            if f.editable && f.key == key {
+                f.orig = f.text.clone();
+            }
+        }
+    }
+
+    /// Copy the editor's text into the focused field.
+    pub fn sync(&mut self) {
+        let i = self.focus;
+        if self.fields[i].text != self.input.text {
+            self.fields[i].text = self.input.text.clone();
+        }
+    }
+
+    /// Make field `i` the one being edited, with the cursor at `cursor`.
+    /// `insert`: start in INSERT mode (otherwise the mode stays).
+    fn focus_field(&mut self, i: usize, cursor: usize, insert: bool) {
+        self.sync();
+        self.focus = i;
+        self.input.text = self.fields[i].text.clone();
+        self.input.cursor = cursor.min(self.input.len_chars());
+        self.input.reset_vim();
+        if insert {
+            self.input.enter_insert();
+        } else {
+            if self.input.mode == Mode::Visual {
+                self.input.exit_visual();
+            }
+            self.input.cancel_pending();
+            self.input.clamp_normal();
+        }
+    }
+
+    fn step_field(&self, dir: i32) -> Option<usize> {
+        let mut i = self.focus as i32 + dir;
+        while i >= 0 && (i as usize) < self.fields.len() {
+            if self.fields[i as usize].editable {
+                return Some(i as usize);
+            }
+            i += dir;
+        }
+        None
+    }
+
+    /// Tab / Shift+Tab: next or previous editable field (wraps around).
+    pub fn next_field(&mut self, dir: i32) {
+        let n = self.fields.len();
+        let mut i = self.focus;
+        for _ in 0..n {
+            i = if dir >= 0 { (i + 1) % n } else { (i + n - 1) % n };
+            if self.fields[i].editable {
+                let end = self.fields[i].text.chars().count();
+                self.focus_field(i, end, true);
+                return;
+            }
+        }
+    }
+
+    /// Pasted text goes in at the cursor.
+    pub fn paste(&mut self, s: &str) {
+        self.input.insert_str(&norm(s));
+        self.sync();
+    }
+
+    /// Up one display row; from the first row on to the previous field.
+    pub fn up(&mut self) {
+        let w = self.text_w.max(1);
+        let cur = self.input.cursor.min(self.input.len_chars());
+        let (_, (row, col), _) = ui::layout_input(&self.input.text, cur, w);
+        if row > 0 {
+            self.input.cursor = ui::vertical_target(&self.input.text, cur, w, -1);
+        } else if let Some(p) = self.step_field(-1) {
+            let t = self.fields[p].text.clone();
+            let (lines, _, _) = ui::layout_input(&t, 0, w);
+            let c = ui::index_at(&t, w, lines.len().saturating_sub(1), col);
+            let keep_mode = self.input.mode == Mode::Insert;
+            self.focus_field(p, c, keep_mode);
+        } else {
+            self.input.cursor = 0;
+        }
+    }
+
+    /// Down one display row; from the last row on to the next field.
+    pub fn down(&mut self) {
+        let w = self.text_w.max(1);
+        let cur = self.input.cursor.min(self.input.len_chars());
+        let (lines, (row, col), _) = ui::layout_input(&self.input.text, cur, w);
+        if row + 1 < lines.len() {
+            self.input.cursor = ui::vertical_target(&self.input.text, cur, w, 1);
+        } else if let Some(n) = self.step_field(1) {
+            let t = self.fields[n].text.clone();
+            let c = ui::index_at(&t, w, 0, col);
+            let keep_mode = self.input.mode == Mode::Insert;
+            self.focus_field(n, c, keep_mode);
+        } else {
+            self.input.cursor = self.input.len_chars();
+        }
+    }
+
+    /// Ctrl+U (`dir < 0`) / Ctrl+D: move half a window of rows. When the
+    /// cursor reaches the first / last row of the field before that, it just
+    /// moves on into the previous / next field and stops there.
+    pub fn half_page(&mut self, dir: i32) {
+        let w = self.text_w.max(1);
+        let half = (self.view_h / 2).max(1);
+        let moved = self.input.move_rows(dir, half, w);
+        if moved >= half {
+            return;
+        }
+        // Stopped at the edge of the field.
+        let has_next = self.step_field(dir).is_some();
+        if has_next {
+            if dir < 0 {
+                self.up();
+            } else {
+                self.down();
+            }
+        }
+    }
+
+    /// A key in NORMAL / VISUAL mode. `j` / `k` on the last / first row of a
+    /// field carry on to the next / previous field, everything else is the
+    /// chat box's own vim code.
+    pub fn normal_key(&mut self, c: char) {
+        let w = self.text_w.max(1);
+        if self.input.mode == Mode::Normal && !self.input.leader_waiting() && (c == 'j' || c == 'k') {
+            let (lines, (row, _), _) =
+                ui::layout_input(&self.input.text, self.input.cursor, w);
+            if c == 'j' && row + 1 >= lines.len() {
+                self.down();
+                return;
+            }
+            if c == 'k' && row == 0 {
+                self.up();
+                return;
+            }
+        }
+        self.input.normal_key(c, w);
+    }
+
+    /// A click on screen row `y`, column `x`: focus that field and put the
+    /// cursor there.
+    pub fn click(&mut self, x: u16, y: u16) {
+        // The rows on screen may be a `:s` preview, not the real text.
+        if self.input.mode == Mode::Command {
+            return;
+        }
+        let Some(hit) = self.hits.iter().find(|h| h.y == y) else {
+            return;
+        };
+        let (field, row) = (hit.field, hit.row);
+        if !self.fields[field].editable {
+            return;
+        }
+        let idx = match row {
+            Some(r) => {
+                let col = x.saturating_sub(self.text_x) as usize;
+                ui::index_at(&self.fields[field].text, self.text_w.max(1), r, col)
+            }
+            None => 0,
+        };
+        if field == self.focus {
+            self.input.cursor = idx.min(self.input.len_chars());
+            self.input.cancel_pending();
+            self.input.clamp_normal();
+        } else {
+            self.focus_field(field, idx, true);
+        }
+        self.follow = true;
+    }
+}
