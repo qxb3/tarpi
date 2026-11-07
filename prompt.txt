@@ -1,0 +1,14 @@
+I'm continuing an existing coding project from a previous conversation.
+I've uploaded the latest ZIP of the project.
+Before making any changes:
+
+1. Inspect the project structure and important files.
+2. Understand the existing architecture, frameworks, dependencies, and coding conventions.
+3. Identify which features are already implemented.
+4. Check for incomplete features or obvious issues.
+5. Do not rewrite existing code unnecessarily.
+6. Preserve the current design, functionality, and architecture.
+
+Treat the uploaded project files as the source of truth.
+Once you've understood the project, briefly summarize your understanding and wait for my next development instruction.
+Do not start implementing new features yet.
