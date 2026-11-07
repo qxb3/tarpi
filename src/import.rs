@@ -5,7 +5,7 @@
 //! PNGs with an embedded card, so the file is sent as it is and the server
 //! saves it exactly like the web UI's "Import character" button does. For
 //! URLs, `POST /api/content/importURL` makes the server download the card
-//! (chub.ai / characterhub.org, JannyAI). This module only checks the input first so
+//! (chub.ai / characterhub.org). This module only checks the input first so
 //! that a wrong file fails with a clear message instead of a bare 400.
 
 use crate::api::Api;
@@ -29,24 +29,12 @@ use std::path::PathBuf;
         "  st-cli import sofia.json                       card JSON (V1, V2, V3, Pygmalion)\n",
         "  st-cli import '{\"name\":\"Sofia\", ...}'          JSON given directly\n",
         "  st-cli import https://chub.ai/characters/user/sofia-1a2b3c\n",
-        "  st-cli import chub.ai/characters/user/sofia-1a2b3c\n",
-        "  st-cli import https://jannyai.com/characters/<id>_character-sofia"
+        "  st-cli import chub.ai/characters/user/sofia-1a2b3c"
     )
 )]
 struct ImportCli {
-    /// A card file (.png / .json), a chub.ai or jannyai.com character URL, or JSON text
+    /// A card file (.png / .json), a chub.ai character URL, or JSON text
     source: String,
-
-
-    /// JannyAI only: your browser's Cloudflare cookie (the `cf_clearance` value,
-    /// or a full `name=value; ...` cookie string). See the README.
-    #[arg(long, env = "ST_JANNY_COOKIE", hide_env_values = true)]
-    cookie: Option<String>,
-
-    /// JannyAI only: your browser's User-Agent. Cloudflare ties the cookie to it,
-    /// so it must match the browser the cookie came from.
-    #[arg(long, env = "ST_JANNY_UA")]
-    user_agent: Option<String>,
 }
 
 /// What the user gave us.
@@ -61,8 +49,6 @@ enum Source {
 #[derive(Debug, PartialEq)]
 enum Site {
     Chub,
-    /// JannyAI, with the character id found in the URL.
-    Janny(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -140,10 +126,6 @@ pub async fn run() -> Result<()> {
                     let d = api.import_url(&u).await?;
                     (d.bytes, d.file_name, d.kind)
                 }
-                Site::Janny(id) => {
-                    download_janny(&api, &id, cli.cookie.as_deref(), cli.user_agent.as_deref())
-                        .await?
-                }
             };
             if content == "lorebook" {
                 bail!(
@@ -200,7 +182,7 @@ fn classify(arg: &str) -> Result<Source> {
         return Ok(Source::File(path));
     }
     // A URL typed without the scheme.
-    if host_of(&format!("https://{}", t)).is_some_and(|h| is_chub_host(&h) || is_janny_host(&h))
+    if host_of(&format!("https://{}", t)).is_some_and(|h| is_chub_host(&h))
         && t.contains('/')
     {
         return Ok(Source::Url(format!("https://{}", t)));
@@ -230,51 +212,13 @@ fn is_chub_host(host: &str) -> bool {
     h == "chub.ai" || h == "characterhub.org"
 }
 
-fn is_janny_host(host: &str) -> bool {
-    let h = host.strip_prefix("www.").unwrap_or(host);
-    // SillyTavern itself treats janitorai.com links as JannyAI downloads.
-    h == "jannyai.com" || h == "janitorai.com"
-}
-
-/// A `8-4-4-4-12` hex id (how JannyAI names characters) anywhere in `s`.
-fn find_uuid(s: &str) -> Option<String> {
-    let b = s.as_bytes();
-    if b.len() < 36 {
-        return None;
-    }
-    'outer: for i in 0..=b.len() - 36 {
-        for (k, c) in b[i..i + 36].iter().enumerate() {
-            let ok = if matches!(k, 8 | 13 | 18 | 23) {
-                *c == b'-'
-            } else {
-                c.is_ascii_hexdigit()
-            };
-            if !ok {
-                continue 'outer;
-            }
-        }
-        return Some(s[i..i + 36].to_lowercase());
-    }
-    None
-}
-
-/// Supported sites: chub.ai / characterhub.org and jannyai.com. SillyTavern
-/// accepts a few more; they can be added here later.
+/// Supported sites: chub.ai / characterhub.org. SillyTavern accepts a few
+/// more; they can be added here later.
 fn check_url(url: &str) -> Result<Site> {
     let host = host_of(url).ok_or_else(|| anyhow!("'{}' is not a valid URL", url))?;
-    if is_janny_host(&host) {
-        let id = find_uuid(url).ok_or_else(|| {
-            anyhow!(
-                "no character id found in '{}'. Expected a link like \
-                 https://jannyai.com/characters/<id>_character-<name>",
-                url
-            )
-        })?;
-        return Ok(Site::Janny(id));
-    }
     if !is_chub_host(&host) {
         bail!(
-            "unsupported site '{}'. Supported: chub.ai and jannyai.com. For other sites, \
+            "unsupported site '{}'. Supported: chub.ai. For other sites, \
              download the card and import the file.",
             host
         );
@@ -306,62 +250,6 @@ fn check_url(url: &str) -> Result<Site> {
     }
     Ok(Site::Chub)
 }
-
-/// Download a JannyAI card. Two routes: SillyTavern's own importer (it knows
-/// JannyAI's API but only recognises janitorai.com links, so the id is handed
-/// over in that form), and a direct request from this machine. JannyAI is
-/// behind Cloudflare, which blocks most non-browser downloads; the direct
-/// request can carry the user's own browser cookie and User-Agent
-/// (`--cookie`, `--user-agent`) to pass. With a cookie the direct route goes
-/// first, since the server route has no way to use it.
-/// Returns `(bytes, file name, content type)`.
-async fn download_janny(
-    api: &Api,
-    id: &str,
-    cookie: Option<&str>,
-    ua: Option<&str>,
-) -> Result<(Vec<u8>, String, String)> {
-    let direct = |bytes: Vec<u8>| (bytes, format!("{}.png", id), "character".to_string());
-    let via = format!("https://janitorai.com/characters/{}", id);
-
-    if cookie.is_some() {
-        match api.janny_download(id, cookie, ua).await {
-            Ok(b) => return Ok(direct(b)),
-            Err(e) => eprintln!("direct download failed ({:#}); trying SillyTavern...", e),
-        }
-        return match api.import_url(&via).await {
-            Ok(d) => Ok((d.bytes, d.file_name, d.kind)),
-            Err(e) => bail!("could not download from JannyAI ({:#}).\n{}", e, JANNY_HELP),
-        };
-    }
-
-    let first = match api.import_url(&via).await {
-        Ok(d) => return Ok((d.bytes, d.file_name, d.kind)),
-        Err(e) => e,
-    };
-    eprintln!(
-        "SillyTavern could not download it ({:#}); trying JannyAI directly...",
-        first
-    );
-    match api.janny_download(id, None, ua).await {
-        Ok(bytes) => Ok(direct(bytes)),
-        Err(second) => bail!(
-            "could not download from JannyAI.\n  via SillyTavern: {:#}\n  directly: {:#}\n{}",
-            first,
-            second,
-            JANNY_HELP
-        ),
-    }
-}
-
-const JANNY_HELP: &str = "JannyAI is behind Cloudflare, which blocks downloads that do not \
-come from a browser. Either:\n  \
-1. Download the card PNG in your browser and run `st-cli import <file>.png`, or\n  \
-2. Reuse your browser's session: open https://api.jannyai.com in your browser until \
-the check passes, copy the `cf_clearance` cookie value (dev tools > Application/Storage > \
-Cookies) and your browser's User-Agent, then run\n     \
-st-cli import <url> --cookie '<cf_clearance value>' --user-agent '<User-Agent>'\n  \
-(also settable as ST_JANNY_COOKIE / ST_JANNY_UA; the cookie expires after a while).";
 
 /// Detect and sanity-check a card, mirroring what SillyTavern accepts:
 /// a PNG with an embedded `chara` / `ccv3` text chunk, or JSON that is a V2/V3

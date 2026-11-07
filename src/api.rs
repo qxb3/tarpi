@@ -290,65 +290,6 @@ impl Api {
         })
     }
 
-    /// Download a card straight from JannyAI (no SillyTavern involved): ask
-    /// `api.jannyai.com` for a download link, then fetch the image.
-    pub async fn janny_download(
-        &self,
-        id: &str,
-        cookie: Option<&str>,
-        user_agent: Option<&str>,
-    ) -> Result<Vec<u8>> {
-        let mut req = self
-            .http
-            .post("https://api.jannyai.com/api/v1/download")
-            .timeout(Duration::from_secs(30))
-            .json(&json!({ "characterId": id }));
-        if let Some(c) = cookie.map(str::trim).filter(|c| !c.is_empty()) {
-            // A bare value is taken to be the `cf_clearance` cookie.
-            let c = if c.contains('=') {
-                c.to_string()
-            } else {
-                format!("cf_clearance={}", c)
-            };
-            req = req.header("Cookie", c);
-        }
-        if let Some(ua) = user_agent.map(str::trim).filter(|u| !u.is_empty()) {
-            req = req.header("User-Agent", ua);
-        }
-        let resp = req
-            .send()
-            .await
-            .context("POST api.jannyai.com/api/v1/download")?;
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            if text.contains("Just a moment") {
-                bail!("JannyAI returned {} (Cloudflare challenge page)", status);
-            }
-            bail!("JannyAI returned {}: {}", status, short(&text, 120));
-        }
-        let v: Value = serde_json::from_str(&text).context("invalid JSON from JannyAI")?;
-        if v.get("status").and_then(|s| s.as_str()) != Some("ok") {
-            let why = v.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error");
-            bail!("JannyAI: {}", why);
-        }
-        let link = v
-            .get("downloadUrl")
-            .and_then(|u| u.as_str())
-            .ok_or_else(|| anyhow!("JannyAI response had no downloadUrl"))?;
-        let img = self
-            .http
-            .get(link)
-            .timeout(Duration::from_secs(60))
-            .send()
-            .await
-            .context("downloading the JannyAI card")?;
-        if !img.status().is_success() {
-            bail!("JannyAI download link returned {}", img.status());
-        }
-        Ok(img.bytes().await.context("reading the JannyAI card")?.to_vec())
-    }
-
     /// Upload a card to `/api/characters/import` (the web UI's import button).
     /// `file_type` is `png` or `json`. Returns the new avatar name without ".png".
     pub async fn import_character(

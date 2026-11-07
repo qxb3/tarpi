@@ -88,18 +88,9 @@ st-cli import sofia.png                                    # V2/V3 card PNG
 st-cli import sofia.json                                   # card JSON (V1, V2, V3, Pygmalion)
 st-cli import '{"name": "Sofia", ...}'                     # JSON given directly
 st-cli import https://chub.ai/characters/<creator>/<name>  # chub.ai (also characterhub.org)
-st-cli import https://jannyai.com/characters/<id>_character-<name>
 ```
 
-st-cli does not convert anything itself. The card is sent to SillyTavern's own import endpoint (`/api/characters/import`, what the web UI's import button uses), so the server reads V1/V2/V3/Pygmalion JSON and PNG cards and saves it the same way. URLs are downloaded by the server too (`/api/content/importURL`). Before sending, st-cli checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and gives a clear error if not. Supported sites: chub.ai and jannyai.com; lorebook links are refused.
-
-**JannyAI and Cloudflare.** JannyAI's download API is behind Cloudflare, which often blocks anything that is not a browser (both SillyTavern's server and st-cli). st-cli tries SillyTavern first, then JannyAI directly. If both are blocked, either download the card PNG in your browser and `st-cli import file.png`, or reuse your own browser session:
-
-1. Open `https://api.jannyai.com` in your browser until the "checking your browser" page passes.
-2. In the dev tools (Application / Storage > Cookies) copy the value of the `cf_clearance` cookie, and copy your browser's User-Agent.
-3. `st-cli import <url> --cookie '<cf_clearance value>' --user-agent '<User-Agent>'` (or set `ST_JANNY_COOKIE` / `ST_JANNY_UA`).
-
-Cloudflare ties that cookie to your IP and User-Agent and it expires after a while, so repeat the steps when it stops working. st-cli does not try to solve or bypass the challenge itself.
+st-cli does not convert anything itself. The card is sent to SillyTavern's own import endpoint (`/api/characters/import`, what the web UI's import button uses), so the server reads V1/V2/V3/Pygmalion JSON and PNG cards and saves it the same way. URLs are downloaded by the server too (`/api/content/importURL`). Before sending, st-cli checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and gives a clear error if not. Supported site: chub.ai; lorebook links are refused.
 
 The server comes from `url` in `config.yaml`, as for chatting.
 
