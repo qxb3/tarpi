@@ -110,7 +110,7 @@ No setup needed. st-cli notices it runs on Android:
 
 - **Tap a message** to edit it, like a click on desktop. Swipes scroll the chat.
 - **Swipe gesture on Termux:** swipe sideways across the chat with a slight slant (a thumb's natural arc is enough; a perfectly flat swipe sends nothing at all). Left = next swipe, right = previous. One drag flips exactly one swipe. Only in touch mode and only when the last reply can be swiped. This works because Termux's scroll events carry the finger's column, so a sideways drag is recognised from them.
-- **Tap the `‹2/3›` counter** in the last reply's header to change swipes: the left half goes to the previous one, the right half to the next (past the last generates a new one, like Ctrl+→). A horizontal drag on the chat does the same where the terminal reports drags (swipe left = next, right = previous), also with a mouse on desktop. Ctrl+←/→ still work.
+- **Tap the `‹2/3›` counter** in the last reply's header to change swipes: the left half goes to the previous one, the right half to the next (past the last generates a new one, like →). A horizontal drag on the chat does the same where the terminal reports drags (swipe left = next, right = previous), also with a mouse on desktop. ←/→ still work.
 - **Tap the text box** to open the keyboard. For that moment st-cli stops asking the terminal for mouse events (like `vim.opt.mouse = ""` in Neovim), and it turns them back on by itself as soon as the keyboard is up. If the keyboard doesn't show on the first tap, tap the box once more.
 
 Enter sends; for a new line use the Termux extra-keys row: ALT then Enter, or CTRL then J. ESC on that row leaves INSERT mode, as does typing the NORMAL-mode keys (`qq` by default) quickly.
@@ -151,7 +151,7 @@ vim:
   leader: space
 ```
 
-- `vim.enabled: false` removes the modes and the mode tag under the box; the box is plain text editing. Arrow keys, Home/End and Alt+Left/Right (word jump) move the cursor, and Up/Down move through a multi-line draft (with a one-line draft they scroll the chat as before).
+- `vim.enabled: false` removes the modes and the mode tag under the box; the box is plain text editing. Left/Right arrows move the cursor once the box has a draft (on an empty box they switch swipes), and Home/End and Alt+Left/Right (word jump) move the cursor, and Up/Down move through a multi-line draft (with a one-line draft they scroll the chat as before).
 - `vim.normal_mode_keys` can be any sequence of two or more characters, for example `jk`. It is typed quickly in INSERT mode (within about 0.6 s) and the keys are removed again.
 - `vim.leader` is the `<leader>` key (default `space`; one character that is not a letter or digit, such as `,` or `\`, or the word `space`). See `<leader>y` below.
 - `mouse.open_keyboard_on_tap: false` stops st-cli from switching mouse reporting off when you tap the box, so the keyboard does not open by itself on a phone. `mouse.tap_to_move_cursor: false` keeps taps from moving the cursor. The two are independent.
@@ -174,7 +174,7 @@ The row under the input box shows the totals on the right: the number of message
 | Ctrl+R or `/regen` | regenerate last reply as a new swipe |
 | Ctrl+P | edit the character's very last reply (opens in the input box like a click on it; Enter saves, Esc cancels) |
 | Ctrl+O | edit your own very last message the same way |
-| Ctrl+←/→ | previous / next swipe (→ past the last generates a new one). In a new chat, while the greeting is the only message, they switch between the card's alternate greetings instead (wrapping around). Older chats get the card's alternate greetings too |
+| ←/→ | previous / next swipe (→ past the last generates a new one). Only while the input box is empty and no message is being edited; with a draft in the box they move the text cursor. In a new chat, while the greeting is the only message, they switch between the card's alternate greetings instead (wrapping around). Older chats get the card's alternate greetings too |
 | PgUp/PgDn, mouse wheel, ↑/↓ | scroll the chat (↑/↓ move the cursor while editing). The wheel (or a swipe) over the text box scrolls only the box, anywhere else only the chat; typing or moving the cursor snaps the box back to the cursor |
 | `/undo` or `/u` | delete last message |
 | `/new` | new chat with this character (keeps the current one) |

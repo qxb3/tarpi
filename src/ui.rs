@@ -508,7 +508,7 @@ const HELP: &[&str] = &[
     "Ctrl+P           edit the character's last reply",
     "Ctrl+O           edit your own last message",
     "Ctrl+S           editing the card's greeting: save it to the card",
-    "Ctrl+Left/Right  previous / next swipe (or greeting)",
+    "Left/Right       previous / next swipe (or greeting), empty box",
     "Esc              stop generating / cancel an edit",
     "",
     "Edit any message: click it. It opens in INSERT mode.",

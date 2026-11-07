@@ -215,7 +215,7 @@ enum WheelAction {
 
 /// Chats started before the card had alternate greetings (or by another
 /// client) carry only one greeting. Add the card's other greetings as swipes of
-/// the first message, so Ctrl+Left/Right can browse them. Only a first message
+/// the first message, so Left/Right can browse them. Only a first message
 /// that really is one of the card's greetings is touched. Returns true when
 /// something was added.
 pub fn sync_greetings(
@@ -993,8 +993,14 @@ impl App {
             KeyCode::Char('e') if ctrl => self.input.end(),
             KeyCode::Char('u') if ctrl => self.input.clear(),
             KeyCode::Char('w') if ctrl => self.input.delete_word_back(),
-            KeyCode::Left if ctrl => self.swipe(-1).await,
-            KeyCode::Right if ctrl => self.swipe(1).await,
+            // Plain Left / Right browse swipes while the box has no draft and no
+            // message is being edited; otherwise they move the text cursor.
+            KeyCode::Left if !ctrl && !alt && self.input.is_empty() && self.editing.is_none() => {
+                self.swipe(-1).await
+            }
+            KeyCode::Right if !ctrl && !alt && self.input.is_empty() && self.editing.is_none() => {
+                self.swipe(1).await
+            }
             KeyCode::Esc => {
                 if self.input.mode == Mode::Visual {
                     // First Esc only leaves VISUAL mode.
@@ -1829,7 +1835,7 @@ impl App {
         }
     }
 
-    /// Ctrl+Left / Ctrl+Right: browse swipes of the last reply (or, while the greeting is the only message, the alternate greetings); going past the
+    /// Left / Right (empty input box): browse swipes of the last reply (or, while the greeting is the only message, the alternate greetings); going past the
     /// last one generates a new swipe (like the web UI).
     async fn swipe(&mut self, dir: i32) {
         if self.is_generating() || self.editing.is_some() {
