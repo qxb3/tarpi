@@ -430,7 +430,12 @@ impl App {
         if api_type.is_empty() || server.is_empty() {
             return None;
         }
-        Some(tokens::Backend { api_type, server })
+        let model = textgen::current_model(&self.settings);
+        Some(tokens::Backend {
+            api_type,
+            server,
+            model,
+        })
     }
 
     /// Hash of everything the prompt is built from (chat and settings).

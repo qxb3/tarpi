@@ -23,6 +23,8 @@ const MAX_CACHED: usize = 8;
 pub struct Backend {
     pub api_type: String,
     pub server: String,
+    /// Model name, needed by SillyTavern's tokenizer for vLLM / Aphrodite.
+    pub model: String,
 }
 
 impl Backend {
@@ -30,6 +32,7 @@ impl Backend {
         let mut h = DefaultHasher::new();
         self.api_type.hash(&mut h);
         self.server.hash(&mut h);
+        self.model.hash(&mut h);
         h.finish()
     }
 }
@@ -143,7 +146,7 @@ impl Counter {
                     job
                 };
                 let Some((h, text, b)) = job else { break };
-                let res = api.count_tokens(&text, &b.api_type, &b.server).await;
+                let res = api.count_tokens(&text, &b.api_type, &b.server, &b.model).await;
                 let mut st = lock(&state);
                 match res {
                     Ok(n) => {
