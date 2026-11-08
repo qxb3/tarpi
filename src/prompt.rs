@@ -312,16 +312,6 @@ pub fn subst_card(text: &str, user: &str, persona: &str, ch: &Character) -> Stri
     subst(text, &c)
 }
 
-/// Public wrapper for substituting `{{char}}` / `{{user}}` in greetings.
-pub fn subst_names(text: &str, user: &str, char_name: &str) -> String {
-    let c = Ctx {
-        user: user.to_string(),
-        char_name: char_name.to_string(),
-        ..Ctx::default()
-    };
-    subst(text, &c)
-}
-
 // ---------------------------------------------------------------- examples
 
 fn parse_examples(raw: &str, user: &str, char_name: &str) -> Vec<Vec<ChatMsg>> {

@@ -9,14 +9,6 @@ pub fn jstr(v: &Value, key: &str) -> String {
         .to_string()
 }
 
-pub fn jf64(v: &Value, key: &str, default: f64) -> f64 {
-    match v.get(key) {
-        Some(Value::Number(n)) => n.as_f64().unwrap_or(default),
-        Some(Value::String(s)) => s.trim().parse().unwrap_or(default),
-        _ => default,
-    }
-}
-
 pub fn ji64(v: &Value, key: &str, default: i64) -> i64 {
     match v.get(key) {
         Some(Value::Number(n)) => n

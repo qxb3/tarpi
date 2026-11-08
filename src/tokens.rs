@@ -1,11 +1,11 @@
 //! Token count of the whole prompt for the status row.
 //!
-//! With a Text Completion backend (llama.cpp, KoboldCpp, ooba, ...) the exact
-//! count is asked from the backend's tokenizer (see `Api::count_tokens`) in
-//! the background. The text being counted is the complete prompt: system
-//! prompt, character card, persona, examples, instruct formatting and every
-//! message. Until the answer arrives (or when nothing can count, e.g. Chat
-//! Completion), the characters / `chars_per_token` estimate stands in.
+//! The exact count is asked from the API connection's own tokenizer
+//! (`conn::count_tokens`) in the background. The text being counted is the
+//! complete prompt: system prompt, character card, persona, examples,
+//! instruct formatting and every message. Until the answer arrives (or when
+//! nothing can count, e.g. there is no connection), the characters /
+//! `chars_per_token` estimate stands in.
 
 use crate::api::Api;
 use std::collections::{hash_map::DefaultHasher, HashMap};
@@ -25,6 +25,9 @@ pub struct Backend {
     pub server: String,
     /// Model name, needed by SillyTavern's tokenizer for vLLM / Aphrodite.
     pub model: String,
+    /// A standalone connection (`st-cli api`): its own tokenizer is asked
+    /// directly, SillyTavern is not involved.
+    pub conn: Option<crate::conn::Connection>,
 }
 
 impl Backend {
@@ -33,6 +36,10 @@ impl Backend {
         self.api_type.hash(&mut h);
         self.server.hash(&mut h);
         self.model.hash(&mut h);
+        if let Some(c) = &self.conn {
+            c.name.hash(&mut h);
+            c.api_key.hash(&mut h);
+        }
         h.finish()
     }
 }
@@ -133,7 +140,7 @@ impl Counter {
     }
 
     /// One task counts the waiting text, then any newer one, then stops.
-    fn spawn_worker(&self, api: Api) {
+    fn spawn_worker(&self, _api: Api) {
         let state = self.state.clone();
         tokio::spawn(async move {
             loop {
@@ -146,7 +153,10 @@ impl Counter {
                     job
                 };
                 let Some((h, text, b)) = job else { break };
-                let res = api.count_tokens(&text, &b.api_type, &b.server, &b.model).await;
+                let res = match &b.conn {
+                    Some(c) => crate::conn::count_tokens(c, &text).await,
+                    None => Err(anyhow::anyhow!("no API connection")),
+                };
                 let mut st = lock(&state);
                 match res {
                     Ok(n) => {

@@ -145,6 +145,11 @@ pub fn config_path() -> Option<PathBuf> {
     dir().map(|d| d.join("config.yaml"))
 }
 
+/// `~/.config/st-cli/api.yaml`: the standalone API connections (see `conn`).
+pub fn api_path() -> Option<PathBuf> {
+    dir().map(|d| d.join("api.yaml"))
+}
+
 fn legacy_path() -> Option<PathBuf> {
     dir().map(|d| d.join("config.toml"))
 }

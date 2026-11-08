@@ -4,6 +4,7 @@ use crate::api::Api;
 use crate::cardedit::CardModal;
 use crate::character::Character;
 use crate::chat::{self, ChatState};
+use crate::conn;
 use crate::gen::{self, GenEvent, GenMsg};
 use crate::input::{Input, Mode};
 use crate::jv::*;
@@ -23,6 +24,10 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle};
+
+/// Shown when a reply is asked for without an API connection.
+const NO_CONNECTION: &str =
+    "no API connection: run `st-cli api`, add one and press `a` to use it";
 
 /// A reply that is currently streaming in.
 pub struct Pending {
@@ -176,6 +181,9 @@ pub struct App {
     label: String,
     /// `host:port` from the config file's `url`.
     pub server: String,
+    /// The standalone API connection (`st-cli api`) replies are generated
+    /// with. `None`: the API SillyTavern has selected is used, as before.
+    conn: Option<conn::Connection>,
 }
 
 /// First message for a fresh chat: `first_mes` plus alternate greetings as swipes.
@@ -359,6 +367,7 @@ impl App {
             prompt_text: String::new(),
             prompt_fp: None,
             settings_ver: 0,
+            conn: None,
             stats: ChatStats::default(),
             stats_at: None,
             auto_closed: None,
@@ -420,8 +429,9 @@ impl App {
     }
 
     /// Text and "is error" flag for the bottom status line.
-    /// Where SillyTavern can tokenize for us: only with a Text Completion API.
+    /// Where the backend can tokenize: only through the standalone connection.
     fn token_backend(&self) -> Option<tokens::Backend> {
+        self.conn.as_ref()?;
         if jstr(&self.settings, "main_api") != "textgenerationwebui" {
             return None;
         }
@@ -435,6 +445,7 @@ impl App {
             api_type,
             server,
             model,
+            conn: self.conn.clone(),
         })
     }
 
@@ -1880,9 +1891,59 @@ impl App {
 
     // ----------------------------------------------------------- generation
 
+    /// Use `c` from now on (with `None` there is no way to generate).
+    /// The title bar then shows the connection's backend and address.
+    pub fn set_connection(&mut self, c: Option<conn::Connection>) {
+        self.conn = c;
+        if let Some(c) = &self.conn {
+            conn::overlay(&mut self.settings, c);
+            self.server = host_of(&c.url);
+        }
+        let (source, model, label) = self.backend_labels(&self.settings);
+        self.source = source;
+        self.model = model;
+        self.label = label;
+        self.settings_ver += 1;
+    }
+
+    /// `(source, model, title-bar label)`: the standalone connection's, or a
+    /// reminder that there is none (SillyTavern's own API is never used).
+    fn backend_labels(&self, settings: &Value) -> (String, String, String) {
+        if self.conn.is_some() {
+            backend_info(settings)
+        } else {
+            (String::new(), String::new(), "no API connection".to_string())
+        }
+    }
+
+    /// Re-read `api.yaml` so changes made in `st-cli api` (even in another
+    /// terminal) apply to the next reply. An unreadable file keeps the
+    /// connection as it was.
+    fn reload_connection(&mut self) {
+        let Ok(store) = conn::Store::load() else {
+            return;
+        };
+        let fresh = store.active_connection();
+        let changed = match (&self.conn, &fresh) {
+            (None, None) => false,
+            (Some(a), Some(b)) => {
+                a.name != b.name
+                    || a.kind != b.kind
+                    || a.url != b.url
+                    || a.api_key != b.api_key
+                    || a.params != b.params
+            }
+            _ => true,
+        };
+        if changed {
+            self.set_connection(fresh);
+        }
+    }
+
     /// Re-read the user's settings from SillyTavern so changes made in the
     /// web UI (API, model, preset, templates, persona) apply to the next reply.
     async fn refresh_settings(&mut self) {
+        self.reload_connection();
         match self.api.settings().await {
             Ok(settings) => self.apply_settings(settings),
             Err(e) => self.set_status(
@@ -1894,6 +1955,9 @@ impl App {
 
     fn apply_settings(&mut self, mut settings: Value) {
         persona::normalize(&mut settings);
+        if let Some(c) = &self.conn {
+            conn::overlay(&mut settings, c);
+        }
         let p = persona::current(&settings);
         self.user_name = p.name;
         self.persona_title = p.title;
@@ -1901,7 +1965,7 @@ impl App {
             self.persona = jstr(pu, "persona_description");
             self.persona_position = ji64(pu, "persona_description_position", 0);
         }
-        let (source, model, label) = backend_info(&settings);
+        let (source, model, label) = self.backend_labels(&settings);
         self.source = source;
         self.model = model;
         self.label = label;
@@ -1909,63 +1973,30 @@ impl App {
         self.settings_ver += 1;
     }
 
-    fn build_generation_request(
+    /// The same prompt the Text Completion path builds, sent straight to the
+    /// standalone connection with its own sampler settings.
+    fn build_direct_request(
         &self,
+        c: &conn::Connection,
         history_end: usize,
         continue_last: bool,
-    ) -> anyhow::Result<gen::Request> {
+    ) -> anyhow::Result<conn::DirectRequest> {
         let history = &self.chat.messages[..history_end];
-        let main_api = jstr(&self.settings, "main_api");
-        match main_api.as_str() {
-            "openai" => {
-                let oai = self
-                    .settings
-                    .get("oai_settings")
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                let pu = self
-                    .settings
-                    .get("power_user")
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                let msgs = prompt::build_chat_completion(&prompt::BuildArgs {
-                    oai: &oai,
-                    power_user: &pu,
-                    ch: &self.character,
-                    user_name: &self.user_name,
-                    persona: &self.persona,
-                    persona_position: self.persona_position,
-                    history,
-                    chars_per_token: self.chars_per_token,
-                    continue_last,
-                });
-                gen::build_request(&oai, &msgs, &self.user_name, &self.character.name)
-            }
-            "textgenerationwebui" => {
-                // Continuing: the reply being continued is appended to the prompt
-                // after the character cue instead of being part of the history.
-                let (history, continue_text) = match history.split_last() {
-                    Some((last, rest)) if continue_last => (rest, Some(chat::mes(last))),
-                    _ => (history, None),
-                };
-                let tp = textgen::build_prompt(&textgen::TgArgs {
-                    settings: &self.settings,
-                    ch: &self.character,
-                    user_name: &self.user_name,
-                    persona: &self.persona,
-                    persona_position: self.persona_position,
-                    history,
-                    chars_per_token: self.chars_per_token,
-                    continue_text,
-                });
-                textgen::build_request(&self.settings, &tp, &self.user_name, &self.character.name)
-            }
-            other => anyhow::bail!(
-                "SillyTavern is set to the '{}' API, which st-cli doesn't support. \
-                 Switch to Chat Completion or Text Completion in the web UI.",
-                other
-            ),
-        }
+        let (history, continue_text) = match history.split_last() {
+            Some((last, rest)) if continue_last => (rest, Some(chat::mes(last))),
+            _ => (history, None),
+        };
+        let tp = textgen::build_prompt(&textgen::TgArgs {
+            settings: &self.settings,
+            ch: &self.character,
+            user_name: &self.user_name,
+            persona: &self.persona,
+            persona_position: self.persona_position,
+            history,
+            chars_per_token: self.chars_per_token,
+            continue_text,
+        });
+        conn::build_request(c, &tp.prompt, &tp.stop)
     }
 
     /// Clean up a finished reply the way the web UI does.
@@ -2031,22 +2062,23 @@ impl App {
         } else {
             None
         };
-        let req = match self.build_generation_request(history_end, continue_last) {
+        // Replies come only from the standalone connection (`st-cli api`).
+        let Some(c) = self.conn.clone() else {
+            self.set_status(NO_CONNECTION, true);
+            return;
+        };
+        let direct = match self.build_direct_request(&c, history_end, continue_last) {
             Ok(r) => r,
             Err(e) => {
                 self.set_status(format!("{:#}", e), true);
                 return;
             }
         };
-        if !req.model.is_empty() {
-            self.model = req.model.clone();
-        }
 
         self.gen_id += 1;
         let id = self.gen_id;
-        let api = self.api.clone();
         let tx = self.gen_tx.clone();
-        self.gen_handle = Some(tokio::spawn(gen::run(api, req, id, tx)));
+        self.gen_handle = Some(tokio::spawn(conn::run(direct, id, tx)));
         self.pending = Some(Pending {
             text: String::new(),
             replace_last,

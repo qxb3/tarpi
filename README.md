@@ -14,6 +14,7 @@ st-cli sofia -l         # list Sofia's chats
 st-cli import <source>  # import a character card (see below)
 st-cli delete [sofia]   # delete a character and all its chats (asks first)
 st-cli persona          # pick which persona (who you are) to chat as
+st-cli api              # manage the API connection (llama.cpp address and every model setting)
 ```
 
 That is the whole command line: `[character] [chat]`, plus `-n` (new chat) and `-l` (list). The server address is set with `url` in `~/.config/st-cli/config.yaml`.
@@ -29,6 +30,40 @@ Everything else happens inside the chat:
 | `/newchat` or `/nc` | delete this chat and start a new one |
 
 `<character>` is matched case-insensitively against the name or card file name; a unique partial match works. New chats are numbered per character (`Sofia01`, `Sofia02`, ...). A chat can be given as a number, an exact name, or a unique partial name.
+
+## API connection (`st-cli api`)
+
+The API connection belongs to st-cli, not to SillyTavern. `st-cli api` opens a full-screen manager; connections are stored in `~/.config/st-cli/api.yaml`. Replies go **straight to the backend** (llama.cpp's `/completion`), SillyTavern's API selection and sampler presets are ignored, and the token count in the status row comes from the backend's own `/tokenize`. SillyTavern is still used for characters, chats, personas and the context / instruct templates. There is no fallback to SillyTavern's API: if `api.yaml` has no active connection, sending a message shows `no API connection` and nothing is generated.
+
+```
+st-cli api              # open the manager
+st-cli api -l           # list the saved connections
+```
+
+The first run creates a connection named `local` (llama.cpp at `http://127.0.0.1:8080`). Left: the connections (★ = the one chats use). Right: the server address, an optional API key (only for servers started with `--api-key`) and every setting of the selected connection, grouped as Generation, Sampling, Repetition, DRY, XTC, Mirostat, Dynamic temperature and Advanced. Numbers are sliders; settings that differ from their default are yellow.
+
+| Key / click | Action |
+| --- | --- |
+| Up / Down (or `j` / `k`) | select a setting (in the list: select a connection) |
+| Left / Right (or `h` / `l`) | move a slider by one step, flip a switch. Shift+arrows, `H` / `L`: 10 steps |
+| Home / End | slider to its minimum / maximum |
+| Enter | type an exact value (sliders, numbers, text, address, key); flips a switch |
+| click / drag on a slider, wheel | set the value with the mouse; the wheel scrolls |
+| `r` (or Backspace) | this setting back to its default; `R` resets every setting of the connection |
+| `t` | test the connection: shows the loaded model and the server's context size |
+| `c` | set *Context size* to the one the server reported |
+| `p` | presets: pick **Normal**, **Creative** or **Crazy** and press Enter to apply it to the selected connection (`*` marks the one in use, `1`-`3` jump to one, Esc cancels) |
+| `a` | use this connection for chats (★) |
+| `n` / `d` | new connection / delete the selected one |
+| `[` `]`, Tab | previous / next connection; Tab moves between the list and the settings |
+| `s` | save to `api.yaml` (asking on quit if there are unsaved changes) |
+| `q` / Esc | quit |
+
+A preset sets every sampler setting (Sampling, Repetition, DRY, XTC, Mirostat, Dynamic temperature) in one go, so anything it does not name goes back to its default; Generation and Advanced settings (reply length, context size, stop strings, sampler order, grammar) and the address are left alone. Applying one only changes the settings in the window: press `s` to save. You can fine-tune afterwards with the sliders. **Normal** is balanced (temperature 0.8, min-p 0.05), **Creative** raises temperature to 1.15 and turns DRY on, and **Crazy** goes to temperature 1.8 with XTC, DRY and dynamic temperature. A new kind of connection supplies its own through `Provider::presets`.
+
+Chats re-read `api.yaml` before every reply, so saving in `st-cli api` (even in another terminal) applies to the next message. *Context size* is how much history st-cli sends; keep it at or below the server's `-c`. `stop strings`, `DRY breakers` and `Sampler order` are text fields (the first two a JSON list); a value that is not valid is refused when you press Enter.
+
+Only llama.cpp is built in, but a connection kind is one small file: implement `conn::Provider` (its settings list, request body and stream parser; see `src/conn/llamacpp.rs`) and add it to `conn::providers()`. The manager, the file format, token counting and generation pick it up without further changes.
 
 ## Personas
 
@@ -164,7 +199,7 @@ st-cli talks to a SillyTavern server that needs no login (the default single-use
 
 ## Keys
 
-The row under the input box shows the totals on the right: the number of messages and the token count of the whole prompt, that is the system prompt, character card, persona, example dialogue, instruct formatting and every message, not trimmed to the context window (compare it with your context size to see when old messages start to drop out). With a Text Completion API (llama.cpp, KoboldCpp, ooba, ...) the count is exact: llama.cpp is asked directly (`/tokenize` at the address SillyTavern has for it), anything else, or llama.cpp when it can't be reached from st-cli, goes through SillyTavern's tokenizer endpoint (the one the web UI uses). The backend address is the one SillyTavern uses, so when SillyTavern runs on another machine (e.g. st-cli on a phone, SillyTavern and llama.cpp on a PC) and that address is `localhost` / `127.0.0.1`, st-cli does not try it directly (on the phone it would mean the phone itself) and lets SillyTavern count. The prompt is counted in the background whenever the chat or your SillyTavern settings change. Until the answer arrives, or when nothing can count (Chat Completion APIs, backend not running), the number is an estimate (characters / `chars_per_token`) and shown as `~1.2k`.
+The row under the input box shows the totals on the right: the number of messages and the token count of the whole prompt, that is the system prompt, character card, persona, example dialogue, instruct formatting and every message, not trimmed to the context window (compare it with your context size to see when old messages start to drop out). The count is exact: the API connection's own tokenizer (llama.cpp's `/tokenize`) is asked in the background whenever the chat or your settings change. Until the answer arrives, or when the backend can't be reached or there is no connection, the number is an estimate (characters / `chars_per_token`) and shown as `~1.2k`.
 
 | Key | Action |
 | --- | --- |
@@ -237,20 +272,18 @@ The pattern is matched as plain text (no regular expressions yet), so `.` and `*
 
 ## How it works
 
-The server only proxies requests, so the prompt is built client side, as the web UI does. Nothing is configured in st-cli itself: before every reply it re-reads your settings from SillyTavern, so whatever you change in the web UI (API, model, sampler preset, instruct/context templates, system prompt, persona, context size, response length) applies to the next message.
+SillyTavern only supplies characters, chats, personas and the context / instruct templates; the prompt is built client side and the reply comes straight from your API connection (`st-cli api`). Before every reply st-cli re-reads both SillyTavern's settings and `api.yaml`, so a change to a template, persona or sampler value applies to the next message.
 
 1. `GET /csrf-token` (+ optional login), then `POST /api/settings/get`.
 2. Character card from `/api/characters/get`; chats via `/api/chats/get` and `/api/chats/save`.
-3. Depending on the API selected in the web UI (`main_api`):
-   - **Chat Completion** (OpenAI, Claude, OpenRouter, Gemini, custom, ...): `src/prompt.rs` builds the message list from your prompt manager order and sends it to `/api/backends/chat-completions/generate`.
-   - **Text Completion** (llama.cpp, KoboldCpp, Ooba, TabbyAPI, vLLM, Ollama, generic OpenAI-compatible): `src/textgen.rs` renders your context template (story string), instruct template, example dialogue and stop strings, adds the sampler values from the active preset, and sends it to `/api/backends/text-completions/generate`.
-4. The SSE stream is rendered live and the chat is saved back to the same `.jsonl` file.
+3. `src/textgen.rs` renders your context template (story string), instruct template, example dialogue and stop strings. `src/conn/` sends that prompt with the connection's own sampler values to the backend (llama.cpp's `/completion`).
+4. The stream is rendered live and the chat is saved back to the same `.jsonl` file.
 
 ## Limitations
 
-- Supported APIs: Chat Completion and Text Completion with a local/self-hosted server URL. KoboldAI classic, NovelAI, Horde and hosted Text Completion services (OpenRouter-as-textgen, Together, Mancer, ...) are refused with a clear message.
+- Only llama.cpp is supported, through a standalone connection (`st-cli api`). SillyTavern's own API selection is never used for replies or token counts.
 - No World Info/lorebooks, Author's Note, summaries, vector memory, group chats, or tool calling. The prompt is therefore close to, but not byte-identical to, the web UI's when you use those.
-- Token counting for trimming history to the context window is an estimate (`chars_per_token`), not a real tokenizer. The totals in the status row are exact only with a Text Completion API (see Keys). Banned plain-text tokens (which need a tokenizer) are not sent; token-id lists and quoted banned strings are.
+- Token counting for trimming history to the context window is an estimate (`chars_per_token`), not a real tokenizer. The totals in the status row are exact once the connection's tokenizer has answered (see Keys).
 - Unfinished prose is closed for you while a reply streams: an open `*narration`, `**bold` or `"speech` is shown with its closing marker added, and the model's own closer simply takes its place. Nothing is added for a lone trailing `*`, `2 * 3`, bullets, a `*` inside a word, or past a blank line. When a reply ends with markers still open they are closed in the saved text too (Ctrl+K takes them off again before continuing).
 - Markdown is minimal: `*narration*` is grey and bold, `**bold**` is bold and "quoted speech" is yellow. Styles end at a blank line, and a `*` that has no partner (`2 * 3`, a `* ` bullet, an unclosed one) is shown as a plain asterisk.
 - Mouse capture is on (for the Send button and click-to-edit); hold Shift to select text with the terminal's own selection.

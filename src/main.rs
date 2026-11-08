@@ -1,10 +1,12 @@
 mod api;
+mod apitui;
 mod app;
 mod cardedit;
 mod character;
 mod chat;
 mod clipboard;
 mod config;
+mod conn;
 mod delete;
 mod gen;
 mod import;
@@ -64,6 +66,7 @@ use crate::jv::*;
         "  st-cli delete [X]   delete a character and all its chats (asks first)\n",
         "  st-cli import X     import a card: file (.png/.json), chub.ai URL or JSON\n",
         "  st-cli persona      pick which persona (who you are) to chat as\n",
+        "  st-cli api          manage the API connection (llama.cpp address, sliders for all settings)\n",
         "\n",
         "INSIDE A CHAT:\n",
         "  /chats       switch, create or delete chats\n",
@@ -629,6 +632,9 @@ async fn main() -> Result<()> {
     if std::env::args().nth(1).as_deref() == Some("persona") {
         return persona::run().await;
     }
+    if std::env::args().nth(1).as_deref() == Some("api") {
+        return apitui::run().await;
+    }
     let cli = Cli::parse();
     let cfg = config::load()?;
 
@@ -768,6 +774,8 @@ async fn main() -> Result<()> {
         }
 
         app.server = app::host_of(&url);
+        // The standalone API connection (`st-cli api`), if one is set up.
+        app.set_connection(conn::Store::load()?.active_connection());
         app.touch = touch;
         app.vim = cfg.vim().enabled;
         app.input.configure(cfg.vim().enabled, cfg.vim().keys());
