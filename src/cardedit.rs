@@ -128,7 +128,8 @@ impl CardModal {
         let mut input = Input::default();
         input.copy_config(cfg);
         input.text = fields[focus].text.clone();
-        input.cursor = input.len_chars();
+        // Open with the cursor at the very top of the card, not the end.
+        input.cursor = 0;
         input.enter_insert();
         CardModal {
             fields,

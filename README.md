@@ -85,7 +85,7 @@ While you edit the chat's first message, Ctrl+S (or the **Card save** button) wr
 
 `/character` opens the whole card of the current character in a window, like `/help`: name, card file, description, personality, scenario, first message, example dialogue, system prompt, post-history instructions, every alternate greeting and the depth prompt. The text is the raw card text (`{{char}}` / `{{user}}` stay as they are).
 
-All fields except the name, the card file and the depth prompt (shown read-only) can be edited. The field with the cursor has a cyan title; the window scrolls to follow it.
+All fields except the name, the card file and the depth prompt (shown read-only) can be edited. The field with the cursor has a cyan title; the window scrolls to follow it. It opens with the cursor at the very top of the first editable field (Description).
 
 | Key / click | Action |
 | --- | --- |
