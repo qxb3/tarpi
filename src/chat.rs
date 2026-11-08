@@ -304,6 +304,25 @@ pub fn add_swipe(m: &mut Value, text: &str, model: &str, started: &str, finished
     set_swipe(m, n - 1);
 }
 
+/// Replace a message with a freshly generated reply and drop every swipe it
+/// had: afterwards it has exactly one swipe (what /regen and Ctrl+R do).
+pub fn reset_swipes(m: &mut Value, text: &str, model: &str, started: &str, finished: &str) {
+    let extra = json!({ "api": "openai", "model": model });
+    m["mes"] = json!(text);
+    m["send_date"] = json!(started);
+    m["gen_started"] = json!(started);
+    m["gen_finished"] = json!(finished);
+    m["extra"] = extra.clone();
+    m["swipe_id"] = json!(0);
+    m["swipes"] = json!([text]);
+    m["swipe_info"] = json!([{
+        "send_date": started,
+        "gen_started": started,
+        "gen_finished": finished,
+        "extra": extra,
+    }]);
+}
+
 // ------------------------------------------------------------------ editing
 
 /// Tidy text before it is stored: no `\r`, no trailing spaces on any line, and

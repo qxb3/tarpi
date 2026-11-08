@@ -32,8 +32,12 @@ const NO_CONNECTION: &str =
 /// A reply that is currently streaming in.
 pub struct Pending {
     pub text: String,
-    /// True when this generation becomes a new swipe of the last assistant message.
+    /// True when this generation takes the place of the last assistant message
+    /// (as a new swipe, or, with `reset`, instead of all its swipes).
     pub replace_last: bool,
+    /// Set by /regen and Ctrl+R: the new reply replaces the message and every
+    /// swipe it had. Only an actual swipe (arrow key, tap, drag) adds one.
+    pub reset: bool,
     pub started: String,
     /// Set when continuing the last message: the text it had when we started.
     /// The streamed text is appended to it.
@@ -1735,7 +1739,7 @@ impl App {
                 }
             }
         }
-        self.start_generation_mode(false, true).await;
+        self.start_generation_mode(false, true, false).await;
     }
 
     /// Turn the terminal's mouse reporting on or off.
@@ -1842,7 +1846,7 @@ impl App {
                 false,
             );
         } else {
-            self.start_generation(true).await;
+            self.start_generation_mode(true, false, true).await;
         }
     }
 
@@ -2036,10 +2040,10 @@ impl App {
     }
 
     async fn start_generation(&mut self, replace_last: bool) {
-        self.start_generation_mode(replace_last, false).await;
+        self.start_generation_mode(replace_last, false, false).await;
     }
 
-    async fn start_generation_mode(&mut self, replace_last: bool, continue_last: bool) {
+    async fn start_generation_mode(&mut self, replace_last: bool, continue_last: bool, reset: bool) {
         if self.is_generating() {
             return;
         }
@@ -2082,6 +2086,7 @@ impl App {
         self.pending = Some(Pending {
             text: String::new(),
             replace_last,
+            reset,
             started: chat::now_iso(),
             continue_from,
         });
@@ -2177,7 +2182,11 @@ impl App {
             .unwrap_or(false);
         if p.replace_last && last_is_assistant {
             if let Some(m) = self.chat.messages.last_mut() {
-                chat::add_swipe(m, &text, &self.model, &p.started, &finished);
+                if p.reset {
+                    chat::reset_swipes(m, &text, &self.model, &p.started, &finished);
+                } else {
+                    chat::add_swipe(m, &text, &self.model, &p.started, &finished);
+                }
             }
         } else {
             self.chat.messages.push(chat::assistant_message(
