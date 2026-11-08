@@ -112,6 +112,10 @@ The layout adapts to the terminal size, down to about 10 columns by 6 rows (belo
 - The help window and the `/character` window take the whole screen when it is small; help lines wrap.
 - The menus printed before the chat (characters, chats, personas) fit one terminal row per entry where they can; narrow terminals show `msgs` and leave out the file size.
 
+## Prose colours
+
+At start-up st-cli asks the terminal for its foreground, background and yellow (`OSC 10`, `OSC 11`, `OSC 4;3`), so the colours follow whatever theme the terminal uses. Plain text keeps the terminal's default colour; `*narration*` is a bold neutral grey between the theme's foreground and background brightness (readable on light and dark themes); `"speech"` is the theme's yellow. Prose inside the other kind (`*he said "hi"*`, `"well *sigh* ok"`) is blended: the inner colour is pulled 40% of the way towards the outer one, so it fits in but is still a visible step away from both. Terminals that don't answer cost at most 300 ms once; then `COLORFGBG` (light / dark) and xterm-like colours are used.
+
 ## Placeholders and tidy text
 
 `{{user}}`, `{{char}}` and the old `<USER>` / `<BOT>` / `<CHAR>` / `<GROUP>` are replaced in greetings (when a chat is created) and in every message on screen. When you send a message, macros such as `{{roll:1d6}}`, `{{random::a::b}}`, `{{time}}`, `{{date}}`, `{{time_UTC+2}}`, `{{newline}}`, `{{trim}}` and `{{//comment}}` are filled in like in SillyTavern, and unknown ones are left as typed. Messages you send or edit (and replies) are trimmed: no spaces or empty lines at the start or end, no trailing spaces on lines.
@@ -285,5 +289,6 @@ SillyTavern only supplies characters, chats, personas and the context / instruct
 - No World Info/lorebooks, Author's Note, summaries, vector memory, group chats, or tool calling. The prompt is therefore close to, but not byte-identical to, the web UI's when you use those.
 - Token counting for trimming history to the context window is an estimate (`chars_per_token`), not a real tokenizer. The totals in the status row are exact once the connection's tokenizer has answered (see Keys).
 - Unfinished prose is closed for you while a reply streams: an open `*narration`, `**bold` or `"speech` is shown with its closing marker added, and the model's own closer simply takes its place. Nothing is added for a lone trailing `*`, `2 * 3`, bullets, a `*` inside a word, or past a blank line. When a reply ends with markers still open they are closed in the saved text too (Ctrl+K takes them off again before continuing).
-- Markdown is minimal: `*narration*` is grey and bold, `**bold**` is bold and "quoted speech" is yellow. Styles end at a blank line, and a `*` that has no partner (`2 * 3`, a `* ` bullet, an unclosed one) is shown as a plain asterisk.
+- Markdown is minimal: `*narration*` is bold and a neutral grey, `**bold**` is bold and "quoted speech" is yellow. Styles end at a blank line, and a `*` that has no partner (`2 * 3`, a `* ` bullet, an unclosed one) is shown as a plain asterisk.
+- The prose colours come from your terminal's theme (see *Prose colours*).
 - Mouse capture is on (for the Send button and click-to-edit); hold Shift to select text with the terminal's own selection.

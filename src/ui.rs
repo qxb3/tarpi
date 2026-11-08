@@ -3,6 +3,7 @@
 use crate::app::{App, ChatStats};
 use crate::cardedit::{CardModal, Hit};
 use crate::input::Mode;
+use crate::termcolors;
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -13,10 +14,6 @@ use ratatui::{
 use unicode_width::UnicodeWidthChar;
 
 type StyledChar = (char, Style);
-
-/// Colour of `*narration*` text: a mid grey (RGB so that "bold" doesn't
-/// turn it bright white in terminals that render bold as bright).
-const PROSE_GREY: Color = Color::Rgb(128, 128, 128);
 
 /// Colour of the names in the message headers.
 const NAME_WHITE: Color = Color::Rgb(255, 255, 255);
@@ -30,16 +27,24 @@ pub const NARROW_BTN_W: u16 = 6;
 
 // ------------------------------------------------------------ text styling
 
-/// Style of one char given the markdown state it sits in.
-fn mk_style(italic: bool, bold: bool, quote: bool) -> Style {
+/// Style of one char given the markdown state it sits in. The colours come
+/// from the terminal's own theme (see `termcolors`): narration is the
+/// foreground faded towards the background, speech is the theme's yellow, and
+/// prose nested in the other kind is a blend of the two. `quote_outer` says
+/// which one was opened first when both are active. They are RGB, so "bold"
+/// doesn't turn them bright in terminals that render bold as bright.
+fn mk_style(italic: bool, bold: bool, quote: bool, quote_outer: bool) -> Style {
     let mut style = Style::default();
-    if italic {
-        // `*narration*`: grey and bold.
-        style = style.fg(PROSE_GREY).add_modifier(Modifier::BOLD);
+    // Narration is always bold, also when it sits inside speech. Speech is
+    // not bold, also when it sits inside narration.
+    if italic && !(quote && !quote_outer) {
+        style = style.add_modifier(Modifier::BOLD);
     }
-    if quote {
-        // Speech inside narration stays plain yellow, not bold.
-        style = style.fg(Color::Yellow).remove_modifier(Modifier::BOLD);
+    if let Some(c) = termcolors::palette().prose_color(italic, quote, quote_outer) {
+        style = style.fg(c);
+    }
+    if quote && (!italic || !quote_outer) {
+        style = style.remove_modifier(Modifier::BOLD);
     }
     if bold {
         style = style.add_modifier(Modifier::BOLD);
@@ -82,6 +87,8 @@ fn style_text(text: &str) -> Vec<Vec<StyledChar>> {
     let mut in_italic = false;
     let mut in_bold = false;
     let mut in_quote = false;
+    // Which of quote / italic was opened first (only read while both are on).
+    let mut quote_outer = false;
     let mut lines: Vec<Vec<StyledChar>> = Vec::new();
 
     let raw_lines: Vec<Vec<char>> = text
@@ -119,10 +126,13 @@ fn style_text(text: &str) -> Vec<Vec<StyledChar>> {
                     if double {
                         in_bold = !in_bold;
                     } else {
+                        if !in_italic {
+                            quote_outer = in_quote;
+                        }
                         in_italic = !in_italic;
                     }
                 } else {
-                    let st = mk_style(in_italic, in_bold, in_quote);
+                    let st = mk_style(in_italic, in_bold, in_quote, quote_outer);
                     for _ in 0..w {
                         line.push(('*', st));
                     }
@@ -139,15 +149,17 @@ fn style_text(text: &str) -> Vec<Vec<StyledChar>> {
                         closes_quote = true;
                     } else {
                         in_quote = true;
+                        quote_outer = !in_italic;
                     }
                 } else if c == '\u{201C}' {
                     in_quote = true;
+                    quote_outer = !in_italic;
                 } else {
                     closes_quote = true;
                 }
             }
 
-            line.push((c, mk_style(in_italic, in_bold, in_quote)));
+            line.push((c, mk_style(in_italic, in_bold, in_quote, quote_outer)));
             if closes_quote {
                 in_quote = false;
             }

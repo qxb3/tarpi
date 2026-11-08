@@ -15,6 +15,7 @@ mod jv;
 mod persona;
 mod prompt;
 mod prose;
+mod termcolors;
 mod textgen;
 mod tokens;
 mod ui;
@@ -553,6 +554,9 @@ fn on_android() -> bool {
 
 fn setup_terminal(mouse: bool) -> Result<Term> {
     enable_raw_mode().context("enabling raw mode")?;
+    // Read the terminal's theme colours for the prose styling. Must run now:
+    // raw mode is on and nothing else is reading the keyboard yet.
+    termcolors::detect();
     let mut out = io::stdout();
     execute!(out, EnterAlternateScreen, EnableBracketedPaste)?;
     // With mouse reporting on, taps go to st-cli as clicks. With it off the
