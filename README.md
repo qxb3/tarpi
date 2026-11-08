@@ -112,6 +112,10 @@ The layout adapts to the terminal size, down to about 10 columns by 6 rows (belo
 - The help window and the `/character` window take the whole screen when it is small; help lines wrap.
 - The menus printed before the chat (characters, chats, personas) fit one terminal row per entry where they can; narrow terminals show `msgs` and leave out the file size.
 
+## Nudging a regeneration
+
+`/regen <text>` regenerates the last reply with a direction for the model, e.g. `/regen she hesitates, then refuses` or `/regen shorter, more dialogue`. The nudge is added to that one prompt as the very last system message, right before the character's turn, as `[Direction for <char>'s next reply: <text>]` (macros like `{{user}}` work in it). It is never saved to the chat, the reply replaces the old one and its swipes as usual, and a plain `/regen` or Ctrl+R has no nudge.
+
 ## Prose colours
 
 At start-up st-cli asks the terminal for its foreground, background and yellow (`OSC 10`, `OSC 11`, `OSC 4;3`), so the colours follow whatever theme the terminal uses. Plain text keeps the terminal's default colour; `*narration*` is a bold neutral grey between the theme's foreground and background brightness (readable on light and dark themes); `"speech"` is the theme's yellow. Prose inside the other kind (`*he said "hi"*`, `"well *sigh* ok"`) is blended: the inner colour is pulled 40% of the way towards the outer one, so it fits in but is still a visible step away from both. Terminals that don't answer cost at most 300 ms once; then `COLORFGBG` (light / dark) and xterm-like colours are used.
@@ -214,7 +218,7 @@ The row under the input box shows the totals on the right: the number of message
 | Click in the input box | move the cursor there (also while editing a message) |
 | Click a message | edit that message in the input box, in INSERT mode (Enter / **Save** saves, Shift+Enter adds a line, Esc cancels; the cursor starts at the end of the text; your unsent draft comes back) |
 | Ctrl+S, or the **Card save** button | only while editing the character's greeting (the very first message, at a swipe that came from the card): also writes the edit into the character card itself, as `first_mes` or the matching alternate greeting, so it is permanent and new chats get it. **Save** / Enter only changes this chat |
-| Ctrl+R or `/regen` | regenerate the last reply: the new reply replaces it and wipes all its swipes (it ends up with a single one). Swipes are only added by actually swiping: ←/→ past the last swipe, a tap on the `‹n/m›` counter, or a sideways drag |
+| Ctrl+R or `/regen [nudge]` | regenerate the last reply (`/regen make her more guarded` steers just this reply, see below): the new reply replaces it and wipes all its swipes (it ends up with a single one). Swipes are only added by actually swiping: ←/→ past the last swipe, a tap on the `‹n/m›` counter, or a sideways drag |
 | Ctrl+P | edit the character's very last reply (opens in the input box like a click on it; Enter saves, Esc cancels) |
 | Ctrl+O | edit your own very last message the same way |
 | ←/→ | previous / next swipe (→ past the last generates a new one). Only while the input box is empty and no message is being edited; with a draft in the box they move the text cursor. In a new chat, while the greeting is the only message, they switch between the card's alternate greetings instead (wrapping around). Older chats get the card's alternate greetings too |

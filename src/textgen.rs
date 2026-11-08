@@ -655,6 +655,10 @@ pub struct TgArgs<'a> {
     /// Text of the reply being continued. `history` then excludes that reply
     /// and the prompt ends with it, right after the character cue.
     pub continue_text: Option<&'a str>,
+    /// `/regen <nudge>`: a direction for this reply only. It goes in as the
+    /// very last system message, right before the character cue, and is never
+    /// saved to the chat.
+    pub nudge: Option<&'a str>,
 }
 
 pub struct TgPrompt {
@@ -847,6 +851,17 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
             narrator: false,
             mes: post_history,
         });
+    }
+    if let Some(n) = a.nudge {
+        let n = subst(n, &ctx).trim().to_string();
+        if !n.is_empty() {
+            msgs.push(HMsg {
+                name: None,
+                is_user: false,
+                narrator: true,
+                mes: format!("[Direction for {}'s next reply: {}]", chn, n),
+            });
+        }
     }
 
     let last_user_idx = msgs.iter().rposition(|m| m.is_user);

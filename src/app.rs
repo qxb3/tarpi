@@ -110,6 +110,9 @@ pub struct App {
     status: Option<(String, bool, Instant)>,
     pending: Option<Pending>,
     gen_id: u64,
+    /// `/regen <nudge>`: direction for the next generation only (taken by
+    /// `start_generation_mode`).
+    next_nudge: Option<String>,
     gen_handle: Option<JoinHandle<()>>,
     gen_tx: UnboundedSender<GenMsg>,
     pub should_quit: bool,
@@ -353,6 +356,7 @@ impl App {
             status: None,
             pending: None,
             gen_id: 0,
+            next_nudge: None,
             gen_handle: None,
             gen_tx,
             should_quit: false,
@@ -482,6 +486,7 @@ impl App {
                     history,
                     chars_per_token: NO_TRIM,
                     continue_text: None,
+                    nudge: None,
                 })
                 .prompt
             }
@@ -998,7 +1003,7 @@ impl App {
             KeyCode::Char('p') if ctrl => self.edit_last(false),
             KeyCode::Char('o') if ctrl => self.edit_last(true),
             KeyCode::Char('s') if ctrl => self.commit_edit_to_card().await,
-            KeyCode::Char('r') if ctrl => self.regenerate().await,
+            KeyCode::Char('r') if ctrl => self.regenerate(None).await,
             KeyCode::Char('k') if ctrl => self.continue_message().await,
             KeyCode::Char('j') if ctrl => {
                 self.input.insert_char('\n');
@@ -1129,8 +1134,14 @@ impl App {
                     self.leave(Exit::Characters).await;
                 }
                 "regen" | "regenerate" | "reroll" => {
+                    // Anything after the command is a nudge for this reply.
+                    let nudge = cmd
+                        .trim_start_matches(|c: char| !c.is_whitespace())
+                        .trim()
+                        .to_string();
                     self.input.clear();
-                    self.regenerate().await;
+                    self.regenerate(if nudge.is_empty() { None } else { Some(nudge) })
+                        .await;
                 }
                 "continue" | "cont" | "c" => {
                     self.input.clear();
@@ -1831,7 +1842,7 @@ impl App {
         }
     }
 
-    async fn regenerate(&mut self) {
+    async fn regenerate(&mut self, nudge: Option<String>) {
         if self.is_generating() || self.editing.is_some() {
             return;
         }
@@ -1839,6 +1850,7 @@ impl App {
             return;
         };
         if chat::is_user(last) {
+            self.next_nudge = nudge;
             self.start_generation(false).await;
         } else if self.chat.messages.len() < 2 {
             self.set_status(
@@ -1846,6 +1858,7 @@ impl App {
                 false,
             );
         } else {
+            self.next_nudge = nudge;
             self.start_generation_mode(true, false, true).await;
         }
     }
@@ -1984,6 +1997,7 @@ impl App {
         c: &conn::Connection,
         history_end: usize,
         continue_last: bool,
+        nudge: Option<&str>,
     ) -> anyhow::Result<conn::DirectRequest> {
         let history = &self.chat.messages[..history_end];
         let (history, continue_text) = match history.split_last() {
@@ -1999,6 +2013,7 @@ impl App {
             history,
             chars_per_token: self.chars_per_token,
             continue_text,
+            nudge,
         });
         conn::build_request(c, &tp.prompt, &tp.stop)
     }
@@ -2044,6 +2059,8 @@ impl App {
     }
 
     async fn start_generation_mode(&mut self, replace_last: bool, continue_last: bool, reset: bool) {
+        // A nudge belongs to this one call, whether or not it gets to run.
+        let nudge = self.next_nudge.take();
         if self.is_generating() {
             return;
         }
@@ -2071,7 +2088,7 @@ impl App {
             self.set_status(NO_CONNECTION, true);
             return;
         };
-        let direct = match self.build_direct_request(&c, history_end, continue_last) {
+        let direct = match self.build_direct_request(&c, history_end, continue_last, nudge.as_deref()) {
             Ok(r) => r,
             Err(e) => {
                 self.set_status(format!("{:#}", e), true);
