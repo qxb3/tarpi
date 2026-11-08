@@ -15,6 +15,7 @@ mod jv;
 mod persona;
 mod prompt;
 mod prose;
+mod summary;
 mod termcolors;
 mod textgen;
 mod tokens;

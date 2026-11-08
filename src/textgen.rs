@@ -1007,6 +1007,44 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
     TgPrompt { prompt, stop: uniq }
 }
 
+/// The prompt of `/summarize`: `body` (the instructions and the text to
+/// digest) as one turn from the user, answered from the character's side of
+/// the instruct template. The character card, the system prompt and the
+/// persona are left out on purpose: they would only pull the reply towards
+/// role-play and take room from the chat that is being summarized.
+pub fn build_summary_prompt(settings: &Value, user: &str, ch: &str, body: &str) -> TgPrompt {
+    let pu = sub(settings, "power_user");
+    let ctx_v = sub(pu, "context");
+    let ins = Instruct::from_value(sub(pu, "instruct"));
+    let mut prompt = String::new();
+    let mut stop: Vec<String> = Vec::new();
+    if ins.enabled {
+        let mut turn = format_instruct_chat(&ins, user, ch, "", body, true, false, Force::Last);
+        // The cue below starts with a line break of its own.
+        if ins.wrap {
+            chop_one_newline(&mut turn);
+        }
+        prompt.push_str(&turn);
+        prompt.push_str(&format_instruct_prompt(&ins, user, ch));
+        stop = instruct_stop_strings(&ins, ctx_v, user, ch);
+    } else {
+        prompt.push_str(body);
+        prompt.push_str("\n\nSUMMARY:\n");
+        stop.push(format!("\n{}:", user));
+        stop.push(format!("\n{}:", ch));
+    }
+    let mut uniq: Vec<String> = Vec::new();
+    for s in stop {
+        if !s.is_empty() && !uniq.contains(&s) {
+            uniq.push(s);
+        }
+    }
+    TgPrompt {
+        prompt: prompt.replace('\r', ""),
+        stop: uniq,
+    }
+}
+
 fn ctx_clone(c: &Ctx) -> Ctx {
     Ctx {
         user: c.user.clone(),

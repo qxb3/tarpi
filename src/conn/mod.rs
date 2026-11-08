@@ -408,6 +408,41 @@ pub fn overlay(settings: &mut Value, c: &Connection) {
     );
 }
 
+/// A copy of `c` set up for writing a summary (`/summarize`): the reply may be
+/// `max_tokens` long and the sampling sticks to the facts (low temperature,
+/// nothing that adds variety or punishes names being repeated). The saved
+/// connection is not touched. Settings a kind of connection does not have are
+/// skipped.
+pub fn for_summary(c: &Connection, max_tokens: usize) -> Connection {
+    let mut s = c.clone();
+    let keys: Vec<&'static str> = match s.provider() {
+        Some(p) => p.params().iter().map(|d| d.key).collect(),
+        None => Vec::new(),
+    };
+    let has = |k: &str| keys.iter().any(|x| *x == k);
+    let mut set: Vec<(&str, Value)> = vec![
+        ("n_predict", json!(max_tokens as i64)),
+        ("temperature", json!(0.5)),
+        ("repeat_penalty", json!(1.0)),
+        ("frequency_penalty", json!(0.0)),
+        ("presence_penalty", json!(0.0)),
+        ("dry_multiplier", json!(0.0)),
+        ("xtc_probability", json!(0.0)),
+        ("dynatemp_range", json!(0.0)),
+        ("mirostat", json!(0)),
+        ("ignore_eos", json!(false)),
+        // A stop string such as "\n\n" would end the summary after one paragraph.
+        ("stop_strings", json!("[]")),
+        ("grammar", json!("")),
+    ];
+    for (k, v) in set.drain(..) {
+        if has(k) {
+            s.set(k, v);
+        }
+    }
+    s
+}
+
 // ------------------------------------------------------------------ network
 
 pub fn client() -> Result<reqwest::Client> {

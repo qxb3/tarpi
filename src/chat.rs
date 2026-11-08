@@ -106,6 +106,18 @@ impl ChatState {
         out.extend(self.messages.iter().cloned());
         out
     }
+
+    /// The same lines with a fresh integrity id, to save the chat as a second
+    /// file (a copy must not claim to be the file it was made from).
+    pub fn copy_lines(&self) -> Vec<Value> {
+        let mut out = self.lines();
+        if let Some(meta) = out.first_mut().and_then(|h| h.get_mut("chat_metadata")) {
+            if meta.is_object() {
+                meta["integrity"] = json!(Uuid::new_v4().to_string());
+            }
+        }
+        out
+    }
 }
 
 // ---------------------------------------------------------------- accessors
@@ -323,6 +335,178 @@ pub fn reset_swipes(m: &mut Value, text: &str, model: &str, started: &str, finis
     }]);
 }
 
+// ----------------------------------------------------------------- branches
+
+/// Field on a chat's first message that makes the chat branched (see
+/// `with_summary_branch`). Unknown fields survive a save / load round trip, so
+/// the web UI simply ignores it. Shape: `{ "active": n, "branches": [slot, ..] }`
+/// where a slot is `{ "first": message, "tail": [messages] }` and the slot of
+/// the active branch is `null` (its messages are the visible ones).
+pub const BRANCH_KEY: &str = "st_cli_branch";
+
+/// `(active, total)` branch position, 0-based active, `None` when the chat
+/// has no branches. Branch 0 is the actual conversation, every other branch a
+/// `/summarize` summary, oldest first.
+pub fn branch_pos(first: &Value) -> Option<(usize, usize)> {
+    let b = first.get(BRANCH_KEY)?;
+    if let Some(arr) = b.get("branches").and_then(|x| x.as_array()) {
+        if arr.len() < 2 {
+            return None;
+        }
+        let active = (ji64(b, "active", 0).max(0) as usize).min(arr.len() - 1);
+        let ok = arr
+            .iter()
+            .enumerate()
+            .all(|(i, s)| i == active || s.get("first").is_some_and(|f| f.is_object()));
+        return if ok { Some((active, arr.len())) } else { None };
+    }
+    // Older format: just two branches, `{ "active": n, "other": slot }`.
+    b.get("other")?.get("first")?.as_object()?;
+    Some((if ji64(b, "active", 0) == 1 { 1 } else { 0 }, 2))
+}
+
+/// A summary branch is showing (not the actual conversation).
+pub fn is_summary_branch(first: &Value) -> bool {
+    matches!(branch_pos(first), Some((a, _)) if a >= 1)
+}
+
+/// The active branch and the slots of all branches (the active one is `null`).
+fn take_slots(first: &Value) -> Option<(usize, Vec<Value>)> {
+    let (active, _) = branch_pos(first)?;
+    let b = first.get(BRANCH_KEY)?;
+    if let Some(arr) = b.get("branches").and_then(|x| x.as_array()) {
+        return Some((active, arr.clone()));
+    }
+    let mut slots = vec![Value::Null, Value::Null];
+    slots[1 - active] = b.get("other")?.clone();
+    Some((active, slots))
+}
+
+/// Remove the branch field from a first message.
+fn strip_branch(m: &mut Value) {
+    if let Some(o) = m.as_object_mut() {
+        o.remove(BRANCH_KEY);
+    }
+}
+
+/// Show the next (`dir` > 0) or previous branch, wrapping around: the visible
+/// messages are stored in the branch they belong to and the other branch's
+/// messages are shown. Returns false (and changes nothing) for a chat without
+/// branches.
+pub fn switch_branch(messages: &mut Vec<Value>, dir: i32) -> bool {
+    let Some(first) = messages.first() else {
+        return false;
+    };
+    let Some((active, mut slots)) = take_slots(first) else {
+        return false;
+    };
+    let total = slots.len();
+    let target = if dir < 0 {
+        (active + total - 1) % total
+    } else {
+        (active + 1) % total
+    };
+    if target == active {
+        return false;
+    }
+    let mut cur_first = messages[0].clone();
+    strip_branch(&mut cur_first);
+    let cur_tail: Vec<Value> = messages.drain(1..).collect();
+    slots[active] = json!({ "first": cur_first, "tail": cur_tail });
+    let slot = std::mem::replace(&mut slots[target], Value::Null);
+    let mut next_first = slot.get("first").cloned().unwrap_or(Value::Null);
+    let next_tail: Vec<Value> = slot
+        .get("tail")
+        .and_then(|t| t.as_array())
+        .cloned()
+        .unwrap_or_default();
+    strip_branch(&mut next_first);
+    next_first[BRANCH_KEY] = json!({ "active": target, "branches": slots });
+    let mut out = vec![next_first];
+    out.extend(next_tail);
+    *messages = out;
+    true
+}
+
+/// Delete the branch that is showing and show the one before it (or, for the
+/// first, the one after it). Returns the branch now showing and how many
+/// branches are left as `(active, total)`; with one left the chat is no
+/// longer branched. `None` (nothing changed) for a chat without branches.
+pub fn delete_branch(messages: &mut Vec<Value>) -> Option<(usize, usize)> {
+    let (active, mut slots) = take_slots(messages.first()?)?;
+    slots.remove(active);
+    let target = active.saturating_sub(1).min(slots.len() - 1);
+    let slot = std::mem::replace(&mut slots[target], Value::Null);
+    let mut next_first = slot.get("first").cloned().unwrap_or(Value::Null);
+    let next_tail: Vec<Value> = slot
+        .get("tail")
+        .and_then(|t| t.as_array())
+        .cloned()
+        .unwrap_or_default();
+    strip_branch(&mut next_first);
+    let total = slots.len();
+    if total >= 2 {
+        next_first[BRANCH_KEY] = json!({ "active": target, "branches": slots });
+    }
+    let mut out = vec![next_first];
+    out.extend(next_tail);
+    *messages = out;
+    Some((target, total))
+}
+
+/// The messages of a chat after `/summarize`: a new branch is added after
+/// the existing ones and shown, holding just one message, the summary. Every
+/// branch that was there (the conversation, earlier summaries, and what was
+/// said after them) stays whole. The summary is of the branch that was
+/// showing.
+pub fn with_summary_branch(
+    messages: &[Value],
+    name: &str,
+    summary: &str,
+    model: &str,
+    started: &str,
+    finished: &str,
+) -> Vec<Value> {
+    let Some(first) = messages.first() else {
+        return Vec::new();
+    };
+    let (active, mut slots) = take_slots(first).unwrap_or((0, vec![Value::Null]));
+    let mut cur_first = first.clone();
+    strip_branch(&mut cur_first);
+    slots[active] = json!({ "first": cur_first, "tail": messages[1..].to_vec() });
+    slots.push(Value::Null);
+    let new_active = slots.len() - 1;
+
+    // Name, avatar and the like come from the conversation's first message.
+    let template = slots[0]
+        .get("first")
+        .filter(|m| !is_user(m) && !is_system(m))
+        .cloned();
+    let info = json!({
+        "send_date": started,
+        "gen_started": started,
+        "gen_finished": finished,
+        "extra": { "api": "openai", "model": model },
+    });
+    let mut m = template.unwrap_or_else(|| {
+        json!({
+            "name": name,
+            "is_user": false,
+            "is_system": false,
+        })
+    });
+    m["send_date"] = json!(started);
+    m["gen_started"] = json!(started);
+    m["gen_finished"] = json!(finished);
+    m["extra"] = info["extra"].clone();
+    m["mes"] = json!(summary);
+    m["swipe_id"] = json!(0);
+    m["swipes"] = json!([summary]);
+    m["swipe_info"] = json!([info]);
+    m[BRANCH_KEY] = json!({ "active": new_active, "branches": slots });
+    vec![m]
+}
+
 // ------------------------------------------------------------------ editing
 
 /// Tidy text before it is stored: no `\r`, no trailing spaces on any line, and
@@ -381,5 +565,125 @@ pub fn join_continuation(orig: &str, chunk: &str) -> String {
         format!("{} {}", orig, chunk)
     } else {
         format!("{}{}", orig, chunk)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn convo() -> Vec<Value> {
+        vec![
+            greeting_message("Sofia", &["Hello".to_string(), "Hi there".to_string()]),
+            user_message("Me", "one"),
+            assistant_message("Sofia", "two", "m", "t0", "t1"),
+            user_message("Me", "three"),
+        ]
+    }
+
+    #[test]
+    fn summary_branch_keeps_the_whole_conversation() {
+        let mut v = with_summary_branch(&convo(), "Sofia", "THE SUMMARY", "m", "t0", "t1");
+        assert_eq!(v.len(), 1);
+        assert_eq!(mes(&v[0]), "THE SUMMARY");
+        assert_eq!(branch_pos(&v[0]), Some((1, 2)));
+        assert!(is_summary_branch(&v[0]));
+        assert_eq!(swipe_pos(&v[0]), Some((0, 1)));
+
+        // Branch 0 is the conversation as it was, greeting swipes included.
+        assert!(switch_branch(&mut v, -1));
+        assert_eq!(v.len(), 4);
+        assert_eq!(branch_pos(&v[0]), Some((0, 2)));
+        assert!(!is_summary_branch(&v[0]));
+        assert_eq!(mes(&v[0]), "Hello");
+        assert_eq!(swipe_pos(&v[0]), Some((0, 2)));
+        assert_eq!(mes(&v[3]), "three");
+
+        // And on to the summary again (wraps around).
+        assert!(switch_branch(&mut v, 1));
+        assert_eq!(v.len(), 1);
+        assert_eq!(mes(&v[0]), "THE SUMMARY");
+    }
+
+    #[test]
+    fn each_branch_keeps_its_own_messages() {
+        let mut v = with_summary_branch(&convo(), "Sofia", "S", "m", "t0", "t1");
+        v.push(user_message("Me", "after the summary"));
+        assert!(switch_branch(&mut v, 1));
+        assert_eq!(v.len(), 4);
+        assert!(switch_branch(&mut v, 1));
+        assert_eq!(v.len(), 2);
+        assert_eq!(mes(&v[1]), "after the summary");
+    }
+
+    #[test]
+    fn every_summarize_adds_a_branch() {
+        // From the conversation, then from the first summary, then from the conversation again.
+        let v1 = with_summary_branch(&convo(), "Sofia", "FIRST", "m", "t0", "t1");
+        assert_eq!(branch_pos(&v1[0]), Some((1, 2)));
+        let mut v2 = v1.clone();
+        v2.push(user_message("Me", "more"));
+        let v2 = with_summary_branch(&v2, "Sofia", "SECOND", "m", "t2", "t3");
+        assert_eq!(v2.len(), 1);
+        assert_eq!(mes(&v2[0]), "SECOND");
+        assert_eq!(branch_pos(&v2[0]), Some((2, 3)));
+
+        let mut v = v2;
+        assert!(switch_branch(&mut v, -1));
+        assert_eq!((mes(&v[0]), v.len()), ("FIRST", 2));
+        assert_eq!(branch_pos(&v[0]), Some((1, 3)));
+        assert!(switch_branch(&mut v, -1));
+        assert_eq!((mes(&v[0]), v.len()), ("Hello", 4));
+
+        // Summarizing the conversation again adds a fourth branch; nothing is lost.
+        let mut v = with_summary_branch(&v, "Sofia", "THIRD", "m", "t4", "t5");
+        assert_eq!(branch_pos(&v[0]), Some((3, 4)));
+        assert!(switch_branch(&mut v, 1)); // wraps to the conversation
+        assert_eq!(v.len(), 4);
+        assert!(switch_branch(&mut v, 1)); // first summary
+        assert_eq!((mes(&v[0]), v.len()), ("FIRST", 2));
+        assert_eq!(mes(&v[1]), "more");
+        assert!(switch_branch(&mut v, 1)); // second summary
+        assert_eq!(mes(&v[0]), "SECOND");
+    }
+
+    #[test]
+    fn the_older_two_branch_format_still_loads() {
+        let full = convo();
+        let mut old = with_summary_branch(&full, "Sofia", "S", "m", "t0", "t1");
+        let other = {
+            let b = &old[0][BRANCH_KEY]["branches"][0];
+            b.clone()
+        };
+        old[0][BRANCH_KEY] = json!({ "active": 1, "other": other });
+        assert_eq!(branch_pos(&old[0]), Some((1, 2)));
+        assert!(switch_branch(&mut old, 1));
+        assert_eq!(old.len(), 4);
+        assert_eq!(branch_pos(&old[0]), Some((0, 2)));
+    }
+
+    #[test]
+    fn deleting_a_branch_shows_the_previous_one() {
+        let v1 = with_summary_branch(&convo(), "Sofia", "FIRST", "m", "t0", "t1");
+        let mut v = with_summary_branch(&v1, "Sofia", "SECOND", "m", "t2", "t3");
+        assert_eq!(branch_pos(&v[0]), Some((2, 3)));
+        assert_eq!(delete_branch(&mut v), Some((1, 2)));
+        assert_eq!(mes(&v[0]), "FIRST");
+        assert_eq!(branch_pos(&v[0]), Some((1, 2)));
+        // One branch left: the chat is a plain chat again.
+        assert_eq!(delete_branch(&mut v), Some((0, 1)));
+        assert_eq!(v.len(), 4);
+        assert_eq!(branch_pos(&v[0]), None);
+        assert!(v[0].get(BRANCH_KEY).is_none());
+        assert_eq!(delete_branch(&mut v), None);
+        assert_eq!(v.len(), 4);
+    }
+
+    #[test]
+    fn no_branches_no_switch() {
+        let mut v = convo();
+        assert!(!switch_branch(&mut v, 1));
+        assert_eq!(v.len(), 4);
+        assert_eq!(branch_pos(&v[0]), None);
     }
 }

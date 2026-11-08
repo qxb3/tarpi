@@ -28,6 +28,8 @@ Everything else happens inside the chat:
 | `/character` | open this character's card in a window: every field, editable, with **Cancel** and **Save** (see below) |
 | `/new` | new chat with this character right away (keeps the current one) |
 | `/newchat` or `/nc` | delete this chat and start a new one |
+| `/summarize` | write an in-depth summary of the chat as a new summary branch (see below) |
+| `/deletebranch` or `/db` | delete the summary branch that is showing (see *Summarizing a long chat*) |
 
 `<character>` is matched case-insensitively against the name or card file name; a unique partial match works. New chats are numbered per character (`Sofia01`, `Sofia02`, ...). A chat can be given as a number, an exact name, or a unique partial name.
 
@@ -119,6 +121,35 @@ The layout adapts to the terminal size, down to about 10 columns by 6 rows (belo
 ## Prose colours
 
 At start-up st-cli asks the terminal for its foreground, background and yellow (`OSC 10`, `OSC 11`, `OSC 4;3`), so the colours follow whatever theme the terminal uses. Plain text keeps the terminal's default colour; `*narration*` is a bold neutral grey between the theme's foreground and background brightness (readable on light and dark themes); `"speech"` is the theme's yellow. Prose inside the other kind (`*he said "hi"*`, `"well *sigh* ok"`) is blended: the inner colour is pulled 40% of the way towards the outer one, so it fits in but is still a visible step away from both. Terminals that don't answer cost at most 300 ms once; then `COLORFGBG` (light / dark) and xterm-like colours are used.
+
+## Summarizing a long chat
+
+`/summarize` shrinks a chat that has grown big so that continuing is fast again. It reads the whole chat and writes an in-depth summary: who is who and how they relate, the events in order, every fact the story may depend on later (names, places, objects, injuries, promises, secrets, decisions, feelings), what was said that matters, the open plot threads, and, in the last paragraph, the situation right now.
+
+The summary is not a swipe. It is a **summary branch** of the chat, a separate kind of view next to swipes and greetings, and every `/summarize` adds a new one (there is no limit):
+
+- **branch 1** is the actual conversation, exactly as it was,
+- **branch 2, 3, ...** are the summaries, oldest first. A summary branch shows just the summary as its first message (about **a quarter** of the tokens, -75%; aimed at 25% of the text's length, but never more than a quarter of the *Context size* of your API connection), and everything you say from there on continues from it.
+
+`/summarize` summarizes the branch that is showing (the conversation, or an earlier summary together with what came after it) and adds the result as a new branch at the end, which then shows. Nothing is replaced.
+
+The first message shows a cyan `summary branch 1/3` counter. Each branch keeps its own messages, and the model only sees the branch that is showing.
+
+While it is being written nothing streams into the chat: the status row says `summarizing…` (with `part 2/4` for long chats), and when the summary is finished it appears whole, as the new branch. Esc stops it and then nothing is changed.
+
+`/deletebranch` (or `/db`) deletes the branch that is showing and shows the one before it (the one after it when the first was deleted). With only one branch left the chat is a normal chat again; in a chat without branches it just says so. Deleting is permanent (unless you made a copy with `_before-summary`), and it works on branch 1, the conversation, too.
+
+Switching branches (empty input box, not while editing): **Ctrl+Left** (previous) and **Ctrl+Right** (next), wrapping around, or tap / click the left / right half of the `summary branch n/m` counter. Plain Left / Right are not used for this; they keep browsing swipes and greetings, and on a lone summary they generate nothing.
+
+Details:
+
+- The summary is written with the active API connection (`st-cli api`), with its own settings: the reply length is raised as needed and sampling is made calm (low temperature, no DRY / XTC / penalties / dynamic temperature, no extra stop strings). Your saved connection is not changed. The character card, system prompt and persona are not part of that request.
+- A chat that does not fit into the context together with its summary is read in parts: each request gets the summary so far plus the next part of the chat. If the *Context size* is too small even for that, `/summarize` says so and does nothing.
+- Before anything is changed, the full chat is also saved as `<chat>_before-summary` (then `...2`, `...3`). It is a normal chat file: open it from the chat menu, delete it with `d` when you no longer need it. If that copy cannot be saved, the chat is left alone.
+- The branches are stored in the chat file, inside the first message (`st_cli_branch`), so the file stays a normal `.jsonl`. The web UI shows the branch that was showing when you left.
+- `Ctrl+S` / **Card save** is not offered on the summary: it is never written into the character card. Branched chats no longer get the card's alternate greetings added as swipes. `/undo` will not delete the first message of a branched chat.
+- It needs at least three messages. Summaries are written by the model, so read the result; branch 1 and the saved copy have everything.
+- Chats summarized by an older version (summary as a second swipe of the first message) are left as they are and behave like a normal chat; run `/summarize` again to get branches. Chats with the earlier two-branch format load as they are.
 
 ## Placeholders and tidy text
 

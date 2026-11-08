@@ -260,25 +260,51 @@ fn chars_to_line(chars: &[StyledChar]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Render one chat message: a name header, the wrapped body, and a blank line.
+/// Text of the branch counter in the first message's header, `summary branch 1/2`.
+/// (Not a swipe: `‹n/m›` is for swipes and greetings.)
+fn branch_text(cur: usize, total: usize) -> String {
+    format!("summary branch {}/{}", cur + 1, total)
+}
+
 /// Columns (relative to the message area) that count as a tap on the
-/// `‹n/m›` swipe counter in a message header: the counter itself plus two
-/// columns each side, so a fingertip can hit it.
-pub fn swipe_zone(name: &str, cur: usize, total: usize) -> (usize, usize) {
+/// `summary branch n/m` counter in the first message's header, with two columns each
+/// side like `swipe_zone`.
+pub fn branch_zone(name: &str, cur: usize, total: usize) -> (usize, usize) {
     let name_w: usize = name.chars().map(|c| c.width().unwrap_or(0)).sum();
-    let counter = format!("\u{2039}{}/{}\u{203A}", cur + 1, total).chars().count();
-    // The name sits in a badge padded with one space each side, then two
-    // spaces before the counter.
+    let counter = branch_text(cur, total).chars().count();
     let start = name_w + 2 + 2;
     (start.saturating_sub(2), start + counter + 2)
 }
 
+/// Columns (relative to the message area) that count as a tap on the
+/// `‹n/m›` swipe counter in a message header: the counter itself plus two
+/// columns each side, so a fingertip can hit it. `branch` is the branch
+/// counter that sits before it, if any.
+pub fn swipe_zone(
+    name: &str,
+    cur: usize,
+    total: usize,
+    branch: Option<(usize, usize)>,
+) -> (usize, usize) {
+    let name_w: usize = name.chars().map(|c| c.width().unwrap_or(0)).sum();
+    let counter = format!("\u{2039}{}/{}\u{203A}", cur + 1, total).chars().count();
+    // The name sits in a badge padded with one space each side, then two
+    // spaces before the counter.
+    let mut start = name_w + 2 + 2;
+    if let Some((bc, bt)) = branch {
+        start += branch_text(bc, bt).chars().count() + 2;
+    }
+    (start.saturating_sub(2), start + counter + 2)
+}
+
+/// Render one chat message: a name header, the wrapped body, and a blank line.
 pub fn message_lines(
     name: &str,
     _is_user: bool,
     text: &str,
     width: usize,
     swipe: Option<(usize, usize)>,
+    branch: Option<(usize, usize)>,
     streaming: bool,
     highlight: bool,
 ) -> Vec<Line<'static>> {
@@ -293,6 +319,12 @@ pub fn message_lines(
         name_style = name_style.add_modifier(Modifier::REVERSED);
     }
     let mut header: Vec<Span<'static>> = vec![Span::styled(format!(" {} ", name), name_style)];
+    if let Some((cur, total)) = branch {
+        header.push(Span::styled(
+            format!("  {}", branch_text(cur, total)),
+            Style::default().fg(Color::Cyan),
+        ));
+    }
     if let Some((cur, total)) = swipe {
         if total > 1 {
             header.push(Span::styled(
@@ -521,6 +553,7 @@ const HELP: &[&str] = &[
     "Ctrl+O           edit your own last message",
     "Ctrl+S           editing the card's greeting: save it to the card",
     "Left/Right       previous / next swipe (or greeting), empty box",
+    "Ctrl+Left/Right  previous / next summary branch (wraps)",
     "Esc              stop generating / cancel an edit",
     "",
     "Edit any message: click it. It opens in INSERT mode.",
@@ -551,6 +584,11 @@ const HELP: &[&str] = &[
     "/undo (/u)       delete the last message",
     "/new             new chat with this character",
     "/newchat (/nc)   delete THIS chat and start a new one",
+    "/summarize       write an in-depth summary of the shown branch as",
+    "                 a NEW summary branch (branch 1 is the whole",
+    "                 conversation; nothing is replaced; a copy is also",
+    "                 saved under another name)",
+    "/deletebranch    delete the branch that is showing (also /db)",
     "/chats           open, create or delete chats of this character",
     "/characters      switch to another character",
     "/character       view and edit this character's card",

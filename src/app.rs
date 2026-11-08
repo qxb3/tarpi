@@ -11,6 +11,7 @@ use crate::jv::*;
 use crate::persona;
 use crate::prompt;
 use crate::prose;
+use crate::summary;
 use crate::textgen;
 use crate::tokens;
 use crate::ui;
@@ -42,6 +43,9 @@ pub struct Pending {
     /// Set when continuing the last message: the text it had when we started.
     /// The streamed text is appended to it.
     pub continue_from: Option<String>,
+    /// A pass of `/summarize`: the text is a summary, not a reply, and is
+    /// handled by `finish_summary_pass`.
+    pub summary: bool,
 }
 
 /// Which greeting of the character card a chat's first message shows.
@@ -114,6 +118,8 @@ pub struct App {
     /// `start_generation_mode`).
     next_nudge: Option<String>,
     gen_handle: Option<JoinHandle<()>>,
+    /// A running `/summarize` (its passes are generated one after the other).
+    summary_job: Option<summary::Job>,
     gen_tx: UnboundedSender<GenMsg>,
     pub should_quit: bool,
     /// Whether the terminal reports mouse events to us (off briefly on a
@@ -257,6 +263,10 @@ pub fn sync_greetings(
     if chat::is_user(first) || chat::is_system(first) {
         return false;
     }
+    // A branched chat (original conversation + summary) keeps its first messages as they are.
+    if chat::branch_pos(first).is_some() {
+        return false;
+    }
     let have: Vec<String> = match first.get("swipes").and_then(|s| s.as_array()) {
         Some(a) if !a.is_empty() => a
             .iter()
@@ -358,6 +368,7 @@ impl App {
             gen_id: 0,
             next_nudge: None,
             gen_handle: None,
+            summary_job: None,
             gen_tx,
             should_quit: false,
             mouse: true,
@@ -553,6 +564,15 @@ impl App {
     }
 
     pub fn status_line(&self) -> (String, bool) {
+        if let Some(j) = &self.summary_job {
+            let n = j.plan.parts.len();
+            let text = if n > 1 {
+                format!("summarizing\u{2026} part {}/{} (Esc stops)", j.next + 1, n)
+            } else {
+                "summarizing\u{2026} (Esc stops)".to_string()
+            };
+            return (text, false);
+        }
         if let Some((text, is_err, when)) = &self.status {
             if when.elapsed() < Duration::from_secs(10) {
                 return (text.clone(), *is_err);
@@ -568,6 +588,15 @@ impl App {
                 format!("tap \u{2039}{}/{}\u{203A} to switch greeting", cur + 1, total)
             } else {
                 format!("Ctrl+\u{2190}/\u{2192} switch greeting ({}/{})", cur + 1, total)
+            };
+            return (how, false);
+        }
+        // A summarized chat: say which branch this is and how to switch.
+        if let Some((cur, total)) = self.chat.messages.first().and_then(chat::branch_pos) {
+            let how = if self.touch {
+                format!("tap summary branch {}/{} to switch", cur + 1, total)
+            } else {
+                format!("Ctrl+\u{2190}/\u{2192} switch summary branch ({}/{})", cur + 1, total)
             };
             return (how, false);
         }
@@ -633,19 +662,23 @@ impl App {
                 _ => prompt::subst_display(chat::mes(m), &self.user_name, &self.character.name),
             };
             let start = out.len();
+            let branch = if idx == 0 { chat::branch_pos(m) } else { None };
             out.extend(ui::message_lines(
                 &chat::name(m),
                 is_user,
                 &text,
                 width,
                 swipe,
+                branch,
                 continuing,
                 editing_idx == Some(idx),
             ));
             map.push((idx, start, out.len()));
         }
         let mut last_in_map = true;
-        if let Some(p) = &self.pending {
+        // A summary is not shown while it is written: it appears whole, as the
+        // summary branch, when it is finished (the status row says it is working).
+        if let Some(p) = self.pending.as_ref().filter(|p| !p.summary) {
             if p.continue_from.is_none() {
                 last_in_map = false;
                 let shown = prose::close_for_display(&p.text);
@@ -655,10 +688,11 @@ impl App {
                     shown.as_str()
                 };
                 out.extend(ui::message_lines(
-                    &self.character.name,
+                    self.character.name.as_str(),
                     false,
                     text,
                     width,
+                    None,
                     None,
                     true,
                     false,
@@ -879,13 +913,27 @@ impl App {
         else {
             return;
         };
+        if line == start && idx == 0 {
+            // The `branch n/m` counter of a summarized chat flips the branch.
+            let m = &self.chat.messages[0];
+            if let Some((cur, total)) = chat::branch_pos(m) {
+                let rel = col.saturating_sub(self.msg_area.x) as usize;
+                let (from, to) = ui::branch_zone(&chat::name(m), cur, total);
+                if rel >= from && rel < to {
+                    let mid = (from + to) / 2;
+                    self.switch_branch(if rel < mid { -1 } else { 1 }).await;
+                    return;
+                }
+            }
+        }
         if line == start && idx + 1 == self.chat.messages.len() {
             let m = &self.chat.messages[idx];
             if !chat::is_user(m) {
                 if let Some((cur, total)) = chat::swipe_pos(m) {
                     if total > 1 {
                         let rel = col.saturating_sub(self.msg_area.x) as usize;
-                        let (from, to) = ui::swipe_zone(&chat::name(m), cur, total);
+                        let branch = if idx == 0 { chat::branch_pos(m) } else { None };
+                        let (from, to) = ui::swipe_zone(&chat::name(m), cur, total, branch);
                         if rel >= from && rel < to {
                             let mid = (from + to) / 2;
                             self.swipe(if rel < mid { -1 } else { 1 }).await;
@@ -1015,6 +1063,12 @@ impl App {
             KeyCode::Char('w') if ctrl => self.input.delete_word_back(),
             // Plain Left / Right browse swipes while the box has no draft and no
             // message is being edited; otherwise they move the text cursor.
+            KeyCode::Left if ctrl && !alt && self.input.is_empty() && self.editing.is_none() => {
+                self.switch_branch(-1).await
+            }
+            KeyCode::Right if ctrl && !alt && self.input.is_empty() && self.editing.is_none() => {
+                self.switch_branch(1).await
+            }
             KeyCode::Left if !ctrl && !alt && self.input.is_empty() && self.editing.is_none() => {
                 self.swipe(-1).await
             }
@@ -1159,6 +1213,14 @@ impl App {
                     self.input.clear();
                     self.delete_chat().await;
                 }
+                "deletebranch" | "deletebrach" | "db" => {
+                    self.input.clear();
+                    self.delete_branch().await;
+                }
+                "summarize" | "summarise" | "summary" => {
+                    self.input.clear();
+                    self.summarize().await;
+                }
                 _ => {
                     self.set_status(format!("unknown command /{} (try /help)", head), true);
                 }
@@ -1262,6 +1324,10 @@ impl App {
         });
         if let Some((slot, _)) = by_text {
             return Some(*slot);
+        }
+        // The summary is not a greeting: never write it into the card.
+        if chat::is_summary_branch(m) {
+            return None;
         }
         let (cur, _) = chat::swipe_pos(m).unwrap_or((0, 1));
         cards.get(cur).map(|(slot, _)| *slot)
@@ -1795,6 +1861,13 @@ impl App {
             self.set_status("stop the generation first (Esc)", false);
             return;
         }
+        if self.chat.messages.len() == 1 && chat::branch_pos(&self.chat.messages[0]).is_some() {
+            self.set_status(
+                "this is the first message of a branched chat \u{2014} it can't be undone (switch branch instead)",
+                false,
+            );
+            return;
+        }
         if self.chat.messages.pop().is_some() {
             self.auto_closed = None;
             self.scroll = 0;
@@ -1863,6 +1936,60 @@ impl App {
         }
     }
 
+    /// `/deletebranch` (`/db`): delete the branch that is showing and show
+    /// the one before it.
+    async fn delete_branch(&mut self) {
+        if self.is_generating() || self.editing.is_some() {
+            self.set_status("finish what you are doing first, then /deletebranch", false);
+            return;
+        }
+        let Some((cur, total)) = self.chat.messages.first().and_then(chat::branch_pos) else {
+            self.set_status("there is no branch to delete: this chat has no summary branches", false);
+            return;
+        };
+        let was = cur + 1;
+        let Some((now, left)) = chat::delete_branch(&mut self.chat.messages) else {
+            return;
+        };
+        self.auto_closed = None;
+        self.scroll = 0;
+        self.reveal = Some(0);
+        let msg = if left >= 2 {
+            format!(
+                "deleted branch {} of {}; now on summary branch {}/{}",
+                was,
+                total,
+                now + 1,
+                left
+            )
+        } else {
+            format!("deleted branch {} of {}; the chat has no more branches", was, total)
+        };
+        self.set_status(msg, false);
+        self.save().await;
+    }
+
+    /// Show the previous (`dir` < 0) or next summary branch of a summarized
+    /// chat, wrapping around: branch 1 is the whole conversation, the others
+    /// are summaries. Each keeps its own messages.
+    async fn switch_branch(&mut self, dir: i32) {
+        if self.is_generating() || self.editing.is_some() {
+            return;
+        }
+        if !chat::switch_branch(&mut self.chat.messages, dir) {
+            self.set_status("no summary branches yet: /summarize makes one", false);
+            return;
+        }
+        self.auto_closed = None;
+        self.scroll = 0;
+        self.reveal = Some(0);
+        if let Some((cur, total)) = self.chat.messages.first().and_then(chat::branch_pos) {
+            let what = if cur == 0 { "the conversation" } else { "a summary" };
+            self.set_status(format!("summary branch {}/{}: {}", cur + 1, total, what), false);
+        }
+        self.save().await;
+    }
+
     /// Left / Right (empty input box): browse swipes of the last reply (or, while the greeting is the only message, the alternate greetings); going past the
     /// last one generates a new swipe (like the web UI).
     async fn swipe(&mut self, dir: i32) {
@@ -1901,6 +2028,11 @@ impl App {
             self.save().await;
         } else if len >= 2 {
             self.start_generation(true).await;
+        } else if self.chat.messages.first().is_some_and(chat::is_summary_branch) {
+            self.set_status(
+                "the summary has no swipes \u{2014} Ctrl+\u{2190}/\u{2192} switches summary branch",
+                false,
+            );
         } else {
             self.set_status("no more greetings", false);
         }
@@ -2106,6 +2238,7 @@ impl App {
             reset,
             started: chat::now_iso(),
             continue_from,
+            summary: false,
         });
         self.scroll = 0;
         self.status = None;
@@ -2141,6 +2274,11 @@ impl App {
             return;
         };
         self.gen_handle = None;
+
+        if p.summary {
+            self.finish_summary_pass(p, outcome).await;
+            return;
+        }
 
         if let Some(orig) = p.continue_from.as_deref() {
             match self.clean_continuation(orig, &p.text) {
@@ -2229,6 +2367,252 @@ impl App {
             }
         }
         self.save().await;
+    }
+
+    // ------------------------------------------------------------ /summarize
+
+    /// `/summarize`: write an in-depth summary of the whole chat. While it is
+    /// written nothing is shown but the status row; when it is done it
+    /// appears whole as a new summary branch of the chat (the summary is the only
+    /// message), and branch 1 stays the conversation as it was. The chat is
+    /// also saved whole under another name, and nothing changes if the
+    /// summary is stopped or fails.
+    async fn summarize(&mut self) {
+        if self.is_generating() || self.editing.is_some() {
+            self.set_status("finish what you are doing first, then /summarize", false);
+            return;
+        }
+        let blocks =
+            summary::transcript(&self.chat.messages, &self.user_name, &self.character.name);
+        if blocks.len() < 3 {
+            self.set_status("nothing to summarize yet", false);
+            return;
+        }
+        // The context size and the connection may have changed since the last reply.
+        self.refresh_settings().await;
+        let ctx = ji64(&self.settings, "max_context", 8192).max(512) as usize;
+        let plan = match summary::plan(&blocks, ctx, self.chars_per_token) {
+            Ok(p) => p,
+            Err(e) => {
+                self.set_status(e, true);
+                return;
+            }
+        };
+        self.summary_job = Some(summary::Job {
+            plan,
+            count: blocks.len(),
+            next: 0,
+            so_far: String::new(),
+        });
+        self.start_summary_pass().await;
+    }
+
+    /// Start request `job.next` of the running `/summarize`.
+    async fn start_summary_pass(&mut self) {
+        let (part, so_far, target, pass, passes) = match self.summary_job.as_ref() {
+            Some(j) if j.next < j.plan.parts.len() => (
+                j.plan.parts[j.next].clone(),
+                j.so_far.clone(),
+                j.plan.target,
+                j.next,
+                j.plan.parts.len(),
+            ),
+            _ => {
+                self.summary_job = None;
+                return;
+            }
+        };
+        let Some(c) = self.conn.clone() else {
+            self.summary_job = None;
+            self.set_status(NO_CONNECTION, true);
+            return;
+        };
+        let pt = summary::pass_target(target, pass, passes);
+        let body = summary::body(
+            &self.user_name,
+            &self.character.name,
+            &part,
+            &so_far,
+            summary::words_for(pt),
+            pass,
+            passes,
+        );
+        let tp = textgen::build_summary_prompt(
+            &self.settings,
+            &self.user_name,
+            &self.character.name,
+            &body,
+        );
+        let c = conn::for_summary(&c, summary::reply_cap(pt));
+        let direct = match conn::build_request(&c, &tp.prompt, &tp.stop) {
+            Ok(r) => r,
+            Err(e) => {
+                self.summary_job = None;
+                self.set_status(format!("{:#}", e), true);
+                return;
+            }
+        };
+        self.gen_id += 1;
+        let id = self.gen_id;
+        let tx = self.gen_tx.clone();
+        self.gen_handle = Some(tokio::spawn(conn::run(direct, id, tx)));
+        self.pending = Some(Pending {
+            text: String::new(),
+            replace_last: false,
+            reset: false,
+            started: chat::now_iso(),
+            continue_from: None,
+            summary: true,
+        });
+        self.scroll = 0;
+        self.status = None;
+    }
+
+    /// A request of `/summarize` ended: go on with the next one, or put the
+    /// finished summary into the chat.
+    async fn finish_summary_pass(&mut self, p: Pending, outcome: Outcome) {
+        let Some(mut job) = self.summary_job.take() else {
+            return;
+        };
+        match outcome {
+            Outcome::Done => {}
+            Outcome::Stopped => {
+                self.set_status("summary stopped \u{2014} the chat is unchanged", false);
+                return;
+            }
+            Outcome::Failed(e) => {
+                self.set_status(
+                    format!("summary failed: {} \u{2014} the chat is unchanged", e),
+                    true,
+                );
+                return;
+            }
+        }
+        let text = self.clean_summary(&p.text);
+        if text.is_empty() {
+            self.set_status(
+                "the model returned an empty summary \u{2014} the chat is unchanged",
+                true,
+            );
+            return;
+        }
+        job.so_far = text;
+        job.next += 1;
+        if job.next < job.plan.parts.len() {
+            self.summary_job = Some(job);
+            self.start_summary_pass().await;
+        } else {
+            self.apply_summary(job, p.started).await;
+        }
+    }
+
+    /// Tidy a finished summary: no name cue in front, and nothing after the
+    /// last full sentence (a reply that hit its length limit stops mid-sentence).
+    fn clean_summary(&self, text: &str) -> String {
+        let mut out = chat::tidy(text);
+        let cue = format!("{}:", self.character.name);
+        if let Some(rest) = out.strip_prefix(cue.as_str()) {
+            out = rest.trim_start().to_string();
+        }
+        if let Some(rest) = out.strip_prefix("SUMMARY:") {
+            out = rest.trim_start().to_string();
+        }
+        let out = textgen::trim_to_end_sentence(&out);
+        let (out, _) = prose::close_final(&out);
+        out
+    }
+
+    /// Put the finished summary into the chat as its summary branch (see `summarize`).
+    async fn apply_summary(&mut self, job: summary::Job, started: String) {
+        let summary::Job {
+            plan,
+            count,
+            so_far,
+            ..
+        } = job;
+        let before = plan.before;
+        let after = summary::est_tokens(so_far.chars().count(), self.chars_per_token);
+        if after >= before {
+            self.set_status(
+                "the summary is not shorter than the chat \u{2014} the chat is unchanged",
+                true,
+            );
+            return;
+        }
+        // Keep the whole chat under another name first: a summary can lose
+        // details, the story must not be lost with them.
+        let backup = match self.backup_chat().await {
+            Ok(name) => name,
+            Err(e) => {
+                self.set_status(
+                    format!("could not keep a copy of the chat, so nothing was changed: {:#}", e),
+                    true,
+                );
+                return;
+            }
+        };
+        let finished = chat::now_iso();
+        self.chat.messages = chat::with_summary_branch(
+            &self.chat.messages,
+            &self.character.name,
+            &so_far,
+            &self.model,
+            &started,
+            &finished,
+        );
+        self.auto_closed = None;
+        self.scroll = 0;
+        self.reveal = Some(0);
+        self.save().await;
+        let cut = 100usize.saturating_sub(after * 100 / before.max(1));
+        let branch_no = self
+            .chat
+            .messages
+            .first()
+            .and_then(chat::branch_pos)
+            .map(|(a, _)| a + 1)
+            .unwrap_or(2);
+        self.set_status(
+            format!(
+                "summarized {} messages: ~{} \u{2192} ~{} tokens (-{}%). Added as summary branch {}/{}; branch 1 is the whole conversation, and a copy is saved as {}",
+                count,
+                summary::fmt_tokens(before),
+                summary::fmt_tokens(after),
+                cut,
+                branch_no,
+                branch_no,
+                backup
+            ),
+            false,
+        );
+    }
+
+    /// Save the chat as it is now under a new name (`<chat>_before-summary`,
+    /// then `...2`, `...3`), and return that name.
+    async fn backup_chat(&self) -> anyhow::Result<String> {
+        let existing: Vec<String> = self
+            .api
+            .chats(&self.chat.avatar)
+            .await?
+            .iter()
+            .map(chat::file_id)
+            .collect();
+        let base = format!("{}_before-summary", self.chat.file);
+        let mut name = base.clone();
+        let mut n = 2;
+        while existing.iter().any(|e| e.eq_ignore_ascii_case(&name)) {
+            name = format!("{}{}", base, n);
+            n += 1;
+        }
+        self.api
+            .save_chat(
+                &self.chat.avatar,
+                &self.chat.char_name,
+                &name,
+                &self.chat.copy_lines(),
+            )
+            .await?;
+        Ok(name)
     }
 
     // --------------------------------------------------------------- saving
