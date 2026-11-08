@@ -13,6 +13,9 @@ pub struct FileConfig {
     /// Rough characters-per-token ratio used when trimming old history to fit
     /// the context window. Lower = more conservative. Default 3.2.
     pub chars_per_token: Option<f32>,
+    /// Auto-close `"`, `*` and brackets while typing in the input box.
+    /// Default true.
+    pub autopair: Option<bool>,
     mouse: Option<MouseConfig>,
     vim: Option<VimConfig>,
 }
@@ -106,6 +109,11 @@ const TEMPLATE: &str = "\
 # Characters per token, used to trim old chat history to fit the context window.
 # Lower is more conservative.
 # chars_per_token: 3.2
+
+# Auto-close quotes, *asterisks* and brackets while typing: \" gives \"|\",
+# * gives *|*, ** gives **|**, ( gives (|). Typing the closer steps over it, and
+# Backspace between a pair removes both. Stays off next to words (2*3, 5\").
+# autopair: true
 
 mouse:
   # Phones (Termux): tapping the input box opens the on-screen keyboard.

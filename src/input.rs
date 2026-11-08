@@ -50,6 +50,8 @@ pub struct Input {
     clip: Option<String>,
     /// `true`: no vim modes, the box is plain text editing (config `vim.enabled`).
     vim_off: bool,
+    /// Auto-close quotes, `*` and brackets while typing (config `autopair`).
+    autopair: bool,
     /// Keys typed quickly in INSERT mode to reach NORMAL mode (default `qq`).
     normal_keys: Vec<char>,
     /// How many of `normal_keys` were just typed, and when the last one was.
@@ -542,6 +544,22 @@ impl Input {
         if self.cursor == 0 {
             return;
         }
+        // Between an auto-closed pair (`"|"`, `*|*`, `(|)`): remove both halves.
+        if self.autopair && self.mode == Mode::Insert {
+            let ch = self.chars();
+            if let (Some(&a), Some(&b)) = (ch.get(self.cursor - 1), ch.get(self.cursor)) {
+                if matches!(
+                    (a, b),
+                    ('(', ')') | ('[', ']') | ('{', '}') | ('"', '"') | ('*', '*')
+                ) {
+                    let start = self.byte_idx(self.cursor - 1);
+                    let end = self.byte_idx(self.cursor + 1);
+                    self.text.replace_range(start..end, "");
+                    self.cursor -= 1;
+                    return;
+                }
+            }
+        }
         let start = self.byte_idx(self.cursor - 1);
         let end = self.byte_idx(self.cursor);
         self.text.replace_range(start..end, "");
@@ -644,7 +662,13 @@ impl Input {
     pub fn copy_config(&mut self, other: &Input) {
         self.leader = other.leader;
         self.vim_off = other.vim_off;
+        self.autopair = other.autopair;
         self.normal_keys = other.normal_keys.clone();
+    }
+
+    /// Turn auto-pairing of quotes, `*` and brackets on or off (config `autopair`).
+    pub fn set_autopair(&mut self, on: bool) {
+        self.autopair = on;
     }
 
     /// Set the `<leader>` key (config `vim.leader`).
@@ -671,6 +695,13 @@ impl Input {
     /// Type a character in INSERT mode. Typing the NORMAL-mode key sequence
     /// quickly removes the keys again and switches to NORMAL mode.
     pub fn type_char(&mut self, c: char) {
+        // Never swallow a key that is part of the NORMAL-mode sequence.
+        let is_seq_key = !self.vim_off && self.normal_keys.contains(&c);
+        if self.autopair && !is_seq_key && self.try_autopair(c) {
+            self.seq_hits = 0;
+            self.seq_at = None;
+            return;
+        }
         if self.vim_off || self.normal_keys.len() < 2 {
             self.insert_char(c);
             return;
@@ -711,6 +742,90 @@ impl Input {
         } else {
             self.seq_hits = 0;
             self.seq_at = None;
+        }
+    }
+
+    /// Auto-pairing for one typed character. Returns `true` when it handled
+    /// the key (inserted a pair, or stepped over an existing closer); `false`
+    /// means "insert the character normally".
+    ///
+    /// - `(` `[` `{` insert the pair when what follows is blank, the end or a closer.
+    /// - `)` `]` `}` step over the matching closer that is already there.
+    /// - `"` and `*` open a pair, close an open one (step over it), or stay
+    ///   single next to a word (`2*3`, `5"`) or when the paragraph already has
+    ///   an unclosed one. `*|*` followed by `*` becomes `**|**` (bold).
+    fn try_autopair(&mut self, c: char) -> bool {
+        let ch = self.chars();
+        let cur = self.cursor.min(ch.len());
+        let prev = cur.checked_sub(1).and_then(|i| ch.get(i)).copied();
+        let next = ch.get(cur).copied();
+        let blank_or_closer = |n: Option<char>, extra: &str| match n {
+            None => true,
+            Some(n) => n.is_whitespace() || ")]}".contains(n) || extra.contains(n),
+        };
+        let insert_pair = |me: &mut Self, open: &str, close: &str| {
+            let b = me.byte_idx(me.cursor);
+            me.text.insert_str(b, &format!("{}{}", open, close));
+            me.cursor += open.chars().count();
+        };
+        match c {
+            '(' | '[' | '{' => {
+                if !blank_or_closer(next, "\"'*.,;:!?") {
+                    return false;
+                }
+                let close = match c {
+                    '(' => ")",
+                    '[' => "]",
+                    _ => "}",
+                };
+                insert_pair(self, &c.to_string(), close);
+                true
+            }
+            ')' | ']' | '}' => {
+                if next == Some(c) {
+                    self.cursor += 1;
+                    true
+                } else {
+                    false
+                }
+            }
+            '"' | '*' => {
+                // `*|*` + `*` -> `**|**`
+                if c == '*' && prev == Some('*') && next == Some('*') {
+                    let before = cur.checked_sub(2).and_then(|i| ch.get(i)).copied();
+                    if before != Some('*')
+                        && !before.map(|b| b.is_alphanumeric()).unwrap_or(false)
+                        && ch.get(cur + 1).copied() != Some('*')
+                    {
+                        insert_pair(self, "*", "*");
+                        return true;
+                    }
+                }
+                // Closing: step over the one that is already there.
+                if next == Some(c) {
+                    self.cursor += 1;
+                    return true;
+                }
+                // An unclosed one earlier in this paragraph: this is the closer.
+                let para_start = ch[..cur]
+                    .windows(2)
+                    .rposition(|w| w == ['\n', '\n'])
+                    .map(|i| i + 2)
+                    .unwrap_or(0);
+                let open = ch[para_start..cur].iter().filter(|x| **x == c).count();
+                if open % 2 == 1 {
+                    return false;
+                }
+                if prev.map(|p| p.is_alphanumeric()).unwrap_or(false) {
+                    return false;
+                }
+                if !blank_or_closer(next, "\"'*.,;:!?") {
+                    return false;
+                }
+                insert_pair(self, &c.to_string(), &c.to_string());
+                true
+            }
+            _ => false,
         }
     }
 
@@ -1792,6 +1907,66 @@ mod tests {
         type_cmd(&mut i, "2");
         i.run_command().unwrap();
         assert_eq!(i.cursor, 2);
+    }
+
+    fn typed(text: &str, on: bool) -> Input {
+        let mut i = Input::default();
+        i.set_autopair(on);
+        i.reset_vim();
+        for c in text.chars() {
+            i.type_char(c);
+        }
+        i
+    }
+
+    #[test]
+    fn autopair_quotes_and_narration() {
+        let i = typed("\"", true);
+        assert_eq!((i.text.as_str(), i.cursor), ("\"\"", 1));
+        // typing the closer steps over it
+        let i = typed("\"hi\"", true);
+        assert_eq!((i.text.as_str(), i.cursor), ("\"hi\"", 4));
+        let i = typed("*walks* \"hi\" ok", true);
+        assert_eq!(i.text, "*walks* \"hi\" ok");
+        // bold
+        let i = typed("**b**", true);
+        assert_eq!((i.text.as_str(), i.cursor), ("**b**", 5));
+        let i = typed("**", true);
+        assert_eq!((i.text.as_str(), i.cursor), ("****", 2));
+    }
+
+    #[test]
+    fn autopair_stays_single_next_to_words() {
+        assert_eq!(typed("2*3", true).text, "2*3");
+        assert_eq!(typed("5\"", true).text, "5\"");
+        // second quote in a paragraph that already has one open is the closer
+        let mut i = typed("say \"a", true);
+        i.cursor = i.len_chars();
+        assert_eq!(i.text, "say \"a\"");
+    }
+
+    #[test]
+    fn autopair_brackets_and_backspace() {
+        let i = typed("(a)", true);
+        assert_eq!((i.text.as_str(), i.cursor), ("(a)", 3));
+        let mut i = typed("[", true);
+        assert_eq!(i.text, "[]");
+        i.backspace();
+        assert_eq!((i.text.as_str(), i.cursor), ("", 0));
+        let mut i = typed("*", true);
+        i.backspace();
+        assert_eq!(i.text, "");
+        let mut i = typed("**", true);
+        i.backspace();
+        assert_eq!(i.text, "**");
+    }
+
+    #[test]
+    fn autopair_off_changes_nothing() {
+        assert_eq!(typed("\"*(", false).text, "\"*(");
+        let mut i = typed("\"", false);
+        i.backspace();
+        assert_eq!(i.text, "");
     }
 
     #[test]

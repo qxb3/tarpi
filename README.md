@@ -135,6 +135,9 @@ Settings live in `~/.config/st-cli/config.yaml`. The first run creates it with t
 # Rough chars-per-token used to trim old history to the context window
 # chars_per_token: 3.2
 
+# Auto-close quotes, *asterisks* and brackets while typing in the input box
+# autopair: true
+
 mouse:
   # Phones (Termux): tapping the input box opens the on-screen keyboard
   open_keyboard_on_tap: true
@@ -151,6 +154,7 @@ vim:
   leader: space
 ```
 
+- `autopair: true` (default) closes `"`, `*` and `(` `[` `{` as you type them, in INSERT mode and in the `/character` window: `"` gives `"|"`, `*` gives `*|*`, a second `*` inside an empty pair gives `**|**`. Typing the closing character steps over the one already there, and Backspace between an empty pair removes both. It stays out of the way next to words (`2*3`, `5"`), when the paragraph already has an unclosed one (so the second `"` closes), and when the next character is a letter. Pasted text is never changed. Set `autopair: false` to turn it off.
 - `vim.enabled: false` removes the modes and the mode tag under the box; the box is plain text editing. Left/Right arrows move the cursor once the box has a draft (on an empty box they switch swipes), and Home/End and Alt+Left/Right (word jump) move the cursor, and Up/Down move through a multi-line draft (with a one-line draft they scroll the chat as before).
 - `vim.normal_mode_keys` can be any sequence of two or more characters, for example `jk`. It is typed quickly in INSERT mode (within about 0.6 s) and the keys are removed again.
 - `vim.leader` is the `<leader>` key (default `space`; one character that is not a letter or digit, such as `,` or `\`, or the word `space`). See `<leader>y` below.

@@ -771,6 +771,7 @@ async fn main() -> Result<()> {
         app.touch = touch;
         app.vim = cfg.vim().enabled;
         app.input.configure(cfg.vim().enabled, cfg.vim().keys());
+        app.input.set_autopair(cfg.autopair.unwrap_or(true));
         if let Some(l) = cfg.vim().leader_char() {
             app.input.set_leader(l);
         }
