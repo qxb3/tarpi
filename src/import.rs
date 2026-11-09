@@ -5,7 +5,7 @@
 //! PNGs with an embedded card, so the file is sent as it is and the server
 //! saves it exactly like the web UI's "Import character" button does. For
 //! URLs, `POST /api/content/importURL` makes the server download the card
-//! (chub.ai / characterhub.org). This module only checks the input first so
+//! (chub.ai / characterhub.org / pygmalion.chat). This module only checks the input first so
 //! that a wrong file fails with a clear message instead of a bare 400.
 
 use crate::api::Api;
@@ -29,11 +29,12 @@ use std::path::PathBuf;
         "  st-cli import sofia.json                       card JSON (V1, V2, V3, Pygmalion)\n",
         "  st-cli import '{\"name\":\"Sofia\", ...}'          JSON given directly\n",
         "  st-cli import https://chub.ai/characters/user/sofia-1a2b3c\n",
-        "  st-cli import chub.ai/characters/user/sofia-1a2b3c"
+        "  st-cli import chub.ai/characters/user/sofia-1a2b3c\n",
+        "  st-cli import https://pygmalion.chat/character/<id>"
     )
 )]
 struct ImportCli {
-    /// A card file (.png / .json), a chub.ai character URL, or JSON text
+    /// A card file (.png / .json), a chub.ai or pygmalion.chat character URL, or JSON text
     source: String,
 }
 
@@ -49,6 +50,7 @@ enum Source {
 #[derive(Debug, PartialEq)]
 enum Site {
     Chub,
+    Pygmalion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -122,7 +124,7 @@ pub async fn run() -> Result<()> {
         (None, Some((u, site))) => {
             eprintln!("Downloading...");
             let (bytes, name, content) = match site {
-                Site::Chub => {
+                Site::Chub | Site::Pygmalion => {
                     let d = api.import_url(&u).await?;
                     (d.bytes, d.file_name, d.kind)
                 }
@@ -182,7 +184,8 @@ fn classify(arg: &str) -> Result<Source> {
         return Ok(Source::File(path));
     }
     // A URL typed without the scheme.
-    if host_of(&format!("https://{}", t)).is_some_and(|h| is_chub_host(&h))
+    if host_of(&format!("https://{}", t))
+        .is_some_and(|h| is_chub_host(&h) || is_pygmalion_host(&h))
         && t.contains('/')
     {
         return Ok(Source::Url(format!("https://{}", t)));
@@ -191,7 +194,7 @@ fn classify(arg: &str) -> Result<Source> {
         bail!("{} is a directory; give a card file", t);
     }
     bail!(
-        "'{}' is not an existing file, a chub.ai URL or JSON text. \
+        "'{}' is not an existing file, a chub.ai / pygmalion.chat URL or JSON text. \
          See `st-cli import --help`.",
         t
     )
@@ -212,14 +215,22 @@ fn is_chub_host(host: &str) -> bool {
     h == "chub.ai" || h == "characterhub.org"
 }
 
-/// Supported sites: chub.ai / characterhub.org. SillyTavern accepts a few
-/// more; they can be added here later.
+fn is_pygmalion_host(host: &str) -> bool {
+    let h = host.strip_prefix("www.").unwrap_or(host);
+    h == "pygmalion.chat"
+}
+
+/// Supported sites: chub.ai / characterhub.org and pygmalion.chat. SillyTavern
+/// accepts a few more; they can be added here later.
 fn check_url(url: &str) -> Result<Site> {
     let host = host_of(url).ok_or_else(|| anyhow!("'{}' is not a valid URL", url))?;
+    if is_pygmalion_host(&host) {
+        return check_pygmalion_url(url);
+    }
     if !is_chub_host(&host) {
         bail!(
-            "unsupported site '{}'. Supported: chub.ai. For other sites, \
-             download the card and import the file.",
+            "unsupported site '{}'. Supported: chub.ai, pygmalion.chat. For other \
+             sites, download the card and import the file.",
             host
         );
     }
@@ -249,6 +260,29 @@ fn check_url(url: &str) -> Result<Site> {
         );
     }
     Ok(Site::Chub)
+}
+
+/// A pygmalion.chat character page: `https://pygmalion.chat/character/<id>`
+/// (the id is a UUID; SillyTavern's server fetches the card by it).
+fn check_pygmalion_url(url: &str) -> Result<Site> {
+    let path = url
+        .split_once("://")
+        .map(|x| x.1)
+        .unwrap_or(url)
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .split_once('/')
+        .map(|x| x.1)
+        .unwrap_or("");
+    let seg: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if seg.len() == 2 && seg[0] == "character" && !seg[1].is_empty() {
+        return Ok(Site::Pygmalion);
+    }
+    bail!(
+        "expected a character URL like https://pygmalion.chat/character/<id>, got '{}'",
+        url
+    )
 }
 
 /// Detect and sanity-check a card, mirroring what SillyTavern accepts:
@@ -352,4 +386,35 @@ fn percent_decode(s: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pygmalion_urls() {
+        let id = "0a1b2c3d-1111-2222-3333-444455556666";
+        assert_eq!(
+            check_url(&format!("https://pygmalion.chat/character/{}", id)).unwrap(),
+            Site::Pygmalion
+        );
+        assert_eq!(
+            check_url(&format!("https://www.pygmalion.chat/character/{}?x=1#a", id)).unwrap(),
+            Site::Pygmalion
+        );
+        assert!(check_url("https://pygmalion.chat/").is_err());
+        assert!(check_url("https://pygmalion.chat/character/").is_err());
+        assert!(check_url("https://pygmalion.chat/explore").is_err());
+    }
+
+    #[test]
+    fn scheme_less_and_other_sites() {
+        assert!(matches!(
+            classify("pygmalion.chat/character/abc").unwrap(),
+            Source::Url(_)
+        ));
+        assert_eq!(check_url("https://chub.ai/characters/u/n").unwrap(), Site::Chub);
+        assert!(check_url("https://example.com/characters/u/n").is_err());
+    }
 }

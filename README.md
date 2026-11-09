@@ -154,9 +154,10 @@ st-cli import sofia.png                                    # V2/V3 card PNG
 st-cli import sofia.json                                   # card JSON (V1, V2, V3, Pygmalion)
 st-cli import '{"name": "Sofia", ...}'                     # JSON given directly
 st-cli import https://chub.ai/characters/<creator>/<name>  # chub.ai (also characterhub.org)
+st-cli import https://pygmalion.chat/character/<id>        # pygmalion.chat
 ```
 
-st-cli does not convert anything itself. The card is sent to SillyTavern's own import endpoint (`/api/characters/import`, what the web UI's import button uses), so the server reads V1/V2/V3/Pygmalion JSON and PNG cards and saves it the same way. URLs are downloaded by the server too (`/api/content/importURL`). Before sending, st-cli checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and gives a clear error if not. Supported site: chub.ai; lorebook links are refused.
+st-cli does not convert anything itself. The card is sent to SillyTavern's own import endpoint (`/api/characters/import`, what the web UI's import button uses), so the server reads V1/V2/V3/Pygmalion JSON and PNG cards and saves it the same way. URLs are downloaded by the server too (`/api/content/importURL`). Before sending, st-cli checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and gives a clear error if not. Supported sites: chub.ai (also characterhub.org) and pygmalion.chat (`/character/<id>` links; the server fetches the card by its id); lorebook links are refused.
 
 The server comes from `url` in `config.yaml`, as for chatting.
 

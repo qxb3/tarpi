@@ -104,7 +104,7 @@ struct Cli {
 /// command name on (`Rest`).
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Import a character card (PNG or JSON file, chub.ai URL, or JSON text)
+    /// Import a character card (PNG or JSON file, chub.ai / pygmalion.chat URL, or JSON text)
     #[command(disable_help_flag = true)]
     Import(Rest),
     /// Delete a character together with all of its chats (asks first)
