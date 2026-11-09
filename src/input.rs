@@ -17,6 +17,9 @@ pub enum Mode {
 #[derive(Default)]
 pub struct Input {
     pub text: String,
+    /// `:w` was run; the screen that owns the box takes it with
+    /// `take_write_req` and saves.
+    write_req: bool,
     /// Cursor position in chars (not bytes).
     pub cursor: usize,
     pub mode: Mode,
@@ -233,6 +236,8 @@ enum Cmd {
     /// `:5` — go to a line.
     Goto(usize),
     Subst(Subst),
+    /// `:w` / `:write` — save (what Ctrl+S does where the box is).
+    Write,
 }
 
 impl Subst {
@@ -425,6 +430,12 @@ fn parse_command(
             (Some((_, b)), None) => Some(Cmd::Goto(b)),
             _ => None,
         });
+    }
+    if name == "w" || name == "write" {
+        if range.is_some() || s[i..].iter().any(|c| !c.is_whitespace()) {
+            return Err(format!("E488: Trailing characters: {}", cmd.trim()));
+        }
+        return Ok(Some(Cmd::Write));
     }
     if !"substitute".starts_with(name.as_str()) {
         return Err(format!("E492: Not an editor command: {}", cmd.trim()));
@@ -659,6 +670,11 @@ impl Input {
 
     /// Take over the vim settings of another box (the `/character` window
     /// edits with the same modes and NORMAL-mode keys as the chat box).
+    /// Was `:w` run since the last call? (Clears the flag.)
+    pub fn take_write_req(&mut self) -> bool {
+        std::mem::take(&mut self.write_req)
+    }
+
     pub fn copy_config(&mut self, other: &Input) {
         self.leader = other.leader;
         self.vim_off = other.vim_off;
@@ -1187,6 +1203,10 @@ impl Input {
             Cmd::Goto(l) => {
                 let (s, _) = line_bounds(&ch, l);
                 self.cursor = first_nonblank(&ch, s);
+                Ok(String::new())
+            }
+            Cmd::Write => {
+                self.write_req = true;
                 Ok(String::new())
             }
             Cmd::Subst(sub) => {

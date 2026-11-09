@@ -92,9 +92,9 @@ While you edit the chat's first message, Ctrl+S (or the **Card save** button) wr
 
 ## Character window
 
-`/char` opens the whole card of the current character in a window, like `/help`: name, card file, description, personality, scenario, first message, example dialogue, system prompt, post-history instructions, every alternate greeting and the depth prompt. The text is the raw card text (`{{char}}` / `{{user}}` stay as they are).
+`/char` opens the whole card of the current character in a window, like `/help`: card file, name, description, personality, scenario, first message, example dialogue, system prompt, post-history instructions, every alternate greeting and the depth prompt. The text is the raw card text (`{{char}}` / `{{user}}` stay as they are).
 
-All fields except the name, the card file and the depth prompt (shown read-only) can be edited. The field with the cursor has a cyan title; the window scrolls to follow it. It opens with the cursor at the very top of the first editable field (Description).
+All fields except the card file and the depth prompt (shown read-only) can be edited, including the name: renaming writes the new name to the card (the card file and your chats keep their names). The name is one line and can't be empty. The field with the cursor has a cyan title; the window scrolls to follow it. It opens with the cursor at the very top of the first editable field (Name).
 
 | Key / click | Action |
 | --- | --- |
@@ -105,7 +105,7 @@ All fields except the name, the card file and the depth prompt (shown read-only)
 | Ctrl+U / Ctrl+D (NORMAL / VISUAL mode) | half a window up / down; on reaching the edge of a field, move into the previous / next field |
 | click | put the cursor in that field |
 | mouse wheel | scroll the window |
-| Ctrl+S, or the **Save** button | write the changed fields to the character card on the server (`/api/characters/edit-attribute`, as Card save does) and close |
+| Ctrl+S, `:w` (NORMAL mode, vim modes on), or the **Save** button | write the changed fields to the character card on the server (`/api/characters/edit-attribute`, as Card save does) and close |
 | Esc (see above), or the **Cancel** button | close without saving |
 
 The focused field is edited with the same editor as the chat box, so the vim modes work there too (unless `vim.enabled: false`): `qq` typed quickly or Esc goes to NORMAL mode, `i a I A o O` back to INSERT, then all the motions and operators from the tables above, VISUAL mode, and the `:%s/find/new/` command line (find / replace only ever touches the field you are in, never the rest of the card; while you type it the matches are highlighted and, once you type the replacement, the field shows the result with the new text in green, with the field name and match count on the row above the buttons; the mode shows on the bottom edge). In NORMAL mode `j` / `k` on the last / first row of a field carry on to the next / previous field. With vim modes on, Esc in INSERT mode goes to NORMAL mode; Esc in NORMAL mode closes the window, and when there are unsaved changes it asks for a second Esc first.
@@ -261,7 +261,7 @@ The row under the input box shows the totals on the right: the number of message
 | Ctrl+K, `/continue` or `/c` | continue the last reply (appends to it) |
 | Click in the input box | move the cursor there (also while editing a message) |
 | Click a message | edit that message in the input box, in INSERT mode (Enter / **Save** saves, Shift+Enter adds a line, Esc cancels; the cursor starts at the end of the text; your unsent draft comes back) |
-| Ctrl+S, or the **Card save** button | only while editing the character's greeting (the very first message, at a swipe that came from the card): also writes the edit into the character card itself, as `first_mes` or the matching alternate greeting, so it is permanent and new chats get it. **Save** / Enter only changes this chat |
+| Ctrl+S, `:w` (vim modes on), or the **Card save** button | only while editing the character's greeting (the very first message, at a swipe that came from the card): also writes the edit into the character card itself, as `first_mes` or the matching alternate greeting, so it is permanent and new chats get it. **Save** / Enter only changes this chat |
 | Ctrl+R or `/regen [nudge]` | regenerate the last reply (`/regen make her more guarded` steers just this reply, see below): the new reply replaces it and wipes all its swipes (it ends up with a single one). Swipes are only added by actually swiping: ←/→ past the last swipe, a tap on the `‹n/m›` counter, or a sideways drag |
 | Ctrl+P | edit the character's very last reply (opens in the input box like a click on it; Enter saves, Esc cancels) |
 | Ctrl+O | edit your own very last message the same way |

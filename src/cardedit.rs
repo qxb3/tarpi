@@ -74,10 +74,21 @@ impl CardModal {
                 alt: false,
             });
         };
-        info("Name", ch.name.clone());
+        // The card file (the picture) comes first, then the name.
         if !ch.avatar.trim().is_empty() {
             info("Card file", ch.avatar.clone());
         }
+
+        // The name can be renamed (written to the card as `name`).
+        let name = norm(&ch.name);
+        fields.push(CardField {
+            key: "name",
+            label: "Name".to_string(),
+            orig: name.clone(),
+            text: name,
+            editable: true,
+            alt: false,
+        });
 
         let plain: [(&'static str, &str, &String); 7] = [
             ("description", "Description", &ch.description),
@@ -199,8 +210,17 @@ impl CardModal {
     /// out as one list (empty ones left out).
     pub fn changes(&self) -> Vec<(&'static str, Value)> {
         let mut out: Vec<(&'static str, Value)> = Vec::new();
+        let mut rename: Option<String> = None;
         for f in &self.fields {
             if f.editable && !f.alt && f.text != f.orig {
+                if f.key == "name" {
+                    // One line, never empty; written last (see below).
+                    let n = f.text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if !n.is_empty() && n != f.orig {
+                        rename = Some(n);
+                    }
+                    continue;
+                }
                 out.push((f.key, Value::String(f.text.clone())));
             }
         }
@@ -212,6 +232,10 @@ impl CardModal {
                 .map(|f| Value::String(f.text.clone()))
                 .collect();
             out.push(("alternate_greetings", Value::Array(arr)));
+        }
+        // The name goes last: the other fields are written under the old one.
+        if let Some(n) = rename {
+            out.push(("name", Value::String(n)));
         }
         out
     }

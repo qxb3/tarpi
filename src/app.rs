@@ -1094,11 +1094,17 @@ impl App {
                 KeyCode::Char(c) if !ctrl && !alt => self.input.command_push(c),
                 KeyCode::Backspace => self.input.command_backspace(),
                 KeyCode::Esc => self.input.cancel_command(),
-                KeyCode::Enter => match self.input.run_command() {
-                    Ok(msg) if msg.is_empty() => {}
-                    Ok(msg) => self.set_status(msg, false),
-                    Err(msg) => self.set_status(msg, true),
-                },
+                KeyCode::Enter => {
+                    match self.input.run_command() {
+                        Ok(msg) if msg.is_empty() => {}
+                        Ok(msg) => self.set_status(msg, false),
+                        Err(msg) => self.set_status(msg, true),
+                    }
+                    // `:w` = Ctrl+S.
+                    if self.input.take_write_req() {
+                        self.commit_edit_to_card().await;
+                    }
+                }
                 _ => {}
             }
             return;
@@ -2223,6 +2229,7 @@ impl App {
         let text = value.as_str().unwrap_or("").to_string();
         let ch = &mut self.character;
         match key {
+            "name" => ch.name = text,
             "description" => ch.description = text,
             "personality" => ch.personality = text,
             "scenario" => ch.scenario = text,
@@ -2279,6 +2286,7 @@ impl App {
 
         let mut cancel = false;
         let mut cmd_result: Option<Result<String, String>> = None;
+        let mut write = false;
         let mut clip: Option<String> = None;
         {
             let Some(c) = self.card_modal.as_mut() else {
@@ -2299,7 +2307,10 @@ impl App {
                     KeyCode::Char(ch) if !ctrl && !alt => c.input.command_push(ch),
                     KeyCode::Backspace => c.input.command_backspace(),
                     KeyCode::Esc => c.input.cancel_command(),
-                    KeyCode::Enter => cmd_result = Some(c.input.run_command()),
+                    KeyCode::Enter => {
+                        cmd_result = Some(c.input.run_command());
+                        write = c.input.take_write_req();
+                    }
                     _ => {}
                 }
             } else if half_dir != 0 && matches!(c.input.mode, Mode::Normal | Mode::Visual) {
@@ -2384,6 +2395,11 @@ impl App {
         }
         if cancel {
             self.cancel_card_modal().await;
+            return;
+        }
+        if write {
+            // `:w` = Ctrl+S / the Save button.
+            self.save_card_modal().await;
             return;
         }
         match cmd_result {
