@@ -134,6 +134,31 @@ impl ChatState {
     }
 
     /// Header followed by messages, ready for `/api/chats/save`.
+    /// Is this chat marked `/one-shot`? (Kept in the chat file's metadata; the
+    /// first name of the flag, `st_cli_as_is`, still counts.)
+    pub fn is_one_shot(&self) -> bool {
+        self.header
+            .get("chat_metadata")
+            .map(|m| {
+                ["st_cli_one_shot", "st_cli_as_is"]
+                    .iter()
+                    .any(|k| m.get(*k).and_then(|v| v.as_bool()).unwrap_or(false))
+            })
+            .unwrap_or(false)
+    }
+
+    pub fn set_one_shot(&mut self) {
+        if !self
+            .header
+            .get("chat_metadata")
+            .map(|m| m.is_object())
+            .unwrap_or(false)
+        {
+            self.header["chat_metadata"] = json!({});
+        }
+        self.header["chat_metadata"]["st_cli_one_shot"] = json!(true);
+    }
+
     pub fn lines(&self) -> Vec<Value> {
         let mut out = Vec::with_capacity(self.messages.len() + 1);
         out.push(self.header.clone());

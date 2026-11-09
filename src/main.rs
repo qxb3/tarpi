@@ -65,6 +65,7 @@ use crate::jv::*;
         "  /chats          choose, create or delete chats (a window)\n",
         "  /characters     choose another character (a window)\n",
         "  /persona        choose who you are in the chat (a window)\n",
+        "  /one-shot       lock this chat: no editing, undo, regen, swipes, branches\n",
         "  /api            API settings (address, model and sampler); back to the chat on quit\n",
         "  /character      view and edit this character's card\n",
         "  /new            new chat with this character (keeps this one)\n",

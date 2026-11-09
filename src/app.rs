@@ -163,6 +163,8 @@ pub struct App {
     pub picker: Option<(PickKind, Picker)>,
     /// Set while `card_modal` is the persona form, not the character card.
     persona_edit: Option<PersonaEdit>,
+    /// `/one-shot` was typed once and waits for the second time.
+    one_shot_armed: bool,
     /// Set by `/api`: the main loop opens the API manager in this terminal and
     /// then continues with this same screen.
     pub open_api: bool,
@@ -412,6 +414,7 @@ impl App {
             card_modal: None,
             picker: None,
             persona_edit: None,
+            one_shot_armed: false,
             help_scroll: 0,
             help_page: 10,
             editing: None,
@@ -839,7 +842,9 @@ impl App {
                 } else if self.send_btn.contains(pos) {
                     // Send / Save, or Stop while a reply is streaming.
                     if self.is_generating() {
-                        self.cancel_generation().await;
+                        if !self.stop_blocked() {
+                            self.cancel_generation().await;
+                        }
                     } else {
                         self.submit().await;
                     }
@@ -876,7 +881,7 @@ impl App {
     /// `(current, total, next_generates)` of the last reply, or `None` when it
     /// cannot be swiped right now.
     pub fn swipe_bar_info(&self) -> Option<(usize, usize, bool)> {
-        if self.is_generating() || self.is_editing() {
+        if self.is_generating() || self.is_editing() || self.chat.is_one_shot() {
             return None;
         }
         let m = self.chat.messages.last()?;
@@ -1129,7 +1134,7 @@ impl App {
                     self.input.cancel_pending();
                     if self.editing.is_some() {
                         self.cancel_edit();
-                    } else if self.is_generating() {
+                    } else if self.is_generating() && !self.stop_blocked() {
                         self.cancel_generation().await;
                     }
                 }
@@ -1194,7 +1199,11 @@ impl App {
         }
         if self.is_generating() {
             self.set_status(
-                "still generating \u{2014} press Esc to stop it first",
+                if self.chat.is_one_shot() {
+                    "still generating \u{2014} wait for the reply to finish"
+                } else {
+                    "still generating \u{2014} press Esc to stop it first"
+                },
                 false,
             );
             return;
@@ -1208,6 +1217,11 @@ impl App {
             // This also retries when the last message is already the user's.
             self.start_generation(false).await;
             return;
+        }
+
+        // Anything but a second `/one-shot` withdraws the first one.
+        if !matches!(text.to_lowercase().as_str(), "/one-shot" | "/oneshot") {
+            self.one_shot_armed = false;
         }
 
         if let Some(cmd) = text.strip_prefix('/') {
@@ -1236,6 +1250,10 @@ impl App {
                 "persona" | "personas" | "me" => {
                     self.input.clear();
                     self.open_persona_picker().await;
+                }
+                "one-shot" | "oneshot" => {
+                    self.input.clear();
+                    self.one_shot().await;
                 }
                 "api" | "connection" | "conn" => {
                     self.input.clear();
@@ -1318,7 +1336,59 @@ impl App {
 
     /// Ctrl+P (`user` false) / Ctrl+O (`user` true): edit the very last
     /// reply of the character / the very last message of your own.
+    /// Is this chat `/one-shot`? Then say that `what` is off and return true.
+    fn one_shot_blocks(&mut self, what: &str) -> bool {
+        if self.chat.is_one_shot() {
+            self.set_status(format!("this chat is one-shot: {} is turned off", what), false);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// In an `/one-shot` chat a reply that is being written can't be stopped
+    /// (not with Esc, the Stop button, or by leaving the chat).
+    fn stop_blocked(&mut self) -> bool {
+        if self.is_generating() && self.chat.is_one_shot() {
+            self.set_status(
+                "one-shot chat: a reply that is being written can't be stopped \u{2014} wait for it to finish",
+                false,
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    /// `/one-shot`: lock this chat file as it is (no editing, undo, regenerate,
+    /// swipes or branches). Asks for the command a second time to confirm.
+    async fn one_shot(&mut self) {
+        if self.chat.is_one_shot() {
+            self.set_status("this chat is already one-shot", false);
+            return;
+        }
+        if self.is_generating() || self.editing.is_some() {
+            self.set_status("finish what you are doing first, then /one-shot", false);
+            return;
+        }
+        if !self.one_shot_armed {
+            self.one_shot_armed = true;
+            self.set_status(
+                "this chat will lose editing, undo, regen, swipes and branches for good \u{2014} type /one-shot again to confirm",
+                true,
+            );
+            return;
+        }
+        self.one_shot_armed = false;
+        self.chat.set_one_shot();
+        self.save().await;
+        self.set_status("this chat is now one-shot", false);
+    }
+
     fn edit_last(&mut self, user: bool) {
+        if self.one_shot_blocks("editing") {
+            return;
+        }
         let found = self
             .chat
             .messages
@@ -1340,6 +1410,9 @@ impl App {
     /// Load message `idx` into the input box. The unsent draft is stashed and
     /// comes back when the edit is saved or cancelled.
     fn begin_edit(&mut self, idx: usize) {
+        if self.one_shot_blocks("editing") {
+            return;
+        }
         if self.is_generating() {
             self.set_status("stop the generation first (Esc) to edit a message", false);
             return;
@@ -2203,6 +2276,9 @@ impl App {
 
     /// Ctrl+K, `/continue` or `/c`: let the model keep writing the last reply.
     async fn continue_message(&mut self) {
+        if self.one_shot_blocks("continue") {
+            return;
+        }
         if self.is_generating() {
             return;
         }
@@ -2259,11 +2335,17 @@ impl App {
 
     /// Close the chat screen and go back to a menu (see `main`).
     async fn leave(&mut self, to: Exit) {
+        if self.stop_blocked() {
+            return;
+        }
         self.exit_to = Some(to);
         self.quit().await;
     }
 
     async fn quit(&mut self) {
+        if self.stop_blocked() {
+            return;
+        }
         if self.is_generating() {
             self.cancel_generation().await;
         }
@@ -2273,6 +2355,9 @@ impl App {
     /// `/undo [n]`: delete the last `n` messages (default 1). A branched chat
     /// always keeps its first message; otherwise `n` is capped at what exists.
     async fn undo(&mut self, count: usize) {
+        if self.one_shot_blocks("undo") {
+            return;
+        }
         if self.editing.is_some() {
             return;
         }
@@ -2352,6 +2437,9 @@ impl App {
     }
 
     async fn regenerate(&mut self, nudge: Option<String>) {
+        if self.one_shot_blocks("regenerate") {
+            return;
+        }
         if self.is_generating() || self.editing.is_some() {
             return;
         }
@@ -2375,6 +2463,9 @@ impl App {
     /// `/deletebranch` (`/db`): delete the branch that is showing and show
     /// the one before it.
     async fn delete_branch(&mut self) {
+        if self.one_shot_blocks("branching") {
+            return;
+        }
         if self.is_generating() || self.editing.is_some() {
             self.set_status("finish what you are doing first, then /deletebranch", false);
             return;
@@ -2429,6 +2520,9 @@ impl App {
     /// chat, wrapping around: branch 1 is the whole conversation, the others
     /// are summaries. Each keeps its own messages.
     async fn switch_branch(&mut self, dir: i32) {
+        if self.one_shot_blocks("branching") {
+            return;
+        }
         if self.is_generating() || self.editing.is_some() {
             return;
         }
@@ -2449,6 +2543,9 @@ impl App {
     /// Left / Right (empty input box): browse swipes of the last reply (or, while the greeting is the only message, the alternate greetings); going past the
     /// last one generates a new swipe (like the web UI).
     async fn swipe(&mut self, dir: i32) {
+        if self.one_shot_blocks("swipes") {
+            return;
+        }
         if self.is_generating() || self.editing.is_some() {
             return;
         }
@@ -2858,6 +2955,9 @@ impl App {
     /// also saved whole under another name, and nothing changes if the
     /// summary is stopped or fails.
     async fn summarize(&mut self) {
+        if self.one_shot_blocks("branching (summarize)") {
+            return;
+        }
         if self.is_generating() || self.editing.is_some() {
             self.set_status("finish what you are doing first, then /summarize", false);
             return;

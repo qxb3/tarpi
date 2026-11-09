@@ -597,6 +597,8 @@ const HELP: &[&str] = &[
     "/api             open the API settings; quitting them (q) brings",
     "                 you back to this chat",
     "/character       view and edit this character's card",
+    "/one-shot        lock THIS chat: no editing, undo, regen, swipes or",
+    "                 branches (type it twice to confirm; permanent)",
     "/help            this screen",
     "/quit            exit",
 ];
@@ -1171,7 +1173,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
     }
     let (badge, rest) = pick.unwrap_or(("", who.clone()));
-    let title = Line::from(vec![
+    let title_spans = vec![
         Span::styled(
             badge,
             Style::default()
@@ -1180,7 +1182,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(rest, Style::default().fg(Color::Gray)),
-    ]);
+    ];
+    let title = Line::from(title_spans);
     f.render_widget(Paragraph::new(title), chunks[0]);
 
     // ---- messages
@@ -1391,11 +1394,23 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             }
         }
     } else {
-        let left_w = status_line.chars().count();
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(status_line, style))),
-            chunks[3],
-        );
+        // A one-shot chat always shows its mode at the start of this row, in
+        // the same grey as the rest; other messages follow after a bullet.
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut left_w = 0usize;
+        if app.chat.is_one_shot() {
+            let tag = "ONE SHOT MODE";
+            left_w += tag.chars().count();
+            spans.push(Span::styled(tag, Style::default().fg(Color::DarkGray)));
+            if !status_line.is_empty() {
+                let sep = "  \u{b7}  ";
+                left_w += sep.chars().count();
+                spans.push(Span::styled(sep, Style::default().fg(Color::DarkGray)));
+            }
+        }
+        left_w += status_line.chars().count();
+        spans.push(Span::styled(status_line, style));
+        f.render_widget(Paragraph::new(Line::from(spans)), chunks[3]);
         // Chat totals on the right of the same row, when there is room.
         let ChatStats {
             messages: msgs,
