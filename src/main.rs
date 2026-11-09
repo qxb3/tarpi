@@ -63,11 +63,11 @@ use crate::jv::*;
     after_help = concat!(
         "INSIDE A CHAT:\n",
         "  /chats          choose, create or delete chats (a window)\n",
-        "  /characters     choose another character (a window)\n",
+        "  /characters     choose another character (a window); short: /chars\n",
         "  /persona        choose who you are in the chat (a window)\n",
         "  /one-shot       lock this chat: no editing, undo, regen, swipes, branches\n",
         "  /api            API settings (address, model and sampler); back to the chat on quit\n",
-        "  /character      view and edit this character's card\n",
+        "  /character      view and edit this character's card; short: /char\n",
         "  /new            new chat with this character (keeps this one)\n",
         "  /newchat        delete this chat and start a new one (/nc)\n",
         "  /summarize      add an in-depth summary of the chat as a new summary branch\n",

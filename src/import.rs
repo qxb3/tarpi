@@ -30,11 +30,12 @@ use std::path::PathBuf;
         "  st-cli import '{\"name\":\"Sofia\", ...}'          JSON given directly\n",
         "  st-cli import https://chub.ai/characters/user/sofia-1a2b3c\n",
         "  st-cli import chub.ai/characters/user/sofia-1a2b3c\n",
-        "  st-cli import https://pygmalion.chat/character/<id>"
+        "  st-cli import https://pygmalion.chat/character/<id>\n",
+        "  st-cli import https://example.com/cards/sofia.png    direct link to a .png / .json card"
     )
 )]
 struct ImportCli {
-    /// A card file (.png / .json), a chub.ai or pygmalion.chat character URL, or JSON text
+    /// A card file (.png / .json), a chub.ai / pygmalion.chat character URL, a direct link to a .png / .json card, or JSON text
     source: String,
 }
 
@@ -51,6 +52,8 @@ enum Source {
 enum Site {
     Chub,
     Pygmalion,
+    /// Any other http(s) URL: taken to point straight at a card `.json` / `.png`.
+    Direct,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -128,6 +131,10 @@ pub async fn run() -> Result<()> {
                     let d = api.import_url(&u).await?;
                     (d.bytes, d.file_name, d.kind)
                 }
+                Site::Direct => {
+                    let (bytes, name) = download_direct(&u).await?;
+                    (bytes, name, String::new())
+                }
             };
             if content == "lorebook" {
                 bail!(
@@ -194,7 +201,7 @@ fn classify(arg: &str) -> Result<Source> {
         bail!("{} is a directory; give a card file", t);
     }
     bail!(
-        "'{}' is not an existing file, a chub.ai / pygmalion.chat URL or JSON text. \
+        "'{}' is not an existing file, a card URL or JSON text. \
          See `st-cli import --help`.",
         t
     )
@@ -228,11 +235,8 @@ fn check_url(url: &str) -> Result<Site> {
         return check_pygmalion_url(url);
     }
     if !is_chub_host(&host) {
-        bail!(
-            "unsupported site '{}'. Supported: chub.ai, pygmalion.chat. For other \
-             sites, download the card and import the file.",
-            host
-        );
+        // Not a card site: a direct link to a card file (checked once downloaded).
+        return Ok(Site::Direct);
     }
     let path = url
         .split_once("://")
@@ -260,6 +264,87 @@ fn check_url(url: &str) -> Result<Site> {
         );
     }
     Ok(Site::Chub)
+}
+
+/// Largest card file taken from a direct link.
+const MAX_DIRECT: usize = 50 * 1024 * 1024;
+
+/// Download a card `.json` / `.png` from a plain link. Returns the bytes and a
+/// file name taken from the URL path (`card.json` / `card.png` when it has none).
+async fn download_direct(url: &str) -> Result<(Vec<u8>, String)> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        // Some hosts refuse clients without a browser-like User-Agent.
+        .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+        .build()?;
+    let resp = client
+        .get(url)
+        .header("Accept", "application/json, image/png, */*")
+        .send()
+        .await
+        .with_context(|| format!("downloading {}", url))?;
+    let status = resp.status();
+    if !status.is_success() {
+        bail!("download failed ({}): {}", status, url);
+    }
+    let ctype = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if resp.content_length().is_some_and(|n| n as usize > MAX_DIRECT) {
+        bail!("{} is too large for a character card", url);
+    }
+    let bytes = resp.bytes().await.context("reading download")?.to_vec();
+    if bytes.len() > MAX_DIRECT {
+        bail!("{} is too large for a character card", url);
+    }
+    if !bytes.starts_with(&PNG_SIG) {
+        let t = bytes.iter().skip_while(|b| b.is_ascii_whitespace()).next();
+        if t != Some(&b'{') {
+            bail!(
+                "the link did not return a PNG or JSON card: got {} ({} bytes, {}). \
+                 Thumbnail / preview links are re-encoded images without the card data; \
+                 use the site's real download link for the card.",
+                if ctype.is_empty() { "an unknown type" } else { &ctype },
+                bytes.len(),
+                sniff(&bytes)
+            );
+        }
+    }
+    let last = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .rsplit('/')
+        .next()
+        .unwrap_or("");
+    let name = percent_decode(last);
+    let name = if name.contains('.') && !name.contains("://") {
+        name
+    } else {
+        String::new()
+    };
+    Ok((bytes, name))
+}
+
+/// A short description of what a downloaded blob looks like.
+fn sniff(b: &[u8]) -> &'static str {
+    if b.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "a JPEG image"
+    } else if b.len() > 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP" {
+        "a WebP image"
+    } else if b.starts_with(b"GIF8") {
+        "a GIF image"
+    } else {
+        let head = String::from_utf8_lossy(&b[..b.len().min(64)]).to_lowercase();
+        if head.contains("<!doctype") || head.contains("<html") {
+            "an HTML page"
+        } else {
+            "unrecognised data"
+        }
+    }
 }
 
 /// A pygmalion.chat character page: `https://pygmalion.chat/character/<id>`
@@ -415,6 +500,7 @@ mod tests {
             Source::Url(_)
         ));
         assert_eq!(check_url("https://chub.ai/characters/u/n").unwrap(), Site::Chub);
-        assert!(check_url("https://example.com/characters/u/n").is_err());
+        assert_eq!(check_url("https://example.com/c/sofia.png").unwrap(), Site::Direct);
+        assert_eq!(check_url("https://example.com/c/sofia.json?x=1").unwrap(), Site::Direct);
     }
 }

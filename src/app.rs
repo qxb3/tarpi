@@ -1239,11 +1239,11 @@ impl App {
                     self.input.clear();
                     self.open_chats_picker().await;
                 }
-                "character" => {
+                "character" | "char" => {
                     self.input.clear();
                     self.open_card_modal().await;
                 }
-                "characters" | "chars" | "char" | "switch" => {
+                "characters" | "chars" | "switch" => {
                     self.input.clear();
                     self.open_characters_picker().await;
                 }

@@ -24,9 +24,9 @@ Everything else happens inside the chat:
 | `/chats` | opens a window over the chat with this character's chats: pick one (↑/↓ + Enter, or click / tap), choose `+ new chat`, or press `d` on one to delete it (asks `y`). Esc closes. The `_before-summary` copies are not listed. The chat that is open can't be deleted here (use `/newchat`), except when it is the last one: then it is deleted and st-cli exits |
 | `/one-shot` | locks **this chat file** as it is: editing, `/undo`, regenerating, `/continue`, swipes (and greeting switching) and summary branches are turned off. The status row asks you to type `/one-shot` a second time; typing anything else cancels. A grey `ONE SHOT MODE` tag stays at the start of the status row below the input box for as long as the chat is open; other status messages follow it after a `·`. A reply that is being written can't be stopped either (no Esc, no Stop button, and `/quit`, `/chats` and `/characters` wait until it is done). Sending new messages still works, and other chats are not affected. It is stored in the chat file's metadata (`st_cli_one_shot`); there is no command to undo it |
 | `/persona` | opens a window to choose who you are in the chat; `+ new persona` creates one, `e` edits, `d` deletes (see Personas) |
-| `/characters` | opens a window with every character (★ = favourite) to switch to someone else |
+| `/characters` or `/chars` | opens a window with every character (★ = favourite) to switch to someone else |
 | `/api` | open the API settings (llama.cpp address and every model setting) right here; when you quit them (`q` / Esc) you are back in this same chat, and the very next reply uses what you saved |
-| `/character` | open this character's card in a window: every field, editable, with **Cancel** and **Save** (see below) |
+| `/character` or `/char` | open this character's card in a window: every field, editable, with **Cancel** and **Save** (see below) |
 | `/new` | new chat with this character right away (keeps the current one) |
 | `/newchat` or `/nc` | delete this chat and start a new one |
 | `/summarize` | write an in-depth summary of the chat as a new summary branch (see below) |
@@ -95,7 +95,7 @@ All fields except the name, the card file and the depth prompt (shown read-only)
 
 The focused field is edited with the same editor as the chat box, so the vim modes work there too (unless `vim.enabled: false`): `qq` typed quickly or Esc goes to NORMAL mode, `i a I A o O` back to INSERT, then all the motions and operators from the tables above, VISUAL mode, and the `:%s/find/new/` command line (find / replace only ever touches the field you are in, never the rest of the card; while you type it the matches are highlighted and, once you type the replacement, the field shows the result with the new text in green, with the field name and match count on the row above the buttons; the mode shows on the bottom edge). In NORMAL mode `j` / `k` on the last / first row of a field carry on to the next / previous field. With vim modes on, Esc in INSERT mode goes to NORMAL mode; Esc in NORMAL mode closes the window, and when there are unsaved changes it asks for a second Esc first.
 
-Only fields that changed are sent. The alternate greetings are saved as one list (a greeting you empty is dropped). If a save fails, the window stays open with the error in the status line. Chats already started keep their own messages; new chats use the saved card. Note that `/character` used to be an alias of `/characters`; `/characters`, `/chars`, `/char` and `/switch` still open the character menu.
+Only fields that changed are sent. The alternate greetings are saved as one list (a greeting you empty is dropped). If a save fails, the window stays open with the error in the status line. Chats already started keep their own messages; new chats use the saved card. `/char` is short for `/character`, and `/chars` for `/characters` (`/switch` also opens the character menu).
 
 ## Small screens
 
@@ -155,9 +155,10 @@ st-cli import sofia.json                                   # card JSON (V1, V2, 
 st-cli import '{"name": "Sofia", ...}'                     # JSON given directly
 st-cli import https://chub.ai/characters/<creator>/<name>  # chub.ai (also characterhub.org)
 st-cli import https://pygmalion.chat/character/<id>        # pygmalion.chat
+st-cli import https://example.com/cards/sofia.png         # direct link to a card .png or .json
 ```
 
-st-cli does not convert anything itself. The card is sent to SillyTavern's own import endpoint (`/api/characters/import`, what the web UI's import button uses), so the server reads V1/V2/V3/Pygmalion JSON and PNG cards and saves it the same way. URLs are downloaded by the server too (`/api/content/importURL`). Before sending, st-cli checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and gives a clear error if not. Supported sites: chub.ai (also characterhub.org) and pygmalion.chat (`/character/<id>` links; the server fetches the card by its id); lorebook links are refused.
+st-cli does not convert anything itself. The card is sent to SillyTavern's own import endpoint (`/api/characters/import`, what the web UI's import button uses), so the server reads V1/V2/V3/Pygmalion JSON and PNG cards and saves it the same way. URLs are downloaded by the server too (`/api/content/importURL`). Before sending, st-cli checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and gives a clear error if not. Any other http(s) link is treated as a direct link to a card file: st-cli downloads it itself (up to 50 MB; the file type is detected from its content, not the URL), runs the same check, and uploads it to SillyTavern. Supported card sites: chub.ai (also characterhub.org) and pygmalion.chat (`/character/<id>` links; the server fetches the card by its id); lorebook links are refused.
 
 The server comes from `url` in `config.yaml`, as for chatting.
 
