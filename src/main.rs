@@ -22,7 +22,7 @@ mod tokens;
 mod ui;
 
 use anyhow::{anyhow, bail, Context, Result};
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use crossterm::{
     event::{
         DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -54,30 +54,30 @@ use crate::jv::*;
     name = "st-cli",
     version,
     about = "Terminal chat client for a running SillyTavern server",
-    long_about = "Chat with a SillyTavern character from the terminal. Characters, API \
-                  connections, presets and personas are managed in the SillyTavern web UI; \
-                  st-cli only chats, using whatever is currently configured there.",
+    long_about = "Chat with a SillyTavern character from the terminal. Characters, chats and \
+                  personas live in SillyTavern; replies come from the API connection managed \
+                  with `st-cli api`.",
+    args_conflicts_with_subcommands = true,
+    disable_help_subcommand = true,
     after_help = concat!(
-        "EXAMPLES:\n",
-        "  st-cli              pick a character and start chatting\n",
-        "  st-cli sofia        continue the latest chat with Sofia\n",
-        "  st-cli sofia 3      open Sofia's chat number 3 (or its name: Sofia03)\n",
-        "  st-cli sofia -n     start a new chat with Sofia\n",
-        "  st-cli -l           list characters\n",
-        "  st-cli sofia -l     list Sofia's chats\n",
-        "  st-cli delete [X]   delete a character and all its chats (asks first)\n",
-        "  st-cli import X     import a card: file (.png/.json), chub.ai URL or JSON\n",
-        "  st-cli persona      pick which persona (who you are) to chat as\n",
-        "  st-cli api          manage the API connection (llama.cpp address, sliders for all settings)\n",
-        "\n",
         "INSIDE A CHAT:\n",
-        "  /chats       switch, create or delete chats\n",
-        "  /characters  switch to another character\n",
-        "  /character   view and edit this character's card\n",
-        "  /help        all keys and commands"
+        "  /chats          switch, create or delete chats\n",
+        "  /characters     switch to another character\n",
+        "  /character      view and edit this character's card\n",
+        "  /new            new chat with this character (keeps this one)\n",
+        "  /newchat        delete this chat and start a new one (/nc)\n",
+        "  /summarize      add an in-depth summary of the chat as a new summary branch\n",
+        "  /deletebranch   delete the branch that is showing (/db)\n",
+        "  /regen [nudge]  regenerate the last reply, optionally steered\n",
+        "  /continue       continue the last reply (/c)\n",
+        "  /undo           delete the last message (/u)\n",
+        "  /help           all keys and commands"
     )
 )]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
     /// Character name or card file name (a partial match works).
     /// Leave it out to pick from a list.
     character: Option<String>,
@@ -93,7 +93,33 @@ struct Cli {
     /// List characters, or the chats of the given character, and exit
     #[arg(short, long)]
     list: bool,
+}
 
+/// The commands that are not a chat. Each has its own options and `--help`,
+/// handled by the module that runs it; clap only passes everything after the
+/// command name on (`Rest`).
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Import a character card (PNG or JSON file, chub.ai URL, or JSON text)
+    #[command(disable_help_flag = true)]
+    Import(Rest),
+    /// Delete a character together with all of its chats (asks first)
+    #[command(disable_help_flag = true)]
+    Delete(Rest),
+    /// Pick the persona (who you are) used in chats
+    #[command(disable_help_flag = true)]
+    Persona(Rest),
+    /// Manage the API connection: server address and all model settings
+    #[command(disable_help_flag = true)]
+    Api(Rest),
+}
+
+/// Everything after a command's name, passed on unchanged (`--help` included).
+#[derive(Args, Debug)]
+#[allow(dead_code)]
+struct Rest {
+    #[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
+    args: Vec<String>,
 }
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
@@ -627,20 +653,16 @@ async fn run_tui(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // `st-cli import ...` has its own arguments; everything else is the chat CLI.
-    if std::env::args().nth(1).as_deref() == Some("import") {
-        return import::run().await;
-    }
-    if std::env::args().nth(1).as_deref() == Some("delete") {
-        return delete::run().await;
-    }
-    if std::env::args().nth(1).as_deref() == Some("persona") {
-        return persona::run().await;
-    }
-    if std::env::args().nth(1).as_deref() == Some("api") {
-        return apitui::run().await;
-    }
     let cli = Cli::parse();
+    // The commands have their own arguments and `--help`: each module reads
+    // them again from the command line. Everything else is the chat CLI.
+    match &cli.command {
+        Some(Commands::Import(_)) => return import::run().await,
+        Some(Commands::Delete(_)) => return delete::run().await,
+        Some(Commands::Persona(_)) => return persona::run().await,
+        Some(Commands::Api(_)) => return apitui::run().await,
+        None => {}
+    }
     let cfg = config::load()?;
 
     let url = cfg
