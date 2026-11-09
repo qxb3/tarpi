@@ -5,6 +5,7 @@ use crate::cardedit::CardModal;
 use crate::charimg::ImageModal;
 use crate::character::Character;
 use crate::chat::{self, ChatState};
+use crate::cmds;
 use crate::conn;
 use crate::gen::{self, GenEvent, GenMsg};
 use crate::input::{Input, Mode};
@@ -116,6 +117,19 @@ pub struct ChatStats {
     pub exact: bool,
 }
 
+/// The `/command` completion menu (see `App::completion`).
+#[derive(Default)]
+struct Comp {
+    /// What was typed before Tab / the arrows started filling commands in
+    /// (without the slash). `None`: nothing has been picked from the menu.
+    base: Option<String>,
+    /// Which entry of the menu for `base` is filled in.
+    sel: usize,
+    /// A command was just chosen with the mouse: the menu stays shut until
+    /// the next key.
+    done: bool,
+}
+
 pub struct App {
     api: Api,
     /// The user's full settings.json.
@@ -204,6 +218,13 @@ pub struct App {
     /// The input box (with its border) and the first text row it shows.
     pub input_area: Rect,
     pub input_first_row: usize,
+    comp: Comp,
+    /// Config `command_menu`: the `/command` menu above the input box.
+    pub command_menu: bool,
+    /// Where the completion menu was drawn (with its border) and the screen
+    /// row of each command in it, to hit-test clicks. Empty when it is shut.
+    pub comp_area: Rect,
+    pub comp_rows: Vec<(u16, &'static str)>,
     /// Manual scroll position of the input box (first text row shown), set
     /// by the mouse wheel over the box. `None`: the box follows the cursor.
     /// Cleared by any key press or paste.
@@ -436,6 +457,10 @@ impl App {
             send_btn: Rect::default(),
             card_btn: Rect::default(),
             input_area: Rect::default(),
+            comp: Comp::default(),
+            command_menu: true,
+            comp_area: Rect::default(),
+            comp_rows: Vec::new(),
             input_first_row: 0,
             input_scroll: None,
             press: None,
@@ -847,6 +872,13 @@ impl App {
                     return;
                 }
                 let pos = Position::new(m.column, m.row);
+                if self.comp_area.contains(pos) {
+                    // A click on a command of the menu fills it in.
+                    if let Some(&(_, name)) = self.comp_rows.iter().find(|(y, _)| *y == m.row) {
+                        self.accept_completion(name);
+                    }
+                    return;
+                }
                 if self.card_btn.contains(pos) {
                     self.commit_edit_to_card().await;
                 } else if self.send_btn.contains(pos) {
@@ -1072,6 +1104,12 @@ impl App {
             return;
         }
 
+        // The `/command` menu above the box: Tab / arrows fill commands in.
+        if self.completion_key(&k) {
+            return;
+        }
+        self.comp = Comp::default();
+
         // Ctrl+U / Ctrl+D in NORMAL / VISUAL mode: half a box up / down.
         if ctrl
             && !alt
@@ -1199,6 +1237,124 @@ impl App {
 
     // ------------------------------------------------------------- commands
 
+    // --------------------------------------------------- command completion
+
+    /// The completion menu, when it should show: the box is in INSERT mode
+    /// and holds one `/word` and nothing else. The entries are the commands
+    /// that word starts; then the highlighted entry (the top one until Tab /
+    /// the arrows move it) and whether it has been filled into the box yet.
+    pub fn completion(&self) -> Option<(Vec<&'static cmds::Cmd>, usize, bool)> {
+        if !self.command_menu
+            || self.editing.is_some()
+            || self.comp.done
+            || self.input.mode != Mode::Insert
+        {
+            return None;
+        }
+        // While cycling, the list stays that of the word typed at the start,
+        // even though the box now holds the full command name.
+        if let Some(base) = &self.comp.base {
+            let list = cmds::matches(base);
+            if let Some(c) = list.get(self.comp.sel) {
+                if cmds::typed_word(&self.input.text) == Some(c.name) {
+                    return Some((list, self.comp.sel, true));
+                }
+            }
+        }
+        let list = cmds::matches(cmds::typed_word(&self.input.text)?);
+        if list.is_empty() {
+            None
+        } else {
+            Some((list, 0, false))
+        }
+    }
+
+    /// The top command is highlighted from the start. Tab / Down move the
+    /// highlight to the next one and Shift+Tab / Up to the previous one
+    /// (wrapping), filling it into the box; the first press already leaves
+    /// the top one. Esc puts back what was typed.
+    /// Returns false when the key is not for the menu.
+    fn completion_key(&mut self, k: &KeyEvent) -> bool {
+        if k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+            return false;
+        }
+        let step: i32 = match k.code {
+            KeyCode::Tab | KeyCode::Down => 1,
+            KeyCode::BackTab | KeyCode::Up => -1,
+            KeyCode::Esc => {
+                let picked = self.completion().map_or(false, |(_, _, p)| p);
+                if picked {
+                    if let Some(base) = self.comp.base.take() {
+                        self.comp = Comp::default();
+                        self.set_input_text(format!("/{}", base));
+                        return true;
+                    }
+                }
+                return false;
+            }
+            _ => return false,
+        };
+        let Some((list, sel, picked)) = self.completion() else {
+            return false;
+        };
+        let n = list.len() as i32;
+        let (base, idx) = if picked {
+            (
+                self.comp.base.clone().unwrap_or_default(),
+                (sel as i32 + step).rem_euclid(n) as usize,
+            )
+        } else {
+            let typed = cmds::typed_word(&self.input.text).unwrap_or("").to_string();
+            // Nothing filled in yet: the top entry is only highlighted, so
+            // the first Tab (or arrow) already moves on from it.
+            (typed, step.rem_euclid(n) as usize)
+        };
+        let name = list[idx].name;
+        self.set_input_text(format!("/{}", name));
+        self.comp = Comp {
+            base: Some(base),
+            sel: idx,
+            done: false,
+        };
+        true
+    }
+
+    /// Enter on a half-typed command runs the highlighted one: `/su` runs
+    /// `/summarize`. A word that already is a command or short form (`/c`,
+    /// `/nc`) is left as typed.
+    fn apply_top_completion(&mut self) {
+        let Some((list, sel, _)) = self.completion() else {
+            return;
+        };
+        let word = cmds::typed_word(&self.input.text)
+            .unwrap_or("")
+            .to_lowercase();
+        let complete = cmds::COMMANDS
+            .iter()
+            .any(|c| c.name == word || (!c.alias.is_empty() && c.alias == word));
+        if !complete {
+            self.set_input_text(format!("/{}", list[sel].name));
+        }
+    }
+
+    /// A command was clicked in the menu: fill it in and close the menu.
+    fn accept_completion(&mut self, name: &str) {
+        self.set_input_text(format!("/{}", name));
+        self.comp = Comp {
+            base: None,
+            sel: 0,
+            done: true,
+        };
+    }
+
+    /// Replace the whole box with `text`, cursor at the end.
+    fn set_input_text(&mut self, text: String) {
+        self.input.clear();
+        self.input.insert_str(&text);
+        self.input.cursor = self.input.len_chars();
+        self.scroll = 0;
+    }
+
     async fn submit(&mut self) {
         self.submit_inner().await;
         if self.input.text.is_empty() && self.editing.is_none() {
@@ -1223,6 +1379,7 @@ impl App {
             );
             return;
         }
+        self.apply_top_completion();
         let text = self.input.text.trim().to_string();
 
         if text.is_empty() {
@@ -1322,7 +1479,7 @@ impl App {
                     self.input.clear();
                     self.delete_branch().await;
                 }
-                "summarize" | "summarise" | "summary" => {
+                "summarize" | "summarise" | "summary" | "summ" => {
                     self.input.clear();
                     self.summarize().await;
                 }

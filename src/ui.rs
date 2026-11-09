@@ -570,7 +570,7 @@ const HELP: &[&str] = &[
     "  h j k l w W b B e E 0 ^ $ gg G, x X r dd D cc C yy p P u",
     "  <leader>y{motion}, <leader>yy, <leader>Y, VISUAL <leader>y:",
     "  yank to the system clipboard (leader: config vim.leader)",
-    "  Ctrl+U / Ctrl+D: half a box up / down (in /character, on",
+    "  Ctrl+U / Ctrl+D: half a box up / down (in /char, on",
     "  into the previous / next field)",
     "  counts and d/c/y + motion work; Enter sends in NORMAL",
     "  v / V: VISUAL (chars / lines), move, then d y c p; o swaps",
@@ -586,21 +586,26 @@ const HELP: &[&str] = &[
     "/new             new chat with this character",
     "/newchat (/nc)   delete THIS chat and start a new one",
     "/summarize       write an in-depth summary of the shown branch as",
-    "                 a NEW summary branch (branch 1 is the whole",
+    "                 a NEW summary branch (also /summ; branch 1 is the whole",
     "                 conversation; nothing is replaced; a copy is also",
     "                 saved under another name)",
     "/deletebranch    delete the branch that is showing (also /db)",
     "/chats           window to open, create or delete (d) chats of this",
     "                 character",
-    "/characters      window to switch to another character (/chars)",
+    "/chars           window to switch to another character",
     "/persona         window to choose who you are in the chat",
     "/api             open the API settings; quitting them (q) brings",
     "                 you back to this chat",
-    "/character       view and edit this character's card (/char)",
+    "/char            view and edit this character's card",
     "/char-img        show the card's picture in a square window",
     "/one-shot        lock THIS chat: no editing, undo, regen, swipes or",
     "                 branches (type it twice to confirm; permanent)",
     "/help            this screen",
+    "",
+    "Typing / opens a menu of commands above the box, the top one",
+    "highlighted. Tab / Down go to the next one, Shift+Tab / Up to the",
+    "previous one (filling it in), Esc puts back what you typed, a",
+    "click picks one. Enter runs the highlighted one (/su -> /summarize).",
     "/quit            exit",
 ];
 
@@ -733,6 +738,85 @@ fn fit_cols(s: &str, w: usize) -> String {
         out.push('\u{2026}');
     }
     out
+}
+
+/// The `/command` menu: a small list that opens just above the input box
+/// while a command word is being typed. Tab / Shift+Tab / the arrows move the
+/// highlighted entry and fill it into the box, a click fills one in too.
+/// `top` is the first screen row it may cover (below the title bar).
+fn draw_completion(f: &mut Frame, app: &mut App, input_area: Rect, top: u16) {
+    app.comp_area = Rect::default();
+    app.comp_rows.clear();
+    let Some((list, sel, _)) = app.completion() else {
+        return;
+    };
+    let sel = Some(sel);
+    // A border row above and below plus at least one entry.
+    let avail = input_area.y.saturating_sub(top) as usize;
+    if avail < 3 || input_area.width < 8 {
+        return;
+    }
+    let shown = list.len().min(8).min(avail - 2);
+    // Keep the highlighted entry in view, at the bottom edge once it scrolls.
+    let first = match sel {
+        Some(i) if i >= shown => i + 1 - shown,
+        _ => 0,
+    };
+    let label = |c: &crate::cmds::Cmd| -> String {
+        if c.alias.is_empty() {
+            format!("/{}", c.name)
+        } else {
+            format!("/{} (/{})", c.name, c.alias)
+        }
+    };
+    let name_w = list.iter().map(|c| cols_of(&label(c))).max().unwrap_or(0);
+    let desc_w = list.iter().map(|c| cols_of(c.desc)).max().unwrap_or(0);
+    let want = 1 + name_w + 2 + desc_w + 1;
+    let w = (want as u16 + 2).min(input_area.width).max(4);
+    let iw = (w - 2) as usize;
+    let h = shown as u16 + 2;
+    let rect = Rect::new(input_area.x, input_area.y - h, w, h);
+
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    for (n, c) in list.iter().enumerate().skip(first).take(shown) {
+        let on = sel == Some(n);
+        let (name_style, desc_style) = if on {
+            let st = Style::default().fg(Color::Black).bg(Color::Cyan);
+            (st.add_modifier(Modifier::BOLD), st)
+        } else {
+            (
+                Style::default().fg(Color::Cyan),
+                Style::default().fg(Color::DarkGray),
+            )
+        };
+        let name_txt = fit_cols(&format!(" {}", label(c)), iw);
+        let left = cols_of(&name_txt);
+        // Pad the name column so the descriptions line up.
+        let pad = (1 + name_w + 2).saturating_sub(left);
+        let desc_room = iw.saturating_sub(left + pad);
+        let desc_txt = fit_cols(c.desc, desc_room);
+        let used = left + pad + cols_of(&desc_txt);
+        let mut spans = vec![
+            Span::styled(name_txt, name_style),
+            Span::styled(" ".repeat(pad.min(iw.saturating_sub(left))), desc_style),
+            Span::styled(desc_txt, desc_style),
+        ];
+        if on && used < iw {
+            // The highlight runs to the right edge.
+            spans.push(Span::styled(" ".repeat(iw - used), desc_style));
+        }
+        rows.push(Line::from(spans));
+        app.comp_rows.push((rect.y + 1 + (n - first) as u16, c.name));
+    }
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    if let (Some(i), true) = (sel, list.len() > shown) {
+        block = block.title_bottom(Line::from(format!(" {}/{} ", i + 1, list.len())));
+    }
+    f.render_widget(Clear, rect);
+    f.render_widget(Paragraph::new(rows).block(block), rect);
+    app.comp_area = rect;
 }
 
 /// The choose-one window of `/characters`, `/chats` and `/persona`: the
@@ -1368,6 +1452,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     app.input_area = input_area;
     app.input_first_row = first_row;
+    draw_completion(f, app, input_area, chunks[1].y);
 
     // ---- status line
     let (status, is_err) = app.status_line();

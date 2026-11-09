@@ -22,16 +22,30 @@ Everything else happens inside the chat:
 | Command | What it does |
 | --- | --- |
 | `/chats` | opens a window over the chat with this character's chats: pick one (↑/↓ + Enter, or click / tap), choose `+ new chat`, or press `d` on one to delete it (asks `y`). Esc closes. The `_before-summary` copies are not listed. The chat that is open can't be deleted here (use `/newchat`), except when it is the last one: then it is deleted and st-cli exits |
-| `/one-shot` | locks **this chat file** as it is: editing, `/undo`, regenerating, `/continue`, swipes (and greeting switching) and summary branches are turned off. The status row asks you to type `/one-shot` a second time; typing anything else cancels. A grey `ONE SHOT MODE` tag stays at the start of the status row below the input box for as long as the chat is open; other status messages follow it after a `·`. A reply that is being written can't be stopped either (no Esc, no Stop button, and `/quit`, `/chats` and `/characters` wait until it is done). Sending new messages still works, and other chats are not affected. It is stored in the chat file's metadata (`st_cli_one_shot`); there is no command to undo it |
+| `/one-shot` | locks **this chat file** as it is: editing, `/undo`, regenerating, `/continue`, swipes (and greeting switching) and summary branches are turned off. The status row asks you to type `/one-shot` a second time; typing anything else cancels. A grey `ONE SHOT MODE` tag stays at the start of the status row below the input box for as long as the chat is open; other status messages follow it after a `·`. A reply that is being written can't be stopped either (no Esc, no Stop button, and `/quit`, `/chats` and `/chars` wait until it is done). Sending new messages still works, and other chats are not affected. It is stored in the chat file's metadata (`st_cli_one_shot`); there is no command to undo it |
 | `/persona` | opens a window to choose who you are in the chat; `+ new persona` creates one, `e` edits, `d` deletes (see Personas) |
-| `/characters` or `/chars` | opens a window with every character (★ = favourite) to switch to someone else |
+| `/chars` | opens a window with every character (★ = favourite) to switch to someone else |
 | `/api` | open the API settings (llama.cpp address and every model setting) right here; when you quit them (`q` / Esc) you are back in this same chat, and the very next reply uses what you saved |
-| `/character` or `/char` | open this character's card in a window: every field, editable, with **Cancel** and **Save** (see below) |
+| `/char` | open this character's card in a window: every field, editable, with **Cancel** and **Save** (see below) |
 | `/char-img` | shows the character card's picture in a square window (full resolution in terminals with the Kitty graphics protocol, iTerm2 images or Sixel (kitty, WezTerm, Ghostty, iTerm2, foot, Windows Terminal, mlterm); elsewhere, including Termux and tmux, it is drawn with coloured half-block cells, which is coarse. `ST_CLI_IMAGE=blocks|kitty|iterm|sixel` forces one (`sixel` is never auto-detected beyond the terminals listed); any key or click closes it) |
 | `/new` | new chat with this character right away (keeps the current one) |
 | `/newchat` or `/nc` | delete this chat and start a new one |
-| `/summarize` | write an in-depth summary of the chat as a new summary branch (see below) |
+| `/summarize` or `/summ` | write an in-depth summary of the chat as a new summary branch (see below) |
 | `/deletebranch` or `/db` | delete the summary branch that is showing (see *Summarizing a long chat*) |
+
+### Command menu
+
+Typing `/` in the input box opens a menu of commands just above it, narrowing as you type (`/ch` lists `/chats`, `/char`, `/chars`, `/char-img`). The top entry is highlighted from the start. It shows while the box holds a single `/word` in INSERT mode (and not while a message is being edited); once there is a space after the command (`/regen softer`) it closes.
+
+| Key / click | Action |
+| --- | --- |
+| Tab or Down | move the highlight to the next command and fill it in (the top one is highlighted from the start, so the first press already goes to the second) |
+| Shift+Tab or Up | move the highlight to the previous command and fill it in; wraps around (from the top one to the last) |
+| Esc | put back what you had typed before Tab started filling commands in |
+| click / tap | fill in that command and close the menu |
+| Enter | run the highlighted command when what you typed is only the start of one (`/su` runs `/summarize`); a full name or short form (`/c`, `/nc`) runs as typed |
+
+The menu lists the short names `/char` and `/chars` and the short forms `/summ`, `/nc`, `/db`, `/c`, `/u`, `/q` and `/h` (shown in brackets). The longer spellings `/character`, `/characters` and `/summarise` still work when typed in full, but are not offered. While the menu is open Up / Down move through it instead of scrolling the chat.
 
 `<character>` is matched case-insensitively against the name or card file name; a unique partial match works. New chats are numbered per character (`Sofia01`, `Sofia02`, ...). A chat can be given as a number, an exact name, or a unique partial name.
 
@@ -78,7 +92,7 @@ While you edit the chat's first message, Ctrl+S (or the **Card save** button) wr
 
 ## Character window
 
-`/character` opens the whole card of the current character in a window, like `/help`: name, card file, description, personality, scenario, first message, example dialogue, system prompt, post-history instructions, every alternate greeting and the depth prompt. The text is the raw card text (`{{char}}` / `{{user}}` stay as they are).
+`/char` opens the whole card of the current character in a window, like `/help`: name, card file, description, personality, scenario, first message, example dialogue, system prompt, post-history instructions, every alternate greeting and the depth prompt. The text is the raw card text (`{{char}}` / `{{user}}` stay as they are).
 
 All fields except the name, the card file and the depth prompt (shown read-only) can be edited. The field with the cursor has a cyan title; the window scrolls to follow it. It opens with the cursor at the very top of the first editable field (Description).
 
@@ -96,7 +110,7 @@ All fields except the name, the card file and the depth prompt (shown read-only)
 
 The focused field is edited with the same editor as the chat box, so the vim modes work there too (unless `vim.enabled: false`): `qq` typed quickly or Esc goes to NORMAL mode, `i a I A o O` back to INSERT, then all the motions and operators from the tables above, VISUAL mode, and the `:%s/find/new/` command line (find / replace only ever touches the field you are in, never the rest of the card; while you type it the matches are highlighted and, once you type the replacement, the field shows the result with the new text in green, with the field name and match count on the row above the buttons; the mode shows on the bottom edge). In NORMAL mode `j` / `k` on the last / first row of a field carry on to the next / previous field. With vim modes on, Esc in INSERT mode goes to NORMAL mode; Esc in NORMAL mode closes the window, and when there are unsaved changes it asks for a second Esc first.
 
-Only fields that changed are sent. The alternate greetings are saved as one list (a greeting you empty is dropped). If a save fails, the window stays open with the error in the status line. Chats already started keep their own messages; new chats use the saved card. `/char` is short for `/character`, and `/chars` for `/characters` (`/switch` also opens the character menu).
+Only fields that changed are sent. The alternate greetings are saved as one list (a greeting you empty is dropped). If a save fails, the window stays open with the error in the status line. Chats already started keep their own messages; new chats use the saved card. `/char` is short for `/char`, and `/chars` for `/chars` (`/switch` also opens the character menu).
 
 ## Small screens
 
@@ -104,8 +118,8 @@ The layout adapts to the terminal size, down to about 10 columns by 6 rows (belo
 
 - Under 44 columns the buttons shrink to `Send` / `Stop` / `Save` / `Card`, and the top bar drops the API, then the persona, then the version number, to fit.
 - Under 16 rows the two stacked buttons while editing a greeting become two one-row buttons, and the input box never grows so tall that fewer than two message rows are left.
-- The help window and the `/character` window take the whole screen when it is small; help lines wrap.
-- The character menu printed before the chat fits one terminal row per entry; the `/characters`, `/chats` and persona windows take the full width on small screens and cut long lines with `…` (narrow terminals show `msgs`).
+- The help window and the `/char` window take the whole screen when it is small; help lines wrap.
+- The character menu printed before the chat fits one terminal row per entry; the `/chars`, `/chats` and persona windows take the full width on small screens and cut long lines with `…` (narrow terminals show `msgs`).
 
 ## Nudging a regeneration
 
@@ -159,7 +173,7 @@ st-cli import https://pygmalion.chat/character/<id>        # pygmalion.chat
 st-cli import https://example.com/cards/sofia.png         # direct link to a card .png or .json
 ```
 
-st-cli does not convert anything itself. The card is sent to SillyTavern's own import endpoint (`/api/characters/import`, what the web UI's import button uses), so the server reads V1/V2/V3/Pygmalion JSON and PNG cards and saves it the same way. URLs are downloaded by the server too (`/api/content/importURL`). Before sending, st-cli checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and gives a clear error if not. Any other http(s) link is treated as a direct link to a card file: st-cli downloads it itself (up to 50 MB; the file type is detected from its content, not the URL), runs the same check, and uploads it to SillyTavern. Supported card sites: chub.ai (also characterhub.org) and pygmalion.chat (`/character/<id>` links; the server fetches the card by its id); lorebook links are refused.
+st-cli does not convert anything itself. The card is sent to SillyTavern's own import endpoint (`/api/characters/import`, what the web UI's import button uses), so the server reads V1/V2/V3/Pygmalion JSON and PNG cards and saves it the same way. URLs are downloaded by the server too (`/api/content/importURL`). Before sending, st-cli checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and gives a clear error if not. Any other http(s) link is treated as a direct link to a card file: st-cli downloads it itself (up to 50 MB; the file type is detected from its content, not the URL), runs the same check, and uploads it to SillyTavern. Supported card sites: chub.ai (also characterhub.org) and pygmalion.chat (`/char/<id>` links; the server fetches the card by its id); lorebook links are refused.
 
 The server comes from `url` in `config.yaml`, as for chatting.
 
@@ -207,6 +221,9 @@ Settings live in `~/.config/st-cli/config.yaml`. The first run creates it with t
 # Auto-close quotes, *asterisks* and brackets while typing in the input box
 # autopair: true
 
+# The menu of /commands above the input box (see "Command menu")
+# command_menu: true
+
 mouse:
   # Phones (Termux): tapping the input box opens the on-screen keyboard
   open_keyboard_on_tap: true
@@ -223,7 +240,8 @@ vim:
   leader: space
 ```
 
-- `autopair: true` (default) closes `"`, `'`, `*` and `(` `[` `{` as you type them, in INSERT mode and in the `/character` window: `"` gives `"|"`, `'` gives `'|'`, `*` gives `*|*`, a second `*` inside an empty pair gives `**|**`. Typing the closing character steps over the one already there, and Backspace between an empty pair removes both. It stays out of the way next to words (`2*3`, `5"`, and apostrophes like `don't` or `Sofia's`), when the paragraph already has an unclosed one (so the second `"` closes), and when the next character is a letter. Apostrophes inside a word are not counted as quotes, so `'I don't know'` types out as written. An apostrophe at the start of a word (`'em`, `'til`) opens a pair like any quote: Backspace removes it while it is still empty. Pasted text is never changed. Set `autopair: false` to turn it off.
+- `command_menu: true` (default) opens the `/command` menu above the input box while you type a slash (see *Command menu*). `command_menu: false` turns it off: nothing opens, Tab / Up / Down / Esc keep their old meaning (Up / Down scroll the chat), and Enter runs exactly what you typed.
+- `autopair: true` (default) closes `"`, `'`, `*` and `(` `[` `{` as you type them, in INSERT mode and in the `/char` window: `"` gives `"|"`, `'` gives `'|'`, `*` gives `*|*`, a second `*` inside an empty pair gives `**|**`. Typing the closing character steps over the one already there, and Backspace between an empty pair removes both. It stays out of the way next to words (`2*3`, `5"`, and apostrophes like `don't` or `Sofia's`), when the paragraph already has an unclosed one (so the second `"` closes), and when the next character is a letter. Apostrophes inside a word are not counted as quotes, so `'I don't know'` types out as written. An apostrophe at the start of a word (`'em`, `'til`) opens a pair like any quote: Backspace removes it while it is still empty. Pasted text is never changed. Set `autopair: false` to turn it off.
 - `vim.enabled: false` removes the modes and the mode tag under the box; the box is plain text editing. Left/Right arrows move the cursor once the box has a draft (on an empty box they switch swipes), and Home/End and Alt+Left/Right (word jump) move the cursor, and Up/Down move through a multi-line draft (with a one-line draft they scroll the chat as before).
 - `vim.normal_mode_keys` can be any sequence of two or more characters, for example `jk`. It is typed quickly in INSERT mode (within about 0.6 s) and the keys are removed again.
 - `vim.leader` is the `<leader>` key (default `space`; one character that is not a letter or digit, such as `,` or `\`, or the word `space`). See `<leader>y` below.

@@ -16,6 +16,9 @@ pub struct FileConfig {
     /// Auto-close `"`, `'`, `*` and brackets while typing in the input box.
     /// Default true.
     pub autopair: Option<bool>,
+    /// The menu of `/commands` that opens above the input box while a command
+    /// is typed (Tab / arrows / Enter pick from it). Default true.
+    pub command_menu: Option<bool>,
     mouse: Option<MouseConfig>,
     vim: Option<VimConfig>,
 }
@@ -115,6 +118,12 @@ const TEMPLATE: &str = "\
 # over it, and Backspace between a pair removes both. Stays off next to words
 # (2*3, 5\", don't).
 # autopair: true
+
+# The menu of /commands that opens above the input box when you type a
+# slash: the top entry is highlighted, Tab / Down and Shift+Tab / Up move
+# through it, Enter runs the highlighted one. false: no menu, and Enter runs
+# exactly what you typed.
+# command_menu: true
 
 mouse:
   # Phones (Termux): tapping the input box opens the on-screen keyboard.
