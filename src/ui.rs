@@ -968,9 +968,10 @@ fn draw_image_modal(f: &mut Frame, area: Rect, m: &mut crate::charimg::ImageModa
 }
 
 fn draw_card_modal(f: &mut Frame, area: Rect, m: &mut CardModal) {
-    // Small screens: the window takes the whole screen.
+    // `area` is the space between the title bar and the input box, margin
+    // included: the window fills its height, and its width on small screens.
     let w = if area.width < 60 { area.width } else { (area.width - 4).min(100) };
-    let h = if area.height < 20 { area.height } else { area.height - 2 };
+    let h = area.height;
     let rect = centered(area, w, h);
     f.render_widget(Clear, rect);
 
@@ -1566,14 +1567,29 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
     }
 
+    // ---- windows (help, /char, /chars, /chats, /persona, /char-img)
+    // They sit between the title bar and the input box, so both stay visible,
+    // with a one-column margin on each side (and one row above and below when
+    // there is room). A window that would fill the whole width therefore
+    // leaves a margin instead of touching the screen edges. On a very small
+    // screen they get the whole screen, as before.
+    let modal_area = {
+        let c = chunks[1];
+        if c.height >= 6 && c.width >= 12 {
+            let vm = if c.height >= 8 { 1 } else { 0 };
+            Rect::new(c.x + 1, c.y + vm, c.width - 2, c.height - 2 * vm)
+        } else {
+            area
+        }
+    };
     // ---- help overlay
     if app.show_help {
         // Narrow screens: the window takes the full width and long lines wrap.
-        let w = 62u16.min(area.width);
+        let w = 62u16.min(modal_area.width);
         let iw = (w as usize).saturating_sub(2);
         let wrapped: Vec<String> = HELP.iter().flat_map(|l| wrap_help(l, iw)).collect();
-        let hh = (wrapped.len() as u16 + 2).min(area.height);
-        let rect = centered(area, w, hh);
+        let hh = (wrapped.len() as u16 + 2).min(modal_area.height);
+        let rect = centered(modal_area, w, hh);
         f.render_widget(Clear, rect);
         // Taller than the screen: the window scrolls.
         let rows = rect.height.saturating_sub(2) as usize;
@@ -1599,13 +1615,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             .scroll((app.help_scroll as u16, 0));
         f.render_widget(popup, rect);
     } else if let Some(m) = app.image_modal.as_mut() {
-        draw_image_modal(f, area, m);
+        draw_image_modal(f, modal_area, m);
     } else if app.card_modal.is_some() {
         if let Some(m) = app.card_modal.as_mut() {
-            draw_card_modal(f, area, m);
+            draw_card_modal(f, modal_area, m);
         }
     } else if let Some((_, p)) = app.picker.as_mut() {
-        draw_picker(f, area, p);
+        draw_picker(f, modal_area, p);
     } else if let Some(x) = cmd_cursor_x {
         f.set_cursor_position((x, chunks[3].y));
     } else if cur_row >= first_row && cur_row < first_row + visible_rows {

@@ -118,8 +118,8 @@ The layout adapts to the terminal size, down to about 10 columns by 6 rows (belo
 
 - Under 44 columns the buttons shrink to `Send` / `Stop` / `Save` / `Card`, and the top bar drops the API, then the persona, then the version number, to fit.
 - Under 16 rows the two stacked buttons while editing a greeting become two one-row buttons, and the input box never grows so tall that fewer than two message rows are left.
-- The help window and the `/char` window take the whole screen when it is small; help lines wrap.
-- The character menu printed before the chat fits one terminal row per entry; the `/chars`, `/chats` and persona windows take the full width on small screens and cut long lines with `…` (narrow terminals show `msgs`).
+- The help window, the `/char` window, the `/chars`, `/chats` and persona windows and `/char-img` are drawn between the top bar and the input box, with a margin of one column on each side (and one row above and below when there is room), so both stay visible. When the terminal is small they take that whole area; help lines wrap. Only on a terminal under 6 rows by 12 columns of such space do they take the whole screen.
+- The character menu printed before the chat fits one terminal row per entry; the `/chars`, `/chats` and persona windows take the full width (less the margin) on small screens and cut long lines with `…` (narrow terminals show `msgs`).
 
 ## Nudging a regeneration
 
