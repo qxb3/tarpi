@@ -58,6 +58,28 @@ impl Api {
             .header("x-csrf-token", self.csrf.as_str())
     }
 
+    /// The card picture (`GET /characters/<avatar>`: the card PNG itself).
+    pub async fn character_image(&self, avatar: &str) -> Result<Vec<u8>> {
+        let mut url = reqwest::Url::parse(&self.base).context("bad server address")?;
+        url.path_segments_mut()
+            .map_err(|_| anyhow!("bad server address"))?
+            .pop_if_empty()
+            .push("characters")
+            .push(avatar);
+        let resp = self
+            .http
+            .get(url)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .context("GET /characters/<avatar>")?;
+        let status = resp.status();
+        if !status.is_success() {
+            bail!("the server has no picture for this character ({})", status);
+        }
+        Ok(resp.bytes().await.context("reading the picture")?.to_vec())
+    }
+
     async fn post_json(&self, path: &str, body: &Value) -> Result<Value> {
         let resp = self
             .post(path)

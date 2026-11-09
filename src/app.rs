@@ -2,6 +2,7 @@
 
 use crate::api::Api;
 use crate::cardedit::CardModal;
+use crate::charimg::ImageModal;
 use crate::character::Character;
 use crate::chat::{self, ChatState};
 use crate::conn;
@@ -171,6 +172,8 @@ pub struct App {
     pub show_help: bool,
     /// The `/character` window (the whole card as an editable form), if open.
     pub card_modal: Option<CardModal>,
+    /// The `/char-img` window (the card picture), if open.
+    pub image_modal: Option<ImageModal>,
     /// First visible line of the help window (`ui::draw` keeps it in range).
     pub help_scroll: usize,
     /// Text rows the help window shows, for PgUp / PgDn (set by `ui::draw`).
@@ -412,6 +415,7 @@ impl App {
             open_api: false,
             show_help: false,
             card_modal: None,
+            image_modal: None,
             picker: None,
             persona_edit: None,
             one_shot_armed: false,
@@ -773,6 +777,12 @@ impl App {
     }
 
     async fn on_mouse(&mut self, m: MouseEvent) {
+        if self.image_modal.is_some() {
+            if matches!(m.kind, MouseEventKind::Down(_)) {
+                self.image_modal = None;
+            }
+            return;
+        }
         if self.card_modal.is_some() {
             self.on_card_mouse(m).await;
             return;
@@ -1001,6 +1011,11 @@ impl App {
     async fn on_key(&mut self, k: KeyEvent) {
         // Typing or moving the cursor brings the box back to the cursor.
         self.input_scroll = None;
+        if self.image_modal.is_some() {
+            // Any key closes the picture.
+            self.image_modal = None;
+            return;
+        }
         if self.card_modal.is_some() {
             self.on_card_key(k).await;
             return;
@@ -1242,6 +1257,10 @@ impl App {
                 "character" | "char" => {
                     self.input.clear();
                     self.open_card_modal().await;
+                }
+                "char-img" | "charimg" => {
+                    self.input.clear();
+                    self.open_image_modal().await;
                 }
                 "characters" | "chars" | "switch" => {
                     self.input.clear();
@@ -1933,6 +1952,23 @@ impl App {
     }
 
     // ------------------------------------------------------ /character window
+
+    /// `/char-img`: show the card's picture in a square window.
+    async fn open_image_modal(&mut self) {
+        let avatar = if self.character.avatar.trim().is_empty() {
+            self.chat.avatar.clone()
+        } else {
+            self.character.avatar.clone()
+        };
+        let res = match self.api.character_image(&avatar).await {
+            Ok(bytes) => ImageModal::new(&self.character.name, &bytes),
+            Err(e) => Err(e),
+        };
+        match res {
+            Ok(m) => self.image_modal = Some(m),
+            Err(e) => self.set_status(format!("{:#}", e), true),
+        }
+    }
 
     /// `/character`: open the card of this character as an editable form.
     async fn open_card_modal(&mut self) {

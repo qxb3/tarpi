@@ -3,6 +3,7 @@ mod apitui;
 mod app;
 mod cardedit;
 mod character;
+mod charimg;
 mod chat;
 mod clipboard;
 mod config;
@@ -68,6 +69,7 @@ use crate::jv::*;
         "  /one-shot       lock this chat: no editing, undo, regen, swipes, branches\n",
         "  /api            API settings (address, model and sampler); back to the chat on quit\n",
         "  /character      view and edit this character's card; short: /char\n",
+        "  /char-img       show the card's picture in a square window\n",
         "  /new            new chat with this character (keeps this one)\n",
         "  /newchat        delete this chat and start a new one (/nc)\n",
         "  /summarize      add an in-depth summary of the chat as a new summary branch\n",
@@ -543,12 +545,46 @@ async fn run_tui(
 ) -> Result<()> {
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(250));
+    let img_proto = charimg::detect();
+    let mut img_shown = false;
     loop {
+        // The picture window closed: take a terminal-drawn picture off the screen.
+        if img_shown && app.image_modal.is_none() {
+            if img_proto == charimg::Proto::Kitty {
+                let w = term.backend_mut();
+                w.write_all(charimg::KITTY_DELETE)?;
+                w.flush()?;
+            }
+            term.clear()?;
+            img_shown = false;
+        }
         term.draw(|f| ui::draw(f, app))?;
+        // Terminal graphics are sent after the frame, over the blank cells.
+        if let Some(m) = app.image_modal.as_mut() {
+            if let Some(r) = m.want.take() {
+                if m.placed != Some(r) {
+                    let mut bytes = Vec::new();
+                    if m.proto == charimg::Proto::Kitty {
+                        bytes.extend_from_slice(charimg::KITTY_DELETE);
+                    }
+                    bytes.extend(m.escape(r));
+                    let w = term.backend_mut();
+                    w.write_all(&bytes)?;
+                    w.flush()?;
+                    m.placed = Some(r);
+                    img_shown = true;
+                }
+            }
+        }
         tokio::select! {
             ev = events.next() => {
                 match ev {
-                    Some(Ok(Event::Resize(_, rows))) => app.on_resize(rows),
+                    Some(Ok(Event::Resize(_, rows))) => {
+                        if let Some(m) = app.image_modal.as_mut() {
+                            m.placed = None; // the screen was cleared: send it again
+                        }
+                        app.on_resize(rows)
+                    }
                     Some(Ok(e)) => app.on_event(e).await,
                     Some(Err(e)) => return Err(e.into()),
                     None => break,

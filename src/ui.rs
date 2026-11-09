@@ -597,6 +597,7 @@ const HELP: &[&str] = &[
     "/api             open the API settings; quitting them (q) brings",
     "                 you back to this chat",
     "/character       view and edit this character's card (/char)",
+    "/char-img        show the card's picture in a square window",
     "/one-shot        lock THIS chat: no editing, undo, regen, swipes or",
     "                 branches (type it twice to confirm; permanent)",
     "/help            this screen",
@@ -847,6 +848,41 @@ pub fn draw_picker(f: &mut Frame, area: Rect, p: &mut Picker) {
 
 /// The `/character` window: every field of the card as a scrollable form,
 /// the focused field editable, with Cancel and Save buttons at the bottom.
+/// The `/char-img` window: a square (as seen on screen) with the card picture.
+fn draw_image_modal(f: &mut Frame, area: Rect, m: &mut crate::charimg::ImageModal) {
+    // Inside the border: `side` columns by `side / 2` rows = `side` x `side` pixels.
+    let side = (area.width.saturating_sub(2) as u32)
+        .min(area.height.saturating_sub(2) as u32 * 2)
+        .max(2)
+        & !1;
+    let rect = centered(area, side as u16 + 2, (side / 2) as u16 + 2);
+    f.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", m.title))
+        .title_bottom(" any key closes ")
+        .border_style(Style::default().fg(Color::Cyan));
+    if m.is_graphics() {
+        // The terminal draws the picture itself (main loop, after this frame).
+        let inner = block.inner(rect);
+        f.render_widget(block, rect);
+        m.want = Some(m.fit(inner));
+        return;
+    }
+    let lines: Vec<Line<'static>> = m
+        .rows(side)
+        .into_iter()
+        .map(|r| {
+            Line::from(
+                r.into_iter()
+                    .map(|(t, b)| Span::styled("\u{2580}", Style::default().fg(t).bg(b)))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines).block(block), rect);
+}
+
 fn draw_card_modal(f: &mut Frame, area: Rect, m: &mut CardModal) {
     // Small screens: the window takes the whole screen.
     let w = if area.width < 60 { area.width } else { (area.width - 4).min(100) };
@@ -1477,6 +1513,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             .block(block)
             .scroll((app.help_scroll as u16, 0));
         f.render_widget(popup, rect);
+    } else if let Some(m) = app.image_modal.as_mut() {
+        draw_image_modal(f, area, m);
     } else if app.card_modal.is_some() {
         if let Some(m) = app.card_modal.as_mut() {
             draw_card_modal(f, area, m);
