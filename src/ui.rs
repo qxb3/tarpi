@@ -591,6 +591,8 @@ const HELP: &[&str] = &[
     "/deletebranch    delete the branch that is showing (also /db)",
     "/chats           open, create or delete chats of this character",
     "/characters      switch to another character",
+    "/api             open the API settings; quitting them (q) brings",
+    "                 you back to this chat",
     "/character       view and edit this character's card",
     "/help            this screen",
     "/quit            exit",

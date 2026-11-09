@@ -1,13 +1,12 @@
-//! `st-cli api`: a full-screen manager for the standalone API connections
-//! (see `conn`). Lists the saved connections, edits the server address and
-//! API key, and shows every model setting of the selected connection as a
-//! slider, switch or text field. Which settings exist comes from the
-//! connection kind (`conn::Provider::params`), so a new kind of connection
-//! needs no changes here.
+//! `/api`: a full-screen manager for the standalone API connections
+//! (see `conn`), opened from inside a chat. Lists the saved connections,
+//! edits the server address and API key, and shows every model setting of the
+//! selected connection as a slider, switch or text field. Which settings exist
+//! comes from the connection kind (`conn::Provider::params`), so a new kind of
+//! connection needs no changes here.
 
 use crate::conn::{self, Connection, Info, ParamDef, ParamKind, Store};
-use anyhow::{bail, Result};
-use clap::Parser;
+use anyhow::Result;
 use crossterm::event::{
     Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
@@ -21,25 +20,10 @@ use ratatui::{
     Frame,
 };
 use serde_json::Value;
-use std::io::{IsTerminal, Write};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 /// What a connection test came back with (`Err` = a message to show).
 type Probe = std::result::Result<Info, String>;
-
-#[derive(Parser, Debug)]
-#[command(
-    name = "st-cli api",
-    about = "Manage the API connection: server address and all model settings",
-    long_about = "Opens a full-screen manager for the API connections st-cli chats with. \
-                  Connections are stored in ~/.config/st-cli/api.yaml and are independent of \
-                  SillyTavern's own API settings."
-)]
-struct ApiCli {
-    /// List the saved connections and exit
-    #[arg(short, long)]
-    list: bool,
-}
 
 // ------------------------------------------------------------------- state
 
@@ -1057,7 +1041,7 @@ fn draw(f: &mut Frame, t: &mut Tui) {
 
     // ---- title
     let mut title = vec![Span::styled(
-        " st-cli api ",
+        " API settings ",
         Style::default().fg(Color::Black).bg(Color::White),
     )];
     if t.dirty {
@@ -1337,33 +1321,14 @@ fn draw(f: &mut Frame, t: &mut Tui) {
 
 // ------------------------------------------------------------------- entry
 
-fn print_list(store: &Store) {
-    if store.connections.is_empty() {
-        println!("(no connections yet: run `st-cli api` to add one)");
-        return;
-    }
-    for c in &store.connections {
-        let mark = if c.name == store.active { "\u{2605}" } else { " " };
-        let kind = c.provider().map(|p| p.label()).unwrap_or("unknown kind");
-        println!("{} {}  ({}, {})", mark, c.name, kind, c.url);
-    }
-}
-
-pub async fn run() -> Result<()> {
-    // argv is `st-cli api ...`; drop the program name so "api" plays the
-    // part of the binary name in clap's messages.
-    let cli = ApiCli::parse_from(std::env::args().skip(1));
+/// Open the manager in the chat's own terminal and run it until it is quit.
+/// The chat keeps the screen (no leaving and re-entering the alternate
+/// screen), and the event stream is lent so no keypress is lost between the
+/// two views. Whatever was saved is in `api.yaml` when this returns.
+pub async fn manage(term: &mut crate::Term, events: &mut EventStream) -> Result<()> {
     let mut store = Store::load()?;
 
-    if cli.list {
-        print_list(&store);
-        return Ok(());
-    }
-    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
-        bail!("`st-cli api` needs a terminal (use `st-cli api -l` to list the connections)");
-    }
-
-    // First run: start with one llama.cpp connection to fill in.
+    // First time: start with one llama.cpp connection to fill in.
     let mut fresh = false;
     if store.connections.is_empty() {
         if let Some(p) = conn::providers().first() {
@@ -1382,26 +1347,15 @@ pub async fn run() -> Result<()> {
     if fresh {
         tui.say("first connection created: set its address, then press s to save", false);
     }
-
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        crate::restore_terminal();
-        default_hook(info);
-    }));
-    let mut term = crate::setup_terminal(true)?;
-    let res = event_loop(&mut term, &mut tui, &mut rx).await;
-    crate::restore_terminal();
-    let _ = term.show_cursor();
-    let _ = std::io::stdout().flush();
-    res
+    event_loop(term, &mut tui, &mut rx, events).await
 }
 
 async fn event_loop(
     term: &mut crate::Term,
     t: &mut Tui,
     rx: &mut UnboundedReceiver<(String, Probe)>,
+    events: &mut EventStream,
 ) -> Result<()> {
-    let mut events = EventStream::new();
     t.test();
     loop {
         term.draw(|f| draw(f, t))?;

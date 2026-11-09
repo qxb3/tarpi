@@ -28,7 +28,7 @@ use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle};
 
 /// Shown when a reply is asked for without an API connection.
 const NO_CONNECTION: &str =
-    "no API connection: run `st-cli api`, add one and press `a` to use it";
+    "no API connection: type /api, add one and press `a` to use it";
 
 /// A reply that is currently streaming in.
 pub struct Pending {
@@ -136,6 +136,9 @@ pub struct App {
     mouse_back_at: Option<Instant>,
     /// Set together with `should_quit` by `/chats` and `/characters`.
     pub exit_to: Option<Exit>,
+    /// Set by `/api`: the main loop opens the API manager in this terminal and
+    /// then continues with this same screen.
+    pub open_api: bool,
     pub show_help: bool,
     /// The `/character` window (the whole card as an editable form), if open.
     pub card_modal: Option<CardModal>,
@@ -194,7 +197,7 @@ pub struct App {
     label: String,
     /// `host:port` from the config file's `url`.
     pub server: String,
-    /// The standalone API connection (`st-cli api`) replies are generated
+    /// The standalone API connection (`/api`) replies are generated
     /// with. `None`: the API SillyTavern has selected is used, as before.
     conn: Option<conn::Connection>,
 }
@@ -377,6 +380,7 @@ impl App {
             kbd_up: false,
             mouse_back_at: None,
             exit_to: None,
+            open_api: false,
             show_help: false,
             card_modal: None,
             help_scroll: 0,
@@ -1186,6 +1190,10 @@ impl App {
                 "characters" | "chars" | "char" | "switch" => {
                     self.input.clear();
                     self.leave(Exit::Characters).await;
+                }
+                "api" | "connection" | "conn" => {
+                    self.input.clear();
+                    self.open_api = true;
                 }
                 "regen" | "regenerate" | "reroll" => {
                     // Anything after the command is a nudge for this reply.
@@ -2073,6 +2081,30 @@ impl App {
 
     // ----------------------------------------------------------- generation
 
+    /// At start-up: say how to get going when there is no API connection yet.
+    pub fn hint_if_no_connection(&mut self) {
+        if self.conn.is_none() {
+            self.set_status(NO_CONNECTION, false);
+        }
+    }
+
+    /// The API manager (`/api`) was closed: use whatever it saved right away
+    /// (title bar, token counts), not only from the next reply on.
+    pub fn api_closed(&mut self, res: anyhow::Result<()>, rows: u16) {
+        self.on_resize(rows);
+        self.reload_connection();
+        match res {
+            Err(e) => self.set_status(format!("API settings: {:#}", e), true),
+            Ok(()) => match &self.conn {
+                Some(c) => {
+                    let msg = format!("back in the chat, using API connection '{}'", c.name);
+                    self.set_status(msg, false);
+                }
+                None => self.set_status(NO_CONNECTION, true),
+            },
+        }
+    }
+
     /// Use `c` from now on (with `None` there is no way to generate).
     /// The title bar then shows the connection's backend and address.
     pub fn set_connection(&mut self, c: Option<conn::Connection>) {
@@ -2098,7 +2130,7 @@ impl App {
         }
     }
 
-    /// Re-read `api.yaml` so changes made in `st-cli api` (even in another
+    /// Re-read `api.yaml` so changes made in `/api` (even in another
     /// terminal) apply to the next reply. An unreadable file keeps the
     /// connection as it was.
     fn reload_connection(&mut self) {
@@ -2248,7 +2280,7 @@ impl App {
         } else {
             None
         };
-        // Replies come only from the standalone connection (`st-cli api`).
+        // Replies come only from the standalone connection (`/api`).
         let Some(c) = self.conn.clone() else {
             self.set_status(NO_CONNECTION, true);
             return;

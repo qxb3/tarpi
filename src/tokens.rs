@@ -25,7 +25,7 @@ pub struct Backend {
     pub server: String,
     /// Model name, needed by SillyTavern's tokenizer for vLLM / Aphrodite.
     pub model: String,
-    /// A standalone connection (`st-cli api`): its own tokenizer is asked
+    /// A standalone connection (`/api`): its own tokenizer is asked
     /// directly, SillyTavern is not involved.
     pub conn: Option<crate::conn::Connection>,
 }

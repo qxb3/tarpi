@@ -56,13 +56,14 @@ use crate::jv::*;
     about = "Terminal chat client for a running SillyTavern server",
     long_about = "Chat with a SillyTavern character from the terminal. Characters, chats and \
                   personas live in SillyTavern; replies come from the API connection managed \
-                  with `st-cli api`.",
+                  with `/api` inside a chat.",
     args_conflicts_with_subcommands = true,
     disable_help_subcommand = true,
     after_help = concat!(
         "INSIDE A CHAT:\n",
         "  /chats          switch, create or delete chats\n",
         "  /characters     switch to another character\n",
+        "  /api            API settings (address, model and sampler); back to the chat on quit\n",
         "  /character      view and edit this character's card\n",
         "  /new            new chat with this character (keeps this one)\n",
         "  /newchat        delete this chat and start a new one (/nc)\n",
@@ -109,9 +110,6 @@ enum Commands {
     /// Pick the persona (who you are) used in chats
     #[command(disable_help_flag = true)]
     Persona(Rest),
-    /// Manage the API connection: server address and all model settings
-    #[command(disable_help_flag = true)]
-    Api(Rest),
 }
 
 /// Everything after a command's name, passed on unchanged (`--help` included).
@@ -619,6 +617,25 @@ fn restore_terminal() {
     );
 }
 
+/// `/api`: show the API manager in this same terminal, then carry on with the
+/// chat exactly where it was (draft, scroll and swipes are untouched).
+async fn open_api_manager(term: &mut Term, events: &mut EventStream, app: &mut App) {
+    // The manager is clicked and dragged, so mouse reporting must be on even
+    // when a phone's keyboard had switched it off for the chat.
+    let mouse_was_on = app.mouse;
+    if !mouse_was_on {
+        let _ = execute!(io::stdout(), EnableMouseCapture);
+    }
+    let res = apitui::manage(term, events).await;
+    if !mouse_was_on {
+        let _ = execute!(io::stdout(), DisableMouseCapture);
+    }
+    // Redraw every cell: the manager left its own picture on the screen.
+    let _ = term.clear();
+    let rows = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(0);
+    app.api_closed(res, rows);
+}
+
 async fn run_tui(
     term: &mut Term,
     app: &mut App,
@@ -644,6 +661,12 @@ async fn run_tui(
             }
             _ = tick.tick() => app.on_tick(),
         }
+        if app.open_api {
+            app.open_api = false;
+            open_api_manager(term, &mut events, app).await;
+            // Do not fire the ticks that piled up while the manager was open.
+            tick.reset();
+        }
         if app.should_quit {
             break;
         }
@@ -660,7 +683,6 @@ async fn main() -> Result<()> {
         Some(Commands::Import(_)) => return import::run().await,
         Some(Commands::Delete(_)) => return delete::run().await,
         Some(Commands::Persona(_)) => return persona::run().await,
-        Some(Commands::Api(_)) => return apitui::run().await,
         None => {}
     }
     let cfg = config::load()?;
@@ -801,8 +823,9 @@ async fn main() -> Result<()> {
         }
 
         app.server = app::host_of(&url);
-        // The standalone API connection (`st-cli api`), if one is set up.
+        // The standalone API connection (`/api`), if one is set up.
         app.set_connection(conn::Store::load()?.active_connection());
+        app.hint_if_no_connection();
         app.touch = touch;
         app.vim = cfg.vim().enabled;
         app.input.configure(cfg.vim().enabled, cfg.vim().keys());

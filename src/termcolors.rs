@@ -232,6 +232,11 @@ static PALETTE: OnceLock<Palette> = OnceLock::new();
 /// event loop starts reading input. Safe to skip: `palette()` then uses the
 /// guess.
 pub fn detect() {
+    // Already known (the screen is set up again for every menu round): do not
+    // ask the terminal a second time.
+    if PALETTE.get().is_some() {
+        return;
+    }
     let p = match ask_terminal() {
         Some(reply) => from_reply(&reply),
         None => guess(colorfgbg_is_light()),

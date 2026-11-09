@@ -14,7 +14,6 @@ st-cli sofia -l         # list Sofia's chats
 st-cli import <source>  # import a character card (see below)
 st-cli delete [sofia]   # delete a character and all its chats (asks first)
 st-cli persona          # pick which persona (who you are) to chat as
-st-cli api              # manage the API connection (llama.cpp address and every model setting)
 ```
 
 That is the whole command line: `[character] [chat]`, plus `-n` (new chat) and `-l` (list). The server address is set with `url` in `~/.config/st-cli/config.yaml`.
@@ -25,6 +24,7 @@ Everything else happens inside the chat:
 | --- | --- |
 | `/chats` | back to this character's chat menu: open one (`2`), start a new one (`n`), or delete one (`d2`) |
 | `/characters` | back to the character menu to switch to someone else |
+| `/api` | open the API settings (llama.cpp address and every model setting) right here; when you quit them (`q` / Esc) you are back in this same chat, and the very next reply uses what you saved |
 | `/character` | open this character's card in a window: every field, editable, with **Cancel** and **Save** (see below) |
 | `/new` | new chat with this character right away (keeps the current one) |
 | `/newchat` or `/nc` | delete this chat and start a new one |
@@ -33,16 +33,13 @@ Everything else happens inside the chat:
 
 `<character>` is matched case-insensitively against the name or card file name; a unique partial match works. New chats are numbered per character (`Sofia01`, `Sofia02`, ...). A chat can be given as a number, an exact name, or a unique partial name.
 
-## API connection (`st-cli api`)
+## API connection (`/api`)
 
-The API connection belongs to st-cli, not to SillyTavern. `st-cli api` opens a full-screen manager; connections are stored in `~/.config/st-cli/api.yaml`. Replies go **straight to the backend** (llama.cpp's `/completion`), SillyTavern's API selection and sampler presets are ignored, and the token count in the status row comes from the backend's own `/tokenize`. SillyTavern is still used for characters, chats, personas and the context / instruct templates. There is no fallback to SillyTavern's API: if `api.yaml` has no active connection, sending a message shows `no API connection` and nothing is generated.
+The API connection belongs to st-cli, not to SillyTavern. `/api` inside a chat opens a full-screen manager; connections are stored in `~/.config/st-cli/api.yaml`. Replies go **straight to the backend** (llama.cpp's `/completion`), SillyTavern's API selection and sampler presets are ignored, and the token count in the status row comes from the backend's own `/tokenize`. SillyTavern is still used for characters, chats, personas and the context / instruct templates. There is no fallback to SillyTavern's API: if `api.yaml` has no active connection, sending a message shows `no API connection` and nothing is generated.
 
-```
-st-cli api              # open the manager
-st-cli api -l           # list the saved connections
-```
+There is no separate command for it: type `/api` in any chat. The manager takes over the same terminal window and the chat is not closed, so when you quit it (`q` / Esc) you are back exactly where you were: same chat, same scroll position, unsent draft and swipes untouched. Whatever you saved applies at once (title bar and token count update) and to the next reply. If there is no connection yet, the chat starts with a hint to type `/api`, and the first time you open it a connection named `local` is created for you to fill in. On a phone, mouse reporting is switched on while the manager is open (so sliders can be tapped) and goes back to what the chat had when you leave it.
 
-The first run creates a connection named `local` (llama.cpp at `http://127.0.0.1:8080`). Left: the connections (★ = the one chats use). Right: the server address, an optional API key (only for servers started with `--api-key`) and every setting of the selected connection, grouped as Generation, Sampling, Repetition, DRY, XTC, Mirostat, Dynamic temperature and Advanced. Numbers are sliders; settings that differ from their default are yellow.
+The first time it opens it creates a connection named `local` (llama.cpp at `http://127.0.0.1:8080`). Left: the connections (★ = the one chats use). Right: the server address, an optional API key (only for servers started with `--api-key`) and every setting of the selected connection, grouped as Generation, Sampling, Repetition, DRY, XTC, Mirostat, Dynamic temperature and Advanced. Numbers are sliders; settings that differ from their default are yellow.
 
 | Key / click | Action |
 | --- | --- |
@@ -63,7 +60,7 @@ The first run creates a connection named `local` (llama.cpp at `http://127.0.0.1
 
 A preset sets every sampler setting (Sampling, Repetition, DRY, XTC, Mirostat, Dynamic temperature) in one go, so anything it does not name goes back to its default; Generation and Advanced settings (reply length, context size, stop strings, sampler order, grammar) and the address are left alone. Applying one only changes the settings in the window: press `s` to save. You can fine-tune afterwards with the sliders. **Normal** is balanced (temperature 0.8, min-p 0.05), **Creative** raises temperature to 1.15 and turns DRY on, and **Crazy** goes to temperature 1.8 with XTC, DRY and dynamic temperature. A new kind of connection supplies its own through `Provider::presets`.
 
-Chats re-read `api.yaml` before every reply, so saving in `st-cli api` (even in another terminal) applies to the next message. *Context size* is how much history st-cli sends; keep it at or below the server's `-c`. `stop strings`, `DRY breakers` and `Sampler order` are text fields (the first two a JSON list); a value that is not valid is refused when you press Enter.
+Chats re-read `api.yaml` before every reply, so saving in `/api` (even from another terminal's chat) applies to the next message. *Context size* is how much history st-cli sends; keep it at or below the server's `-c`. `stop strings`, `DRY breakers` and `Sampler order` are text fields (the first two a JSON list); a value that is not valid is refused when you press Enter.
 
 Only llama.cpp is built in, but a connection kind is one small file: implement `conn::Provider` (its settings list, request body and stream parser; see `src/conn/llamacpp.rs`) and add it to `conn::providers()`. The manager, the file format, token counting and generation pick it up without further changes.
 
@@ -143,7 +140,7 @@ Switching branches (empty input box, not while editing): **Ctrl+Left** (previous
 
 Details:
 
-- The summary is written with the active API connection (`st-cli api`), with its own settings: the reply length is raised as needed and sampling is made calm (low temperature, no DRY / XTC / penalties / dynamic temperature, no extra stop strings). Your saved connection is not changed. The character card, system prompt and persona are not part of that request.
+- The summary is written with the active API connection (`/api`), with its own settings: the reply length is raised as needed and sampling is made calm (low temperature, no DRY / XTC / penalties / dynamic temperature, no extra stop strings). Your saved connection is not changed. The character card, system prompt and persona are not part of that request.
 - A chat that does not fit into the context together with its summary is read in parts: each request gets the summary so far plus the next part of the chat. If the *Context size* is too small even for that, `/summarize` says so and does nothing.
 - Before anything is changed, the full chat is also saved as `<chat>_before-summary` (then `...2`, `...3`). It is a normal chat file: open it from the chat menu, delete it with `d` when you no longer need it. If that copy cannot be saved, the chat is left alone.
 - The branches are stored in the chat file, inside the first message (`st_cli_branch`), so the file stays a normal `.jsonl`. The web UI shows the branch that was showing when you left.
@@ -311,7 +308,7 @@ The pattern is matched as plain text (no regular expressions yet), so `.` and `*
 
 ## How it works
 
-SillyTavern only supplies characters, chats, personas and the context / instruct templates; the prompt is built client side and the reply comes straight from your API connection (`st-cli api`). Before every reply st-cli re-reads both SillyTavern's settings and `api.yaml`, so a change to a template, persona or sampler value applies to the next message.
+SillyTavern only supplies characters, chats, personas and the context / instruct templates; the prompt is built client side and the reply comes straight from your API connection (`/api`). Before every reply st-cli re-reads both SillyTavern's settings and `api.yaml`, so a change to a template, persona or sampler value applies to the next message.
 
 1. `GET /csrf-token` (+ optional login), then `POST /api/settings/get`.
 2. Character card from `/api/characters/get`; chats via `/api/chats/get` and `/api/chats/save`.
@@ -320,7 +317,7 @@ SillyTavern only supplies characters, chats, personas and the context / instruct
 
 ## Limitations
 
-- Only llama.cpp is supported, through a standalone connection (`st-cli api`). SillyTavern's own API selection is never used for replies or token counts.
+- Only llama.cpp is supported, through a standalone connection (`/api`). SillyTavern's own API selection is never used for replies or token counts.
 - No World Info/lorebooks, Author's Note, summaries, vector memory, group chats, or tool calling. The prompt is therefore close to, but not byte-identical to, the web UI's when you use those.
 - Token counting for trimming history to the context window is an estimate (`chars_per_token`), not a real tokenizer. The totals in the status row are exact once the connection's tokenizer has answered (see Keys).
 - Unfinished prose is closed for you while a reply streams: an open `*narration`, `**bold` or `"speech` is shown with its closing marker added, and the model's own closer simply takes its place. Nothing is added for a lone trailing `*`, `2 * 3`, bullets, a `*` inside a word, or past a blank line. When a reply ends with markers still open they are closed in the saved text too (Ctrl+K takes them off again before continuing).

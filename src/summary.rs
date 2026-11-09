@@ -127,7 +127,7 @@ pub fn plan(blocks: &[String], ctx: usize, cpt: f32) -> Result<Plan, String> {
     let room = usable.saturating_sub(OVERHEAD + target + cap);
     if room < MIN_PART {
         return Err(format!(
-            "the context size ({} tokens) is too small to summarize this chat; raise it in `st-cli api`",
+            "the context size ({} tokens) is too small to summarize this chat; raise it in `/api`",
             ctx
         ));
     }
