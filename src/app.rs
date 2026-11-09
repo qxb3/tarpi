@@ -1202,8 +1202,22 @@ impl App {
                     self.continue_message().await;
                 }
                 "undo" | "u" | "delete" | "del" => {
-                    self.input.clear();
-                    self.undo().await;
+                    // An optional count: `/undo 3` deletes the last three messages.
+                    let arg = cmd.trim_start_matches(|c: char| !c.is_whitespace()).trim();
+                    let count = if arg.is_empty() {
+                        Some(1)
+                    } else {
+                        arg.parse::<usize>().ok().filter(|n| *n >= 1)
+                    };
+                    match count {
+                        Some(n) => {
+                            self.input.clear();
+                            self.undo(n).await;
+                        }
+                        None => {
+                            self.set_status("usage: /undo [number of messages], e.g. /undo 3", true);
+                        }
+                    }
                 }
                 "new" => {
                     self.input.clear();
@@ -1853,7 +1867,9 @@ impl App {
         self.should_quit = true;
     }
 
-    async fn undo(&mut self) {
+    /// `/undo [n]`: delete the last `n` messages (default 1). A branched chat
+    /// always keeps its first message; otherwise `n` is capped at what exists.
+    async fn undo(&mut self, count: usize) {
         if self.editing.is_some() {
             return;
         }
@@ -1861,19 +1877,36 @@ impl App {
             self.set_status("stop the generation first (Esc)", false);
             return;
         }
-        if self.chat.messages.len() == 1 && chat::branch_pos(&self.chat.messages[0]).is_some() {
-            self.set_status(
-                "this is the first message of a branched chat \u{2014} it can't be undone (switch branch instead)",
-                false,
-            );
+        let branched =
+            !self.chat.messages.is_empty() && chat::branch_pos(&self.chat.messages[0]).is_some();
+        let available = self.chat.messages.len().saturating_sub(usize::from(branched));
+        if available == 0 {
+            if branched {
+                self.set_status(
+                    "this is the first message of a branched chat \u{2014} it can't be undone (switch branch instead)",
+                    false,
+                );
+            }
             return;
         }
-        if self.chat.messages.pop().is_some() {
-            self.auto_closed = None;
-            self.scroll = 0;
-            self.save().await;
-            self.set_status("deleted the last message", false);
-        }
+        let n = count.min(available);
+        let keep = self.chat.messages.len() - n;
+        self.chat.messages.truncate(keep);
+        self.auto_closed = None;
+        self.scroll = 0;
+        self.save().await;
+        let msg = if n == 1 {
+            if count > 1 {
+                "deleted the last message (that was all there was to undo)".to_string()
+            } else {
+                "deleted the last message".to_string()
+            }
+        } else if n < count {
+            format!("deleted the last {} messages (that was all there was to undo)", n)
+        } else {
+            format!("deleted the last {} messages", n)
+        };
+        self.set_status(msg, false);
     }
 
     async fn new_chat(&mut self) {

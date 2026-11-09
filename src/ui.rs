@@ -581,7 +581,7 @@ const HELP: &[&str] = &[
     "/continue (/c)   continue the last reply",
     "/regen [nudge]   regenerate the last reply (replaces its swipes);",
     "                 the optional nudge steers just this reply",
-    "/undo (/u)       delete the last message",
+    "/undo [n] (/u)   delete the last message, or the last n",
     "/new             new chat with this character",
     "/newchat (/nc)   delete THIS chat and start a new one",
     "/summarize       write an in-depth summary of the shown branch as",

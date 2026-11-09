@@ -147,7 +147,7 @@ Details:
 - A chat that does not fit into the context together with its summary is read in parts: each request gets the summary so far plus the next part of the chat. If the *Context size* is too small even for that, `/summarize` says so and does nothing.
 - Before anything is changed, the full chat is also saved as `<chat>_before-summary` (then `...2`, `...3`). It is a normal chat file: open it from the chat menu, delete it with `d` when you no longer need it. If that copy cannot be saved, the chat is left alone.
 - The branches are stored in the chat file, inside the first message (`st_cli_branch`), so the file stays a normal `.jsonl`. The web UI shows the branch that was showing when you left.
-- `Ctrl+S` / **Card save** is not offered on the summary: it is never written into the character card. Branched chats no longer get the card's alternate greetings added as swipes. `/undo` will not delete the first message of a branched chat.
+- `Ctrl+S` / **Card save** is not offered on the summary: it is never written into the character card. Branched chats no longer get the card's alternate greetings added as swipes. `/undo` (with or without a number) will not delete the first message of a branched chat.
 - It needs at least three messages. Summaries are written by the model, so read the result; branch 1 and the saved copy have everything.
 - Chats summarized by an older version (summary as a second swipe of the first message) are left as they are and behave like a normal chat; run `/summarize` again to get branches. Chats with the earlier two-branch format load as they are.
 
@@ -228,7 +228,7 @@ vim:
   leader: space
 ```
 
-- `autopair: true` (default) closes `"`, `*` and `(` `[` `{` as you type them, in INSERT mode and in the `/character` window: `"` gives `"|"`, `*` gives `*|*`, a second `*` inside an empty pair gives `**|**`. Typing the closing character steps over the one already there, and Backspace between an empty pair removes both. It stays out of the way next to words (`2*3`, `5"`), when the paragraph already has an unclosed one (so the second `"` closes), and when the next character is a letter. Pasted text is never changed. Set `autopair: false` to turn it off.
+- `autopair: true` (default) closes `"`, `'`, `*` and `(` `[` `{` as you type them, in INSERT mode and in the `/character` window: `"` gives `"|"`, `'` gives `'|'`, `*` gives `*|*`, a second `*` inside an empty pair gives `**|**`. Typing the closing character steps over the one already there, and Backspace between an empty pair removes both. It stays out of the way next to words (`2*3`, `5"`, and apostrophes like `don't` or `Sofia's`), when the paragraph already has an unclosed one (so the second `"` closes), and when the next character is a letter. Apostrophes inside a word are not counted as quotes, so `'I don't know'` types out as written. An apostrophe at the start of a word (`'em`, `'til`) opens a pair like any quote: Backspace removes it while it is still empty. Pasted text is never changed. Set `autopair: false` to turn it off.
 - `vim.enabled: false` removes the modes and the mode tag under the box; the box is plain text editing. Left/Right arrows move the cursor once the box has a draft (on an empty box they switch swipes), and Home/End and Alt+Left/Right (word jump) move the cursor, and Up/Down move through a multi-line draft (with a one-line draft they scroll the chat as before).
 - `vim.normal_mode_keys` can be any sequence of two or more characters, for example `jk`. It is typed quickly in INSERT mode (within about 0.6 s) and the keys are removed again.
 - `vim.leader` is the `<leader>` key (default `space`; one character that is not a letter or digit, such as `,` or `\`, or the word `space`). See `<leader>y` below.
@@ -254,7 +254,7 @@ The row under the input box shows the totals on the right: the number of message
 | Ctrl+O | edit your own very last message the same way |
 | ←/→ | previous / next swipe (→ past the last generates a new one). Only while the input box is empty and no message is being edited; with a draft in the box they move the text cursor. In a new chat, while the greeting is the only message, they switch between the card's alternate greetings instead (wrapping around). Older chats get the card's alternate greetings too |
 | PgUp/PgDn, mouse wheel, ↑/↓ | scroll the chat (↑/↓ move the cursor while editing). The wheel (or a swipe) over the text box scrolls only the box, anywhere else only the chat; typing or moving the cursor snaps the box back to the cursor |
-| `/undo` or `/u` | delete last message |
+| `/undo [n]` or `/u [n]` | delete the last message, or the last `n` (`/undo 3`); stops at the first message of a branched chat |
 | `/new` | new chat with this character (keeps the current one) |
 | `/newchat` or `/nc` | delete this chat on the server and start a new one |
 | F1 or `/help` | help window; scroll it with ↑/↓ (or j/k), PgUp/PgDn, Home/End or the mouse wheel, any other key closes it |

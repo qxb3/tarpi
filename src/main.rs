@@ -70,7 +70,7 @@ use crate::jv::*;
         "  /deletebranch   delete the branch that is showing (/db)\n",
         "  /regen [nudge]  regenerate the last reply, optionally steered\n",
         "  /continue       continue the last reply (/c)\n",
-        "  /undo           delete the last message (/u)\n",
+        "  /undo [n]       delete the last message, or the last n (/u)\n",
         "  /help           all keys and commands"
     )
 )]

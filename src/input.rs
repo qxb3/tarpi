@@ -550,7 +550,7 @@ impl Input {
             if let (Some(&a), Some(&b)) = (ch.get(self.cursor - 1), ch.get(self.cursor)) {
                 if matches!(
                     (a, b),
-                    ('(', ')') | ('[', ']') | ('{', '}') | ('"', '"') | ('*', '*')
+                    ('(', ')') | ('[', ']') | ('{', '}') | ('"', '"') | ('\'', '\'') | ('*', '*')
                 ) {
                     let start = self.byte_idx(self.cursor - 1);
                     let end = self.byte_idx(self.cursor + 1);
@@ -751,9 +751,10 @@ impl Input {
     ///
     /// - `(` `[` `{` insert the pair when what follows is blank, the end or a closer.
     /// - `)` `]` `}` step over the matching closer that is already there.
-    /// - `"` and `*` open a pair, close an open one (step over it), or stay
-    ///   single next to a word (`2*3`, `5"`) or when the paragraph already has
-    ///   an unclosed one. `*|*` followed by `*` becomes `**|**` (bold).
+    /// - `"`, `'` and `*` open a pair, close an open one (step over it), or stay
+    ///   single next to a word (`2*3`, `5"`, `don't`) or when the paragraph
+    ///   already has an unclosed one. `*|*` followed by `*` becomes `**|**` (bold).
+    ///   For `'`, an apostrophe inside a word (`don't`) does not count as a quote.
     fn try_autopair(&mut self, c: char) -> bool {
         let ch = self.chars();
         let cur = self.cursor.min(ch.len());
@@ -789,7 +790,7 @@ impl Input {
                     false
                 }
             }
-            '"' | '*' => {
+            '"' | '\'' | '*' => {
                 // `*|*` + `*` -> `**|**`
                 if c == '*' && prev == Some('*') && next == Some('*') {
                     let before = cur.checked_sub(2).and_then(|i| ch.get(i)).copied();
@@ -812,7 +813,24 @@ impl Input {
                     .rposition(|w| w == ['\n', '\n'])
                     .map(|i| i + 2)
                     .unwrap_or(0);
-                let open = ch[para_start..cur].iter().filter(|x| **x == c).count();
+                let open = ch[para_start..cur]
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, x)| {
+                        if **x != c {
+                            return false;
+                        }
+                        // An apostrophe inside a word (`don't`) is not a quote.
+                        if c == '\'' {
+                            let at = para_start + i;
+                            let inside = at > 0
+                                && ch[at - 1].is_alphanumeric()
+                                && ch.get(at + 1).map(|n| n.is_alphanumeric()).unwrap_or(false);
+                            return !inside;
+                        }
+                        true
+                    })
+                    .count();
                 if open % 2 == 1 {
                     return false;
                 }
@@ -1962,8 +1980,28 @@ mod tests {
     }
 
     #[test]
+    fn autopair_single_quotes() {
+        let i = typed("'", true);
+        assert_eq!((i.text.as_str(), i.cursor), ("''", 1));
+        // typing the closer steps over it
+        let i = typed("'hi'", true);
+        assert_eq!((i.text.as_str(), i.cursor), ("'hi'", 4));
+        // backspace between an empty pair removes both
+        let mut i = typed("'", true);
+        i.backspace();
+        assert_eq!((i.text.as_str(), i.cursor), ("", 0));
+        // contractions and possessives stay single
+        assert_eq!(typed("don't", true).text, "don't");
+        assert_eq!(typed("Sofia's", true).text, "Sofia's");
+        // a contraction inside a quote still ends up right
+        assert_eq!(typed("'I don't know'", true).text, "'I don't know'");
+        // mixed with double quotes
+        assert_eq!(typed("\"it's 'fine'\"", true).text, "\"it's 'fine'\"");
+    }
+
+    #[test]
     fn autopair_off_changes_nothing() {
-        assert_eq!(typed("\"*(", false).text, "\"*(");
+        assert_eq!(typed("\"*('", false).text, "\"*('");
         let mut i = typed("\"", false);
         i.backspace();
         assert_eq!(i.text, "");
