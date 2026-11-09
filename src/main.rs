@@ -13,6 +13,7 @@ mod import;
 mod input;
 mod jv;
 mod persona;
+mod picker;
 mod prompt;
 mod prose;
 mod summary;
@@ -61,8 +62,9 @@ use crate::jv::*;
     disable_help_subcommand = true,
     after_help = concat!(
         "INSIDE A CHAT:\n",
-        "  /chats          switch, create or delete chats\n",
-        "  /characters     switch to another character\n",
+        "  /chats          choose, create or delete chats (a window)\n",
+        "  /characters     choose another character (a window)\n",
+        "  /persona        choose who you are in the chat (a window)\n",
         "  /api            API settings (address, model and sampler); back to the chat on quit\n",
         "  /character      view and edit this character's card\n",
         "  /new            new chat with this character (keeps this one)\n",
@@ -107,9 +109,6 @@ enum Commands {
     /// Delete a character together with all of its chats (asks first)
     #[command(disable_help_flag = true)]
     Delete(Rest),
-    /// Pick the persona (who you are) used in chats
-    #[command(disable_help_flag = true)]
-    Persona(Rest),
 }
 
 /// Everything after a command's name, passed on unchanged (`--help` included).
@@ -458,12 +457,6 @@ fn pick_character(list: &[Value]) -> Result<&Value> {
 enum Want {
     Latest,
     New,
-    Pick,
-    File(String),
-}
-
-enum ChatPick {
-    New,
     File(String),
 }
 
@@ -472,100 +465,6 @@ fn confirm(prompt: &str) -> bool {
     ask(prompt)
         .map(|a| matches!(a.to_lowercase().as_str(), "y" | "yes"))
         .unwrap_or(false)
-}
-
-/// `d3`, `d 3`, `del 3` or `delete 3` -> `Some("3")`; anything else -> `None`.
-fn delete_arg(answer: &str) -> Option<String> {
-    let a = answer.trim().to_lowercase();
-    for prefix in ["delete", "del", "d"] {
-        if let Some(rest) = a.strip_prefix(prefix) {
-            let rest = rest.trim();
-            if rest.is_empty() || rest.chars().all(|c| c.is_ascii_digit()) {
-                return Some(rest.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// Menu of a character's chats (newest first) plus "new chat". Typing `d2`
-/// deletes the second chat (after a confirmation) and shows the menu again.
-async fn pick_chat(api: &Api, avatar: &str, char_name: &str, chats: &mut Vec<Value>) -> ChatPick {
-    let mut reprint = true;
-    loop {
-        let ids: Vec<String> = chats.iter().map(file_id).collect();
-        let next_name = chat::next_chat_name(char_name, &ids);
-        if reprint {
-            println!("\n{}", char_name);
-            let w = format!("[{}]", chats.len()).len();
-            for (i, c) in chats.iter().enumerate() {
-                println!(
-                    "{:<w$} {}  \u{b7} {} {} \u{b7} {}{}",
-                    format!("[{}]", i + 1),
-                    file_id(c),
-                    ji64(c, "chat_items", 0),
-                    if ui::term_cols() < 60 { "msgs" } else { "messages" },
-                    when(c),
-                    if i == 0 { "  (latest)" } else { "" },
-                    w = w
-                );
-            }
-            println!("[n] new chat ({})", next_name);
-            if !chats.is_empty() {
-                println!("[d<number>] delete a chat, e.g. d2");
-            }
-            println!("[q] quit");
-            reprint = false;
-        }
-        let default = if chats.is_empty() { "n" } else { "1" };
-        let Some(ans) = ask("\nSelect > ") else {
-            std::process::exit(0);
-        };
-        let a = if ans.is_empty() {
-            default.to_string()
-        } else {
-            ans
-        };
-        if is_quit(&a) {
-            std::process::exit(0);
-        }
-        if matches!(a.to_lowercase().as_str(), "n" | "new") {
-            return ChatPick::New;
-        }
-        if let Some(num) = delete_arg(&a) {
-            match num.parse::<usize>() {
-                Ok(n) if n >= 1 && n <= chats.len() => {
-                    let target = file_id(&chats[n - 1]);
-                    if confirm(&format!(
-                        "Delete '{}'? This cannot be undone. [y/N]: ",
-                        target
-                    )) {
-                        match api.delete_chat(avatar, &target).await {
-                            Ok(()) => {
-                                println!("deleted {}", target);
-                                chats.remove(n - 1);
-                            }
-                            Err(e) => println!("could not delete {}: {:#}", target, e),
-                        }
-                    } else {
-                        println!("cancelled");
-                    }
-                    reprint = true;
-                }
-                _ => println!("say which chat to delete, e.g. d2"),
-            }
-            continue;
-        }
-        if let Ok(n) = a.parse::<usize>() {
-            if n >= 1 && n <= chats.len() {
-                return ChatPick::File(file_id(&chats[n - 1]));
-            }
-        }
-        if let Ok(f) = match_chat(char_name, &chats[..], &a) {
-            return ChatPick::File(f);
-        }
-        println!("not a valid choice");
-    }
 }
 
 /// Termux or any other Android terminal.
@@ -682,7 +581,6 @@ async fn main() -> Result<()> {
     match &cli.command {
         Some(Commands::Import(_)) => return import::run().await,
         Some(Commands::Delete(_)) => return delete::run().await,
-        Some(Commands::Persona(_)) => return persona::run().await,
         None => {}
     }
     let cfg = config::load()?;
@@ -751,8 +649,8 @@ async fn main() -> Result<()> {
         default_hook(info);
     }));
 
-    // One round per chat screen. `/chats` and `/characters` leave the screen,
-    // show the matching menu, and come back here for the next round.
+    // One round per chat screen. Choosing something in the `/chats` or
+    // `/characters` window leaves the screen and comes back here for the next round.
     loop {
         let avatar = jstr(&entry, "avatar");
         // The list may be "shallow" (lazyLoadCharacters), so always fetch the full card.
@@ -772,19 +670,11 @@ async fn main() -> Result<()> {
         let explicit = matches!(want, Want::File(_));
         let (file, created_new) = match std::mem::replace(&mut want, Want::Latest) {
             Want::New => (next_name, true),
-            Want::Latest => match chats.first() {
+            Want::Latest => match chats.iter().find(|c| !chat::is_summary_backup(&file_id(c))) {
                 Some(c) => (file_id(c), false),
                 None => (next_name, true),
             },
             Want::File(q) => (match_chat(&character.name, &chats, &q)?, false),
-            Want::Pick => match pick_chat(&api, &avatar, &character.name, &mut chats).await {
-                ChatPick::New => {
-                    // Chats may have been deleted in the menu: name the new one afresh.
-                    let ids: Vec<String> = chats.iter().map(file_id).collect();
-                    (chat::next_chat_name(&character.name, &ids), true)
-                }
-                ChatPick::File(f) => (f, false),
-            },
         };
 
         let (chat_state, synced) = if created_new {
@@ -846,9 +736,16 @@ async fn main() -> Result<()> {
 
         match app.exit_to.take() {
             None => break,
-            Some(app::Exit::Chats) => want = Want::Pick,
-            Some(app::Exit::Characters) => {
-                entry = pick_character(&characters)?.clone();
+            Some(app::Exit::NewChat) => want = Want::New,
+            Some(app::Exit::Chat(file)) => want = Want::File(file),
+            Some(app::Exit::Character(avatar)) => {
+                // Read the list again: cards may have been added since the start.
+                let fresh = api.characters().await?;
+                entry = fresh
+                    .iter()
+                    .find(|c| jstr(c, "avatar") == avatar)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("character '{}' not found", avatar))?;
                 want = Want::Latest;
             }
         }

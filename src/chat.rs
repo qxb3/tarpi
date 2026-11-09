@@ -57,6 +57,40 @@ pub fn file_id(c: &Value) -> String {
     jstr(c, "file_name").trim_end_matches(".jsonl").to_string()
 }
 
+const BACKUP_TAG: &str = "_before-summary";
+
+/// Is this chat file one of the full-chat copies `/summarize` keeps
+/// (`<chat>_before-summary`, `...2`, `...3`)? Those are not shown in `/chats`.
+pub fn is_summary_backup(id: &str) -> bool {
+    let l = id.to_ascii_lowercase();
+    match l.rfind(BACKUP_TAG) {
+        Some(i) => l[i + BACKUP_TAG.len()..].chars().all(|c| c.is_ascii_digit()),
+        None => false,
+    }
+}
+
+/// The backup copies of chat `file` among the chat file names `ids`, oldest
+/// first (`<file>_before-summary`, then `...2`, `...3`).
+pub fn backups_of(file: &str, ids: &[String]) -> Vec<String> {
+    let base = format!("{}{}", file.to_ascii_lowercase(), BACKUP_TAG);
+    let mut found: Vec<(u64, String)> = ids
+        .iter()
+        .filter_map(|id| {
+            let l = id.to_ascii_lowercase();
+            let rest = l.strip_prefix(&base)?;
+            if rest.is_empty() {
+                Some((1, id.clone()))
+            } else if rest.chars().all(|c| c.is_ascii_digit()) {
+                rest.parse::<u64>().ok().map(|n| (n, id.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    found.sort();
+    found.into_iter().map(|(_, id)| id).collect()
+}
+
 fn new_header() -> Value {
     json!({
         "chat_metadata": { "integrity": Uuid::new_v4().to_string() },

@@ -13,7 +13,6 @@ st-cli -l               # list characters
 st-cli sofia -l         # list Sofia's chats
 st-cli import <source>  # import a character card (see below)
 st-cli delete [sofia]   # delete a character and all its chats (asks first)
-st-cli persona          # pick which persona (who you are) to chat as
 ```
 
 That is the whole command line: `[character] [chat]`, plus `-n` (new chat) and `-l` (list). The server address is set with `url` in `~/.config/st-cli/config.yaml`.
@@ -22,8 +21,9 @@ Everything else happens inside the chat:
 
 | Command | What it does |
 | --- | --- |
-| `/chats` | back to this character's chat menu: open one (`2`), start a new one (`n`), or delete one (`d2`) |
-| `/characters` | back to the character menu to switch to someone else |
+| `/chats` | opens a window over the chat with this character's chats: pick one (↑/↓ + Enter, or click / tap), choose `+ new chat`, or press `d` on one to delete it (asks `y`). Esc closes. The `_before-summary` copies are not listed. The chat that is open can't be deleted here (use `/newchat`), except when it is the last one: then it is deleted and st-cli exits |
+| `/persona` | opens a window to choose who you are in the chat; `+ new persona` creates one, `e` edits, `d` deletes (see Personas) |
+| `/characters` | opens a window with every character (★ = favourite) to switch to someone else |
 | `/api` | open the API settings (llama.cpp address and every model setting) right here; when you quit them (`q` / Esc) you are back in this same chat, and the very next reply uses what you saved |
 | `/character` | open this character's card in a window: every field, editable, with **Cancel** and **Save** (see below) |
 | `/new` | new chat with this character right away (keeps the current one) |
@@ -66,13 +66,7 @@ Only llama.cpp is built in, but a connection kind is one small file: implement `
 
 ## Personas
 
-```
-st-cli persona          # menu: pick one, it is saved and the command exits
-st-cli persona alice    # switch straight to the persona matching "alice"
-st-cli persona -l       # list personas and exit
-```
-
-The menu lists every persona saved in SillyTavern as `Name (Title)` with a short preview of its description; the active one is marked `(current)`. Typing part of a name narrows the list. The choice is written to SillyTavern's settings (`user_avatar`, name, description, position), the same fields the web UI changes when you click a persona, so st-cli and the web UI both use it from then on. A web UI tab that is already open needs a reload to show the change.
+`/persona` inside a chat opens a window with every persona saved in SillyTavern as `Name (Title)` with a short preview of its description; the active one is marked `(current)`. Pick one with ↑/↓ + Enter (or click / tap); Esc closes it. The choice is written to SillyTavern's settings (`user_avatar`, name, description, position), the same fields the web UI changes when you click a persona, so st-cli and the web UI both use it from then on. It applies to the chat from the next message on. The first row, `+ new persona`, opens a form (name, title, description; Ctrl+S saves, Esc cancels) and makes the persona in SillyTavern with a plain placeholder picture you can change in the web UI. `e` on a persona opens the same form for it; `d` deletes it (asks `y`, removes its picture like the web UI does; the persona in use can't be deleted). A web UI tab that is already open needs a reload to show the change.
 
 The chat's top bar reads ` st-cli <version> ` (white badge) `<character>/<chat file> • <persona> (<title>) • <api>@host:port`, e.g. `Mirei/Mire01`. The API type is what SillyTavern is set to; `host:port` is the `url` from `config.yaml`. Message names are black on white, with a grey rule between messages (none under the last one).
 
@@ -109,7 +103,7 @@ The layout adapts to the terminal size, down to about 10 columns by 6 rows (belo
 - Under 44 columns the buttons shrink to `Send` / `Stop` / `Save` / `Card`, and the top bar drops the API, then the persona, then the version number, to fit.
 - Under 16 rows the two stacked buttons while editing a greeting become two one-row buttons, and the input box never grows so tall that fewer than two message rows are left.
 - The help window and the `/character` window take the whole screen when it is small; help lines wrap.
-- The menus printed before the chat (characters, chats, personas) fit one terminal row per entry where they can; narrow terminals show `msgs` and leave out the file size.
+- The character menu printed before the chat fits one terminal row per entry; the `/characters`, `/chats` and persona windows take the full width on small screens and cut long lines with `…` (narrow terminals show `msgs`).
 
 ## Nudging a regeneration
 
@@ -134,7 +128,7 @@ The first message shows a cyan `summary branch 1/3` counter. Each branch keeps i
 
 While it is being written nothing streams into the chat: the status row says `summarizing…` (with `part 2/4` for long chats), and when the summary is finished it appears whole, as the new branch. Esc stops it and then nothing is changed.
 
-`/deletebranch` (or `/db`) deletes the branch that is showing and shows the one before it (the one after it when the first was deleted). With only one branch left the chat is a normal chat again; in a chat without branches it just says so. Deleting is permanent (unless you made a copy with `_before-summary`), and it works on branch 1, the conversation, too.
+`/deletebranch` (or `/db`) deletes the branch that is showing and shows the one before it (the one after it when the first was deleted). With only one branch left the chat is a normal chat again; in a chat without branches it just says so. It also deletes the `_before-summary` copy `/summarize` saved (the newest one; all that are left when no branch remains), and it works on branch 1, the conversation, too. Deleting is permanent.
 
 Switching branches (empty input box, not while editing): **Ctrl+Left** (previous) and **Ctrl+Right** (next), wrapping around, or tap / click the left / right half of the `summary branch n/m` counter. Plain Left / Right are not used for this; they keep browsing swipes and greetings, and on a lone summary they generate nothing.
 
@@ -142,7 +136,7 @@ Details:
 
 - The summary is written with the active API connection (`/api`), with its own settings: the reply length is raised as needed and sampling is made calm (low temperature, no DRY / XTC / penalties / dynamic temperature, no extra stop strings). Your saved connection is not changed. The character card, system prompt and persona are not part of that request.
 - A chat that does not fit into the context together with its summary is read in parts: each request gets the summary so far plus the next part of the chat. If the *Context size* is too small even for that, `/summarize` says so and does nothing.
-- Before anything is changed, the full chat is also saved as `<chat>_before-summary` (then `...2`, `...3`). It is a normal chat file: open it from the chat menu, delete it with `d` when you no longer need it. If that copy cannot be saved, the chat is left alone.
+- Before anything is changed, the full chat is also saved as `<chat>_before-summary` (then `...2`, `...3`). It is a normal chat file on the server, but `/chats` does not list it, and `/deletebranch` removes it again. If that copy cannot be saved, the chat is left alone.
 - The branches are stored in the chat file, inside the first message (`st_cli_branch`), so the file stays a normal `.jsonl`. The web UI shows the branch that was showing when you left.
 - `Ctrl+S` / **Card save** is not offered on the summary: it is never written into the character card. Branched chats no longer get the card's alternate greetings added as swipes. `/undo` (with or without a number) will not delete the first message of a branched chat.
 - It needs at least three messages. Summaries are written by the model, so read the result; branch 1 and the saved copy have everything.

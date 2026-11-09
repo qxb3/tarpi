@@ -155,6 +155,39 @@ impl Api {
         bail!("delete failed ({}): {}", status, short(&text, 200));
     }
 
+    /// Add a user avatar image (`/api/avatars/upload`, the web UI's persona
+    /// "create" button). Returns the file name the server gave it.
+    pub async fn upload_avatar(&self, png: Vec<u8>) -> Result<String> {
+        let part = reqwest::multipart::Part::bytes(png)
+            .file_name("persona.png".to_string())
+            .mime_str("image/png")?;
+        let form = reqwest::multipart::Form::new().part("avatar", part);
+        let resp = self
+            .post("/api/avatars/upload")
+            .timeout(Duration::from_secs(60))
+            .multipart(form)
+            .send()
+            .await
+            .context("POST /api/avatars/upload")?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!("avatar upload failed ({}): {}", status, short(&text, 200));
+        }
+        let v: Value = serde_json::from_str(&text).context("invalid JSON from avatar upload")?;
+        v.get("path")
+            .and_then(|p| p.as_str())
+            .map(|p| p.to_string())
+            .ok_or_else(|| anyhow!("avatar upload had no file name: {}", short(&text, 200)))
+    }
+
+    /// Delete a user avatar image (`/api/avatars/delete`).
+    pub async fn delete_avatar(&self, avatar: &str) -> Result<()> {
+        self.post_json("/api/avatars/delete", &json!({ "avatar": avatar }))
+            .await?;
+        Ok(())
+    }
+
     /// Ask the server to download a card from a URL (chub.ai, ...), like the
     /// web UI's "Import content from URL".
     pub async fn import_url(&self, url: &str) -> Result<Download> {

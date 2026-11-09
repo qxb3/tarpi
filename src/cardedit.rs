@@ -30,6 +30,8 @@ pub struct Hit {
 }
 
 pub struct CardModal {
+    /// Window title (`character card`, `persona`).
+    pub title: String,
     pub fields: Vec<CardField>,
     /// Field being edited (always an editable one).
     pub focus: usize,
@@ -124,6 +126,44 @@ impl CardModal {
             });
         }
 
+        let mut m = CardModal::from_fields(fields, cfg);
+        m.title = "character card".to_string();
+        m
+    }
+
+    /// The form of a persona: name, title and description, all editable.
+    pub fn persona(name: &str, title: &str, description: &str, cfg: &Input) -> CardModal {
+        let field = |key: &'static str, label: &str, text: &str| {
+            let t = norm(text);
+            CardField {
+                key,
+                label: label.to_string(),
+                orig: t.clone(),
+                text: t,
+                editable: true,
+                alt: false,
+            }
+        };
+        let fields = vec![
+            field("name", "Name", name),
+            field("title", "Title", title),
+            field("description", "Description", description),
+        ];
+        let mut m = CardModal::from_fields(fields, cfg);
+        m.title = "persona".to_string();
+        m
+    }
+
+    /// The text of the field with this key, trimmed.
+    pub fn value(&self, key: &str) -> String {
+        self.fields
+            .iter()
+            .find(|f| f.key == key)
+            .map(|f| f.text.trim().to_string())
+            .unwrap_or_default()
+    }
+
+    fn from_fields(fields: Vec<CardField>, cfg: &Input) -> CardModal {
         let focus = fields.iter().position(|f| f.editable).unwrap_or(0);
         let mut input = Input::default();
         input.copy_config(cfg);
@@ -132,6 +172,7 @@ impl CardModal {
         input.cursor = 0;
         input.enter_insert();
         CardModal {
+            title: String::new(),
             fields,
             focus,
             input,

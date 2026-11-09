@@ -3,6 +3,7 @@
 use crate::app::{App, ChatStats};
 use crate::cardedit::{CardModal, Hit};
 use crate::input::Mode;
+use crate::picker::Picker;
 use crate::termcolors;
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
@@ -589,8 +590,10 @@ const HELP: &[&str] = &[
     "                 conversation; nothing is replaced; a copy is also",
     "                 saved under another name)",
     "/deletebranch    delete the branch that is showing (also /db)",
-    "/chats           open, create or delete chats of this character",
-    "/characters      switch to another character",
+    "/chats           window to open, create or delete (d) chats of this",
+    "                 character",
+    "/characters      window to switch to another character",
+    "/persona         window to choose who you are in the chat",
     "/api             open the API settings; quitting them (q) brings",
     "                 you back to this chat",
     "/character       view and edit this character's card",
@@ -703,6 +706,143 @@ fn draw_button(f: &mut Frame, area: Rect, label: &str, color: Color) {
     );
 }
 
+/// Display width of a string in terminal columns.
+fn cols_of(s: &str) -> usize {
+    s.chars().map(|c| c.width().unwrap_or(0)).sum()
+}
+
+/// `s` cut to at most `w` columns, with an ellipsis when something was left out.
+fn fit_cols(s: &str, w: usize) -> String {
+    if cols_of(s) <= w {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        let cw = c.width().unwrap_or(0);
+        if used + cw + 1 > w {
+            break;
+        }
+        out.push(c);
+        used += cw;
+    }
+    if w > 0 {
+        out.push('\u{2026}');
+    }
+    out
+}
+
+/// The choose-one window of `/characters`, `/chats` and `/persona`: the
+/// entries, with the keys on the bottom edge.
+pub fn draw_picker(f: &mut Frame, area: Rect, p: &mut Picker) {
+    let vis = p.visible();
+    let w = area.width.min(76);
+    // Borders (2) + one row per entry, but never the whole screen.
+    let want = vis.len().max(1) as u16 + 2;
+    let h = want.min(area.height.saturating_sub(2)).max(3).min(area.height);
+    let rect = centered(area, w, h);
+    f.render_widget(Clear, rect);
+
+    let bottom: Line<'static> = if let Some(key) = &p.confirm {
+        let shown = p
+            .items
+            .iter()
+            .find(|i| i.key == *key)
+            .map(|i| i.label.clone())
+            .unwrap_or_else(|| key.clone());
+        Line::from(Span::styled(
+            format!(" Delete '{}'? y = yes, any other key = no ", shown),
+            Style::default().fg(Color::Red),
+        ))
+    } else if let Some((msg, is_err)) = &p.note {
+        Line::from(Span::styled(
+            format!(" {} ", msg),
+            Style::default().fg(if *is_err { Color::Red } else { Color::Green }),
+        ))
+    } else {
+        let edit = if p.items.iter().any(|i| i.editable) {
+            " \u{b7} e edit"
+        } else {
+            ""
+        };
+        let del = if p.items.iter().any(|i| i.deletable) {
+            " \u{b7} d delete"
+        } else {
+            ""
+        };
+        Line::from(format!(
+            " \u{2191}/\u{2193} move \u{b7} Enter choose{}{} \u{b7} Esc cancel ",
+            edit, del
+        ))
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", p.title))
+        .title_bottom(bottom)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    if inner.height < 1 || inner.width < 4 {
+        return;
+    }
+
+    let list = inner;
+    let rows_n = list.height as usize;
+    p.window = rect;
+    p.rows = list;
+    p.page = rows_n.max(1);
+
+    // Keep the selected row in view.
+    if p.sel >= vis.len() {
+        p.sel = vis.len().saturating_sub(1);
+    }
+    if p.sel < p.first {
+        p.first = p.sel;
+    }
+    if p.sel >= p.first + rows_n {
+        p.first = p.sel + 1 - rows_n;
+    }
+    p.first = p.first.min(vis.len().saturating_sub(rows_n));
+
+    // Entries.
+    let cols = list.width as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if vis.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  nothing to choose",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    for (i, &idx) in vis.iter().enumerate().skip(p.first).take(rows_n) {
+        let it = &p.items[idx];
+        let selected = i == p.sel;
+        let mut left = format!("{} {}", if selected { "\u{25b8}" } else { " " }, it.label);
+        if it.current {
+            left.push_str(" (current)");
+        }
+        let left = fit_cols(&left, cols);
+        let used = cols_of(&left);
+        let detail = if !it.detail.is_empty() && used + 4 < cols {
+            fit_cols(&format!("  {}", it.detail), cols - used)
+        } else {
+            String::new()
+        };
+        let pad = " ".repeat(cols.saturating_sub(used + cols_of(&detail)));
+        let (base, dim) = if selected {
+            let s = Style::default().add_modifier(Modifier::REVERSED);
+            (s, s)
+        } else {
+            (Style::default(), Style::default().fg(Color::DarkGray))
+        };
+        lines.push(Line::from(vec![
+            Span::styled(left, base),
+            Span::styled(detail, dim),
+            Span::styled(pad, base),
+        ]));
+    }
+    f.render_widget(Paragraph::new(lines), list);
+}
+
 /// The `/character` window: every field of the card as a scrollable form,
 /// the focused field editable, with Cancel and Save buttons at the bottom.
 fn draw_card_modal(f: &mut Frame, area: Rect, m: &mut CardModal) {
@@ -713,9 +853,9 @@ fn draw_card_modal(f: &mut Frame, area: Rect, m: &mut CardModal) {
     f.render_widget(Clear, rect);
 
     let title = if m.dirty() {
-        " character card (modified) "
+        format!(" {} (modified) ", m.title)
     } else {
-        " character card "
+        format!(" {} ", m.title)
     };
     // Bottom edge: the vim mode (when vim modes are on) and the main keys.
     let mut bottom: Vec<Span<'static>> = Vec::new();
@@ -1326,6 +1466,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         if let Some(m) = app.card_modal.as_mut() {
             draw_card_modal(f, area, m);
         }
+    } else if let Some((_, p)) = app.picker.as_mut() {
+        draw_picker(f, area, p);
     } else if let Some(x) = cmd_cursor_x {
         f.set_cursor_position((x, chunks[3].y));
     } else if cur_row >= first_row && cur_row < first_row + visible_rows {

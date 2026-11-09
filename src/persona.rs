@@ -3,16 +3,12 @@
 //! SillyTavern keeps them in settings.json: `power_user.personas` maps an
 //! avatar file to a name, `power_user.persona_descriptions` maps it to the
 //! description, position and title, and `user_avatar` says which one is active.
-//! `st-cli persona` switches the active one by writing those fields back, the
-//! same way the web UI does when you click a persona.
+//! `/persona` in a chat switches the active one by writing those fields back,
+//! the same way the web UI does when you click a persona.
 
-use crate::api::Api;
-use crate::config;
 use crate::jv::*;
-use anyhow::{anyhow, bail, Context, Result};
-use clap::Parser;
+use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
-use std::io::{self, IsTerminal};
 
 #[derive(Debug, Clone, Default)]
 pub struct Persona {
@@ -139,10 +135,8 @@ pub fn activate(settings: &mut Value, avatar: &str) -> Result<Persona> {
     Ok(p)
 }
 
-// ------------------------------------------------------------------- menu
-
 /// One-line, shortened view of a persona's description.
-fn brief(text: &str, max: usize) -> String {
+pub fn brief(text: &str, max: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= max {
         flat
@@ -152,165 +146,75 @@ fn brief(text: &str, max: usize) -> String {
     }
 }
 
-fn print_menu(shown: &[&Persona], active: &str) {
-    println!();
-    let w = format!("[{}]", shown.len()).len();
-    for (i, p) in shown.iter().enumerate() {
-        println!(
-            "{:<w$} {}{}",
-            format!("[{}]", i + 1),
-            p.label(),
-            if p.avatar == active { " (current)" } else { "" },
-            w = w
-        );
-        // Fit one terminal row (indent included), at most 110 characters.
-        let b = brief(&p.description, crate::ui::term_cols().saturating_sub(w + 2).clamp(10, 110));
-        let pad = " ".repeat(w + 1);
-        if b.is_empty() {
-            println!("{}(no description)", pad);
-        } else {
-            println!("{}{}", pad, b);
-        }
+/// The plain 32x32 picture a persona created here gets as its avatar (SillyTavern
+/// lists personas by their image; the web UI can replace it later).
+pub const AVATAR_PNG: &[u8] = &[137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 32, 0, 0, 0, 32, 8, 2, 0, 0, 0, 252, 24, 237, 163, 0, 0, 0, 42, 73, 68, 65, 84, 120, 218, 99, 136, 202, 235, 161, 41, 98, 24, 181, 96, 212, 130, 81, 11, 70, 45, 24, 181, 96, 212, 130, 81, 11, 70, 45, 24, 181, 96, 212, 130, 81, 11, 134, 138, 5, 0, 39, 74, 80, 76, 121, 203, 72, 248, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130];
+
+fn ensure_obj<'a>(v: &'a mut Value, key: &str) -> &'a mut Value {
+    if !v.get(key).map(|x| x.is_object()).unwrap_or(false) {
+        v[key] = json!({});
+    }
+    &mut v[key]
+}
+
+fn descriptor(p: &Persona) -> Value {
+    json!({
+        "description": p.description,
+        "position": p.position,
+        "depth": p.depth,
+        "role": p.role,
+        "lorebook": p.lorebook,
+        "title": p.title,
+    })
+}
+
+/// Create the persona `avatar`, or change its name, title and description
+/// (position, depth, role and lorebook stay as they are). In `settings`,
+/// ready to be saved. The active persona's `power_user` fields follow.
+pub fn put(settings: &mut Value, avatar: &str, name: &str, title: &str, description: &str) {
+    // Settings that only know the single legacy persona: write it into the
+    // maps first, so adding one does not make it vanish from the list.
+    let cur = current(settings);
+    let known = settings
+        .get("power_user")
+        .and_then(|pu| pu.get("personas"))
+        .map(|m| m.get(&cur.avatar).is_some())
+        .unwrap_or(false);
+    let keep = list(settings).into_iter().find(|p| p.avatar == avatar);
+    let mut base = keep.unwrap_or(Persona {
+        avatar: avatar.to_string(),
+        depth: 2,
+        ..Persona::default()
+    });
+    base.name = name.to_string();
+    base.title = title.to_string();
+    base.description = description.to_string();
+
+    if !settings.get("power_user").map(|v| v.is_object()).unwrap_or(false) {
+        settings["power_user"] = json!({});
+    }
+    let pu = &mut settings["power_user"];
+    if !known && !cur.avatar.is_empty() && cur.avatar != avatar {
+        ensure_obj(pu, "personas")[cur.avatar.as_str()] = json!(cur.name);
+        ensure_obj(pu, "persona_descriptions")[cur.avatar.as_str()] = descriptor(&cur);
+    }
+    ensure_obj(pu, "personas")[avatar] = json!(name);
+    ensure_obj(pu, "persona_descriptions")[avatar] = descriptor(&base);
+    if jstr(settings, "user_avatar") == avatar {
+        let p = current(settings);
+        write_fields(settings, &p);
     }
 }
 
-#[derive(Parser, Debug)]
-#[command(
-    name = "st-cli persona",
-    about = "Pick the persona (who you are) used in chats",
-    long_about = "Show the personas saved in SillyTavern and pick one. The choice is \
-                  written to SillyTavern's settings, so st-cli and the web UI both use \
-                  it from then on.",
-    after_help = concat!(
-        "EXAMPLES:\n",
-        "  st-cli persona          pick from a menu\n",
-        "  st-cli persona alice    switch to the persona matching 'alice'\n",
-        "  st-cli persona -l       list personas and exit"
-    )
-)]
-struct PersonaCli {
-    /// Persona name (a partial match works). Leave it out to pick from a menu.
-    persona: Option<String>,
-
-    /// List personas and exit
-    #[arg(short, long)]
-    list: bool,
-}
-
-fn find<'a>(all: &'a [Persona], q: &str) -> Result<&'a Persona> {
-    let ql = q.trim().to_lowercase();
-    let exact: Vec<&Persona> = all
-        .iter()
-        .filter(|p| p.name.to_lowercase() == ql || p.avatar.to_lowercase() == ql)
-        .collect();
-    if exact.len() == 1 {
-        return Ok(exact[0]);
-    }
-    let hits: Vec<&Persona> = all
-        .iter()
-        .filter(|p| p.name.to_lowercase().contains(&ql) || p.title.to_lowercase().contains(&ql))
-        .collect();
-    match hits.len() {
-        0 => bail!("no persona matches '{}'. Run `st-cli persona -l`.", q),
-        1 => Ok(hits[0]),
-        _ => {
-            let names: Vec<String> = hits.iter().take(10).map(|p| p.label()).collect();
-            bail!("'{}' matches several personas: {}", q, names.join(", "))
+/// Forget the persona `avatar` (the image file is deleted separately).
+pub fn remove(settings: &mut Value, avatar: &str) {
+    for map in ["personas", "persona_descriptions"] {
+        if let Some(m) = settings
+            .get_mut("power_user")
+            .and_then(|pu| pu.get_mut(map))
+            .and_then(|m| m.as_object_mut())
+        {
+            m.remove(avatar);
         }
     }
-}
-
-/// Numbered menu; typing part of a name narrows it. `None` when the user quits.
-fn pick<'a>(all: &'a [Persona], active: &str) -> Option<&'a Persona> {
-    let mut shown: Vec<&Persona> = all.iter().collect();
-    let mut reprint = true;
-    loop {
-        if reprint {
-            print_menu(&shown, active);
-            println!("[q] quit");
-            reprint = false;
-        }
-        let ans = crate::ask("\nSelect > ")?;
-        if crate::is_quit(&ans) {
-            return None;
-        }
-        if ans.is_empty() {
-            shown = all.iter().collect();
-            reprint = true;
-            continue;
-        }
-        if let Ok(n) = ans.parse::<usize>() {
-            if n >= 1 && n <= shown.len() {
-                return Some(shown[n - 1]);
-            }
-            println!("there is no number {}", n);
-            continue;
-        }
-        let q = ans.to_lowercase();
-        let hits: Vec<&Persona> = all
-            .iter()
-            .filter(|p| p.name.to_lowercase().contains(&q) || p.title.to_lowercase().contains(&q))
-            .collect();
-        if let Some(e) = hits.iter().find(|p| p.name.to_lowercase() == q) {
-            return Some(*e);
-        }
-        match hits.len() {
-            0 => println!("nothing matches '{}'", ans),
-            1 => return Some(hits[0]),
-            _ => {
-                shown = hits;
-                reprint = true;
-            }
-        }
-    }
-}
-
-pub async fn run() -> Result<()> {
-    // argv is `st-cli persona ...`; drop the program name so "persona" plays
-    // the part of the binary name in clap's messages.
-    let cli = PersonaCli::parse_from(std::env::args().skip(1));
-    let cfg = config::load()?;
-    let server = cfg
-        .url
-        .clone()
-        .unwrap_or_else(|| "http://127.0.0.1:8000".to_string());
-    let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
-
-    let api = Api::connect(&server).await.with_context(|| {
-        format!(
-            "Is SillyTavern running at {}? Start it, or set `url:` in \
-             ~/.config/st-cli/config.yaml",
-            server
-        )
-    })?;
-    let mut settings = api.settings().await?;
-    let all = list(&settings);
-    let active = current(&settings).avatar;
-
-    if cli.list {
-        let shown: Vec<&Persona> = all.iter().collect();
-        print_menu(&shown, &active);
-        return Ok(());
-    }
-
-    let chosen = match cli.persona.as_deref() {
-        Some(q) => find(&all, q)?,
-        None if interactive => match pick(&all, &active) {
-            Some(p) => p,
-            None => return Ok(()),
-        },
-        None => bail!("say which persona to use: st-cli persona <name> (or -l to list them)"),
-    };
-
-    if chosen.avatar == active {
-        println!("Already using {}.", chosen.label());
-        return Ok(());
-    }
-    let avatar = chosen.avatar.clone();
-    let p = activate(&mut settings, &avatar)?;
-    api.save_settings(&settings)
-        .await
-        .context("saving the persona to SillyTavern")?;
-    println!("Now using {}.", p.label());
-    Ok(())
 }

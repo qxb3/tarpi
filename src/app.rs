@@ -7,6 +7,7 @@ use crate::chat::{self, ChatState};
 use crate::conn;
 use crate::gen::{self, GenEvent, GenMsg};
 use crate::input::{Input, Mode};
+use crate::picker::{Action as PickAction, Item as PickItem, Picker};
 use crate::jv::*;
 use crate::persona;
 use crate::prompt;
@@ -70,12 +71,33 @@ struct Editing {
 }
 
 /// Where to go after the chat screen closes (`None`: leave the program).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Exit {
-    /// Back to the chat menu of this character.
-    Chats,
-    /// Back to the character menu.
+    /// Open this chat (file name) of the same character.
+    Chat(String),
+    /// Start a new chat with the same character.
+    NewChat,
+    /// Chat with another character (its card file name).
+    Character(String),
+}
+
+/// What the choose-one window (`App::picker`) is choosing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PickKind {
     Characters,
+    Chats,
+    Personas,
+}
+
+/// Key of the "new chat" row of the `/chats` window.
+const NEW_CHAT: &str = "\u{0}new";
+/// Key of the "new persona" row of the `/persona` window.
+const NEW_PERSONA: &str = "\u{0}new";
+
+/// The persona form (`App::card_modal`) is open for this persona.
+struct PersonaEdit {
+    /// `None`: a new persona is being made.
+    avatar: Option<String>,
 }
 
 enum Outcome {
@@ -134,8 +156,13 @@ pub struct App {
     kbd_up: bool,
     /// When to turn mouse reporting back on if no resize says the keyboard opened.
     mouse_back_at: Option<Instant>,
-    /// Set together with `should_quit` by `/chats` and `/characters`.
+    /// Set together with `should_quit` when a choice in the `/chats` or
+    /// `/characters` window sends us to another chat.
     pub exit_to: Option<Exit>,
+    /// The `/characters` or `/chats` window, if open.
+    pub picker: Option<(PickKind, Picker)>,
+    /// Set while `card_modal` is the persona form, not the character card.
+    persona_edit: Option<PersonaEdit>,
     /// Set by `/api`: the main loop opens the API manager in this terminal and
     /// then continues with this same screen.
     pub open_api: bool,
@@ -383,6 +410,8 @@ impl App {
             open_api: false,
             show_help: false,
             card_modal: None,
+            picker: None,
+            persona_edit: None,
             help_scroll: 0,
             help_page: 10,
             editing: None,
@@ -724,6 +753,9 @@ impl App {
                     c.follow = true;
                     return;
                 }
+                if self.picker.is_some() {
+                    return;
+                }
                 self.input_scroll = None;
                 if self.input.mode == Mode::Command {
                     self.input.command_paste(&s);
@@ -740,6 +772,11 @@ impl App {
     async fn on_mouse(&mut self, m: MouseEvent) {
         if self.card_modal.is_some() {
             self.on_card_mouse(m).await;
+            return;
+        }
+        if let Some((_, p)) = self.picker.as_mut() {
+            let act = p.on_mouse(m);
+            self.picker_action(act).await;
             return;
         }
         match m.kind {
@@ -963,6 +1000,11 @@ impl App {
             self.on_card_key(k).await;
             return;
         }
+        if let Some((_, p)) = self.picker.as_mut() {
+            let act = p.handle_key(k);
+            self.picker_action(act).await;
+            return;
+        }
         if self.show_help {
             // The help window scrolls; any other key closes it.
             let page = self.help_page.max(1);
@@ -1181,7 +1223,7 @@ impl App {
                 }
                 "chats" | "chat" | "open" => {
                     self.input.clear();
-                    self.leave(Exit::Chats).await;
+                    self.open_chats_picker().await;
                 }
                 "character" => {
                     self.input.clear();
@@ -1189,7 +1231,11 @@ impl App {
                 }
                 "characters" | "chars" | "char" | "switch" => {
                     self.input.clear();
-                    self.leave(Exit::Characters).await;
+                    self.open_characters_picker().await;
+                }
+                "persona" | "personas" | "me" => {
+                    self.input.clear();
+                    self.open_persona_picker().await;
                 }
                 "api" | "connection" | "conn" => {
                     self.input.clear();
@@ -1476,6 +1522,343 @@ impl App {
         Ok(())
     }
 
+    // ------------------------------------------- /characters and /chats windows
+
+    /// `/characters`: choose another character to chat with.
+    async fn open_characters_picker(&mut self) {
+        let list = match self.api.characters().await {
+            Ok(l) => l,
+            Err(e) => {
+                self.set_status(format!("{:#}", e), true);
+                return;
+            }
+        };
+        let mut sorted: Vec<&Value> = list.iter().collect();
+        sorted.sort_by_key(|c| crate::char_display_name(c).to_lowercase());
+        let items: Vec<PickItem> = sorted
+            .into_iter()
+            .map(|c| {
+                let avatar = jstr(c, "avatar");
+                PickItem {
+                    label: format!(
+                        "{}{}",
+                        if crate::is_fav(c) { "\u{2605} " } else { "" },
+                        crate::char_display_name(c)
+                    ),
+                    detail: String::new(),
+                    current: avatar == self.chat.avatar,
+                    deletable: false,
+                    editable: false,
+                    key: avatar,
+                }
+            })
+            .collect();
+        self.picker = Some((PickKind::Characters, Picker::new("characters", items)));
+    }
+
+    /// `/chats`: open, create or delete a chat of this character.
+    async fn open_chats_picker(&mut self) {
+        let mut chats = match self.api.chats(&self.chat.avatar).await {
+            Ok(c) => c,
+            Err(e) => {
+                self.set_status(format!("{:#}", e), true);
+                return;
+            }
+        };
+        crate::sort_chats_newest_first(&mut chats);
+        let narrow = ui::term_cols() < 60;
+        let mut items = vec![PickItem {
+            key: NEW_CHAT.to_string(),
+            label: "+ new chat".to_string(),
+            detail: String::new(),
+            current: false,
+            deletable: false,
+            editable: false,
+        }];
+        for c in &chats {
+            let id = chat::file_id(c);
+            // The `_before-summary` copies are kept out of sight.
+            if chat::is_summary_backup(&id) {
+                continue;
+            }
+            items.push(PickItem {
+                detail: format!(
+                    "{} {} \u{b7} {}",
+                    ji64(c, "chat_items", 0),
+                    if narrow { "msgs" } else { "messages" },
+                    crate::when(c)
+                ),
+                current: id == self.chat.file,
+                deletable: true,
+                editable: false,
+                label: id.clone(),
+                key: id,
+            });
+        }
+        let title = format!("chats of {}", self.character.name);
+        self.picker = Some((PickKind::Chats, Picker::new(title, items)));
+    }
+
+    /// `/persona`: choose who you are in this chat, make a new persona (the
+    /// first row), edit one (`e`) or delete one (`d`).
+    async fn open_persona_picker(&mut self) {
+        let settings = match self.api.settings().await {
+            Ok(s) => s,
+            Err(e) => {
+                self.set_status(format!("{:#}", e), true);
+                return;
+            }
+        };
+        let active = persona::current(&settings).avatar;
+        let mut items = vec![PickItem {
+            key: NEW_PERSONA.to_string(),
+            label: "+ new persona".to_string(),
+            detail: String::new(),
+            current: false,
+            deletable: false,
+            editable: false,
+        }];
+        items.extend(persona::list(&settings).into_iter().map(|p| PickItem {
+            label: p.label(),
+            detail: persona::brief(&p.description, 80),
+            current: p.avatar == active,
+            deletable: true,
+            editable: true,
+            key: p.avatar,
+        }));
+        self.picker = Some((PickKind::Personas, Picker::new("persona", items)));
+    }
+
+    /// Open the persona form for `avatar`, or an empty one for a new persona.
+    async fn open_persona_form(&mut self, avatar: Option<String>) {
+        let (name, title, description) = match &avatar {
+            None => (String::new(), String::new(), String::new()),
+            Some(a) => {
+                let settings = match self.api.settings().await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        self.set_status(format!("{:#}", e), true);
+                        return;
+                    }
+                };
+                match persona::list(&settings).into_iter().find(|p| p.avatar == *a) {
+                    Some(p) => (p.name, p.title, p.description),
+                    None => {
+                        self.set_status("that persona no longer exists", true);
+                        return;
+                    }
+                }
+            }
+        };
+        self.card_modal = Some(CardModal::persona(&name, &title, &description, &self.input));
+        self.persona_edit = Some(PersonaEdit { avatar });
+    }
+
+    /// Ctrl+S in the persona form: create or update the persona, then show the
+    /// persona window again. On a failure the form stays open.
+    async fn save_persona_form(&mut self) {
+        let (name, title, description) = match self.card_modal.as_mut() {
+            Some(m) => {
+                m.sync();
+                (m.value("name"), m.value("title"), m.value("description"))
+            }
+            None => return,
+        };
+        if name.is_empty() {
+            self.card_note("give the persona a name", true);
+            return;
+        }
+        let existing = self.persona_edit.as_ref().and_then(|e| e.avatar.clone());
+        let mut settings = match self.api.settings().await {
+            Ok(s) => s,
+            Err(e) => {
+                self.card_note(format!("{:#}", e), true);
+                return;
+            }
+        };
+        let msg = match existing {
+            Some(avatar) => {
+                persona::put(&mut settings, &avatar, &name, &title, &description);
+                if let Err(e) = self.api.save_settings(&settings).await {
+                    self.card_note(format!("could not save the persona: {:#}", e), true);
+                    return;
+                }
+                self.apply_settings(settings);
+                format!("saved persona {}", name)
+            }
+            None => {
+                let avatar = match self.api.upload_avatar(persona::AVATAR_PNG.to_vec()).await {
+                    Ok(a) => a,
+                    Err(e) => {
+                        self.card_note(format!("could not create the persona: {:#}", e), true);
+                        return;
+                    }
+                };
+                persona::put(&mut settings, &avatar, &name, &title, &description);
+                if let Err(e) = self.api.save_settings(&settings).await {
+                    let _ = self.api.delete_avatar(&avatar).await;
+                    self.card_note(format!("could not save the persona: {:#}", e), true);
+                    return;
+                }
+                format!("created persona {}", name)
+            }
+        };
+        self.card_modal = None;
+        self.persona_edit = None;
+        self.open_persona_picker().await;
+        if let Some((_, p)) = self.picker.as_mut() {
+            p.note = Some((msg, false));
+        }
+    }
+
+    /// Delete a persona chosen in the `/persona` window; the window stays open.
+    async fn persona_delete(&mut self, key: &str) {
+        let note = match self.api.settings().await {
+            Err(e) => (format!("{:#}", e), true),
+            Ok(mut settings) => {
+                if persona::current(&settings).avatar == key {
+                    (
+                        "that persona is in use \u{2014} switch to another one first".to_string(),
+                        true,
+                    )
+                } else {
+                    persona::remove(&mut settings, key);
+                    match self.api.save_settings(&settings).await {
+                        Ok(()) => {
+                            // The picture goes too, like the web UI's delete.
+                            let _ = self.api.delete_avatar(key).await;
+                            if let Some((_, p)) = self.picker.as_mut() {
+                                p.remove(key);
+                            }
+                            ("deleted the persona".to_string(), false)
+                        }
+                        Err(e) => (format!("could not delete the persona: {:#}", e), true),
+                    }
+                }
+            }
+        };
+        if let Some((_, p)) = self.picker.as_mut() {
+            p.note = Some(note);
+        }
+    }
+
+    /// Make `avatar` the active persona: saved to SillyTavern's settings (as
+    /// the web UI does) and used by this chat from the next message on.
+    async fn switch_persona(&mut self, avatar: &str) {
+        let mut settings = match self.api.settings().await {
+            Ok(s) => s,
+            Err(e) => {
+                self.set_status(format!("{:#}", e), true);
+                return;
+            }
+        };
+        if persona::current(&settings).avatar == avatar {
+            return;
+        }
+        let p = match persona::activate(&mut settings, avatar) {
+            Ok(p) => p,
+            Err(e) => {
+                self.set_status(format!("{:#}", e), true);
+                return;
+            }
+        };
+        if let Err(e) = self.api.save_settings(&settings).await {
+            self.set_status(format!("could not save the persona: {:#}", e), true);
+            return;
+        }
+        self.apply_settings(settings);
+        self.set_status(format!("now chatting as {}", p.label()), false);
+    }
+
+    async fn picker_action(&mut self, act: PickAction) {
+        let Some(kind) = self.picker.as_ref().map(|(k, _)| *k) else {
+            return;
+        };
+        match act {
+            PickAction::None => {}
+            PickAction::Cancel => self.picker = None,
+            PickAction::Choose(key) => {
+                self.picker = None;
+                match kind {
+                    PickKind::Characters => {
+                        if key != self.chat.avatar {
+                            self.leave(Exit::Character(key)).await;
+                        }
+                    }
+                    PickKind::Personas => {
+                        if key == NEW_PERSONA {
+                            self.open_persona_form(None).await;
+                        } else {
+                            self.switch_persona(&key).await;
+                        }
+                    }
+                    PickKind::Chats => {
+                        if key == NEW_CHAT {
+                            self.leave(Exit::NewChat).await;
+                        } else if key != self.chat.file {
+                            self.leave(Exit::Chat(key)).await;
+                        }
+                    }
+                }
+            }
+            PickAction::Delete(key) => match kind {
+                PickKind::Personas => self.persona_delete(&key).await,
+                _ => self.picker_delete(&key).await,
+            },
+            PickAction::Edit(key) => {
+                if kind == PickKind::Personas {
+                    self.picker = None;
+                    self.open_persona_form(Some(key)).await;
+                }
+            }
+        }
+    }
+
+    /// Delete a chat file chosen in the `/chats` window; the window stays open.
+    async fn picker_delete(&mut self, key: &str) {
+        // The open chat is the only one left: delete it (and its hidden
+        // `_before-summary` copies) and leave the program.
+        let only_one = self
+            .picker
+            .as_ref()
+            .map(|(_, p)| p.items.iter().filter(|i| i.deletable).count() == 1)
+            .unwrap_or(false);
+        if key == self.chat.file && only_one {
+            // Stop first: finishing a generation would save the chat again.
+            self.picker = None;
+            self.quit().await;
+            let avatar = self.chat.avatar.clone();
+            let mut names = vec![key.to_string()];
+            if let Ok(chats) = self.api.chats(&avatar).await {
+                let ids: Vec<String> = chats.iter().map(chat::file_id).collect();
+                names.extend(chat::backups_of(key, &ids));
+            }
+            for name in names {
+                let _ = self.api.delete_chat(&avatar, &name).await;
+            }
+            return;
+        }
+        let note = if key == self.chat.file {
+            (
+                "this chat is open \u{2014} use /newchat to replace it".to_string(),
+                true,
+            )
+        } else {
+            match self.api.delete_chat(&self.chat.avatar, key).await {
+                Ok(()) => {
+                    if let Some((_, p)) = self.picker.as_mut() {
+                        p.remove(key);
+                    }
+                    (format!("deleted {}", key), false)
+                }
+                Err(e) => (format!("could not delete {}: {:#}", key, e), true),
+            }
+        };
+        if let Some((_, p)) = self.picker.as_mut() {
+            p.note = Some(note);
+        }
+    }
+
     // ------------------------------------------------------ /character window
 
     /// `/character`: open the card of this character as an editable form.
@@ -1495,9 +1878,17 @@ impl App {
         self.card_modal = Some(CardModal::new(&shown, &self.input));
     }
 
-    fn cancel_card_modal(&mut self) {
+    async fn cancel_card_modal(&mut self) {
         let dirty = self.card_modal.as_ref().map(|m| m.dirty()).unwrap_or(false);
         self.card_modal = None;
+        if self.persona_edit.take().is_some() {
+            // Back to the persona window.
+            self.open_persona_picker().await;
+            if dirty {
+                self.set_status("persona: changes discarded", false);
+            }
+            return;
+        }
         if dirty {
             self.set_status("character card: changes discarded", false);
         }
@@ -1506,6 +1897,10 @@ impl App {
     /// Write every changed field of the form to the card, then close it. On a
     /// failure the form stays open (what was already written counts as saved).
     async fn save_card_modal(&mut self) {
+        if self.persona_edit.is_some() {
+            self.save_persona_form().await;
+            return;
+        }
         let changes = match self.card_modal.as_mut() {
             Some(m) => {
                 m.sync();
@@ -1722,7 +2117,7 @@ impl App {
             self.set_status(msg, err);
         }
         if cancel {
-            self.cancel_card_modal();
+            self.cancel_card_modal().await;
             return;
         }
         match cmd_result {
@@ -1758,7 +2153,7 @@ impl App {
                     None => return,
                 };
                 if cancel {
-                    self.cancel_card_modal();
+                    self.cancel_card_modal().await;
                 } else if save {
                     self.save_card_modal().await;
                 } else if let Some(c) = self.card_modal.as_mut() {
@@ -2006,8 +2401,28 @@ impl App {
         } else {
             format!("deleted branch {} of {}; the chat has no more branches", was, total)
         };
-        self.set_status(msg, false);
         self.save().await;
+        // The full-chat copy `/summarize` kept goes with the branch: the newest
+        // one, or all that are left when no branch remains.
+        let mut gone: Vec<String> = Vec::new();
+        if let Ok(chats) = self.api.chats(&self.chat.avatar).await {
+            let ids: Vec<String> = chats.iter().map(chat::file_id).collect();
+            let mut backups = chat::backups_of(&self.chat.file, &ids);
+            if left >= 2 {
+                backups = backups.into_iter().last().into_iter().collect();
+            }
+            for name in backups {
+                if self.api.delete_chat(&self.chat.avatar, &name).await.is_ok() {
+                    gone.push(name);
+                }
+            }
+        }
+        let msg = if gone.is_empty() {
+            msg
+        } else {
+            format!("{}; deleted {}", msg, gone.join(", "))
+        };
+        self.set_status(msg, false);
     }
 
     /// Show the previous (`dir` < 0) or next summary branch of a summarized
