@@ -623,7 +623,11 @@ impl App {
     /// Text and "is error" flag for the bottom status line.
     /// Where the backend can tokenize: only through the standalone connection.
     fn token_backend(&self) -> Option<tokens::Backend> {
-        self.conn.as_ref()?;
+        let c = self.conn.as_ref()?;
+        // A connection that cannot count tokens keeps the estimate.
+        if !c.provider().is_some_and(|p| p.tokenizes(&c.resolved())) {
+            return None;
+        }
         if jstr(&self.settings, "main_api") != "textgenerationwebui" {
             return None;
         }

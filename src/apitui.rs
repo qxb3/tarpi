@@ -1328,7 +1328,7 @@ fn draw(f: &mut Frame, t: &mut Tui) {
 pub async fn manage(term: &mut crate::Term, events: &mut EventStream) -> Result<()> {
     let mut store = Store::load()?;
 
-    // First time: start with one llama.cpp connection to fill in.
+    // First time: start with one connection of the first kind (llama.cpp) to fill in.
     let mut fresh = false;
     if store.connections.is_empty() {
         if let Some(p) = conn::providers().first() {

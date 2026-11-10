@@ -7,7 +7,8 @@
 //!
 //! ## Adding a new kind of connection
 //!
-//! 1. Write a type that implements [`Provider`] (copy `llamacpp.rs`): it lists
+//! 1. Write a type that implements [`Provider`] (copy `llamacpp.rs` or
+//!    `openai.rs`, the OpenAI-compatible `/v1/completions` one): it lists
 //!    its settings as [`ParamDef`]s (the `api` TUI draws them as sliders,
 //!    toggles and text fields on its own), builds the request body and reads
 //!    the reply stream.
@@ -17,6 +18,7 @@
 //! generation loop only talk to the trait.
 
 pub mod llamacpp;
+pub mod openai;
 
 use crate::api::short;
 use crate::gen::{GenEvent, GenMsg};
@@ -228,6 +230,12 @@ pub trait Provider: Send + Sync {
     /// An error message inside a JSON body, if there is one.
     fn error_in(&self, body: &Value) -> Option<String>;
 
+    /// Whether the backend can count tokens exactly (see `tokenize_request`).
+    /// When it cannot, the status row shows an estimate and nothing is asked.
+    fn tokenizes(&self, _params: &Map<String, Value>) -> bool {
+        true
+    }
+
     /// Paths tried (in order) to find out whether the backend is up.
     fn info_paths(&self) -> &'static [&'static str];
     fn parse_info(&self, body: &Value) -> Info;
@@ -237,10 +245,12 @@ pub trait Provider: Send + Sync {
 }
 
 static LLAMACPP: llamacpp::LlamaCpp = llamacpp::LlamaCpp;
+static OPENAI: openai::OpenAi = openai::OpenAi;
 
-/// Every kind of connection tarpi knows. Add new ones here.
+/// Every kind of connection tarpi knows. Add new ones here. The first is the
+/// one the very first `/api` creates.
 pub fn providers() -> Vec<&'static dyn Provider> {
-    vec![&LLAMACPP as &'static dyn Provider]
+    vec![&LLAMACPP as &'static dyn Provider, &OPENAI as &'static dyn Provider]
 }
 
 pub fn provider(kind: &str) -> Option<&'static dyn Provider> {
@@ -425,8 +435,10 @@ pub fn for_summary(c: &Connection, max_tokens: usize) -> Connection {
     let has = |k: &str| keys.iter().any(|x| *x == k);
     let mut set: Vec<(&str, Value)> = vec![
         ("n_predict", json!(max_tokens as i64)),
+        ("max_tokens", json!(max_tokens as i64)),
         ("temperature", json!(0.5)),
         ("repeat_penalty", json!(1.0)),
+        ("repetition_penalty", json!(1.0)),
         ("frequency_penalty", json!(0.0)),
         ("presence_penalty", json!(0.0)),
         ("dry_multiplier", json!(0.0)),
@@ -705,6 +717,9 @@ pub async fn count_tokens(c: &Connection, text: &str) -> Result<usize> {
     let p = c
         .provider()
         .ok_or_else(|| anyhow!("unknown connection kind '{}'", c.kind))?;
+    if !p.tokenizes(&c.resolved()) {
+        bail!("{} has no token counting switched on (see /api)", p.label());
+    }
     let (path, body) = p.tokenize_request(text);
     let url = format!("{}{}", c.base(), path);
     let http = client()?;

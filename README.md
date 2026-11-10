@@ -30,7 +30,7 @@ Everything else happens inside the chat:
 | `/note` or `/an` | opens this chat's Author's Note in a form: the text and where, how deep and how often it is sent (see *Author's Note*) |
 | `/chars` | opens a window with every character (★ = favourite) to switch to someone else, or press `d` on one to delete it with all its chats (asks `y`; see *Deleting characters*) |
 | `/import <card>` | adds a character: a card `.png` / `.json` file, a chub.ai or pygmalion.chat link, a direct link to a card file, or the card's JSON text (see *Importing characters*) |
-| `/api` | open the API settings (llama.cpp address and every model setting) right here; when you quit them (`q` / Esc) you are back in this same chat, and the very next reply uses what you saved |
+| `/api` | open the API settings (server address and every model setting of a llama.cpp or OpenAI-compatible connection) right here; when you quit them (`q` / Esc) you are back in this same chat, and the very next reply uses what you saved |
 | `/formatting` | open the formatting editor: context template (story string), instruct template and reply cleanup; when you quit it (`q` / Esc) you are back in this same chat (see *Formatting*) |
 | `/char` | open this character's card in a window: every field, editable, with **Cancel** and **Save** (see below) |
 | `/char-img` | shows the character card's picture in a square window (full resolution in terminals with the Kitty graphics protocol, iTerm2 images or Sixel (kitty, WezTerm, Ghostty, iTerm2, foot, Windows Terminal, mlterm); elsewhere, including Termux and tmux, it is drawn with coloured half-block cells, which is coarse. `TARPI_IMAGE=blocks|kitty|iterm|sixel` forces one (`sixel` is never auto-detected beyond the terminals listed); any key or click closes it) |
@@ -128,11 +128,11 @@ What the server sees by itself is the live connection (`connected` / `disconnect
 
 ## API connection (`/api`)
 
-The API connection belongs to tarpi, not to SillyTavern. `/api` inside a chat opens a full-screen manager; connections are stored in `~/.config/tarpi/api.yaml`. Replies go **straight to the backend** (llama.cpp's `/completion`), SillyTavern's API selection and sampler presets are ignored, and the token count in the status row comes from the backend's own `/tokenize`. There is no fallback to any other API: if `api.yaml` has no active connection, sending a message shows `no API connection` and nothing is generated.
+The API connection belongs to tarpi, not to SillyTavern. `/api` inside a chat opens a full-screen manager; connections are stored in `~/.config/tarpi/api.yaml`. Replies go **straight to the backend** (llama.cpp's `/completion`, or `/v1/completions` for an OpenAI-compatible server), SillyTavern's API selection and sampler presets are ignored, and the token count in the status row comes from the backend's own `/tokenize` (an OpenAI-compatible connection only asks for it when *Count tokens on the server* is on). There is no fallback to any other API: if `api.yaml` has no active connection, sending a message shows `no API connection` and nothing is generated.
 
 There is no separate command for it: type `/api` in any chat. The manager takes over the same terminal window and the chat is not closed, so when you quit it (`q` / Esc) you are back exactly where you were: same chat, same scroll position, unsent draft and swipes untouched. Whatever you saved applies at once (title bar and token count update) and to the next reply. If there is no connection yet, the chat starts with a hint to type `/api`, and the first time you open it a connection named `local` is created for you to fill in. On a phone, mouse reporting is switched on while the manager is open (so sliders can be tapped) and goes back to what the chat had when you leave it.
 
-The first time it opens it creates a connection named `local` (llama.cpp at `http://127.0.0.1:8080`). Left: the connections (★ = the one chats use). Right: the server address, an optional API key (only for servers started with `--api-key`) and every setting of the selected connection, grouped as Generation, Sampling, Repetition, DRY, XTC, Mirostat, Dynamic temperature and Advanced. Numbers are sliders; settings that differ from their default are yellow.
+The first time it opens it creates a connection named `local` (llama.cpp at `http://127.0.0.1:8080`). `n` makes another one and asks for its kind first: **llama.cpp** or **OpenAI-compatible** (see below). Left: the connections (★ = the one chats use). Right: the server address, an optional API key (only for servers started with `--api-key`) and every setting of the selected connection, grouped as Generation, Sampling, Repetition, DRY, XTC, Mirostat, Dynamic temperature and Advanced. Numbers are sliders; settings that differ from their default are yellow.
 
 | Key / click | Action |
 | --- | --- |
@@ -155,7 +155,17 @@ A preset sets every sampler setting (Sampling, Repetition, DRY, XTC, Mirostat, D
 
 Chats re-read `api.yaml` before every reply, so saving in `/api` (even from another terminal's chat) applies to the next message. *Context size* is how much history tarpi sends; keep it at or below the server's `-c`. `stop strings`, `DRY breakers` and `Sampler order` are text fields (the first two a JSON list); a value that is not valid is refused when you press Enter.
 
-Only llama.cpp is built in, but a connection kind is one small file: implement `conn::Provider` (its settings list, request body and stream parser; see `src/conn/llamacpp.rs`) and add it to `conn::providers()`. The manager, the file format, token counting and generation pick it up without further changes.
+### OpenAI-compatible connections
+
+The kind **OpenAI-compatible** talks to any server that answers the OpenAI *text completions* API, `POST /v1/completions`: vLLM, LM Studio, KoboldCpp, TabbyAPI, text-generation-webui, llama.cpp's `/v1` routes, OpenRouter and similar. Set the address (`http://127.0.0.1:8000`, or with a trailing `/v1`: it is added for you) and, if the server wants one, the API key (sent as `Authorization: Bearer`). The *Model name* setting is sent as `model` with every request; OpenAI, vLLM, OpenRouter and LM Studio need it, many local servers ignore it. `t` tests the connection with `GET /v1/models` and shows the first model it lists (and vLLM's context length, which `c` can copy).
+
+tarpi builds the whole prompt itself (your context and instruct templates), so it is sent as one text `prompt`. The **chat completions** endpoint (`/v1/chat/completions`, `messages`) is not used, so a model that is only offered as a chat model there will not work.
+
+Temperature, Top P, *Max reply tokens*, the stops and *Stream reply* are always sent. Settings only some servers know (Top K, Min P, Typical P, the repetition penalty (sent as both `repetition_penalty` and `repeat_penalty`), the frequency and presence penalties, a seed, *Ban EOS token*) are left out while they hold their off value (0, 1 or -1), so a strict server never gets a field it would refuse. For anything else a server accepts (XTC, DRY, `top_a`, ...) type a JSON object into *Extra request fields*, e.g. `{"xtc_probability": 0.5, "xtc_threshold": 0.1}`; it is merged into every request and wins over the settings above. The Normal / Creative / Crazy presets set Sampling and Repetition only; they switch Top K, Min P and the repetition penalty on, so use them with servers that know those fields.
+
+OpenAI itself has no tokenizer route, so the token count in the status row is an estimate (`chars_per_token`) unless the server has `POST /tokenize` (vLLM and llama.cpp do) and *Count tokens on the server* is turned on.
+
+A connection kind is one small file: implement `conn::Provider` (its settings list, request body and stream parser; see `src/conn/llamacpp.rs` and `src/conn/openai.rs`) and add it to `conn::providers()`. The manager, the file format, token counting and generation pick it up without further changes.
 
 ## Formatting
 
@@ -536,12 +546,12 @@ Everything tarpi needs is its own: cards in `~/.config/tarpi/characters/`, perso
 
 1. Settings are built in memory from the files above; no server is asked.
 2. Character card and chat are read from, and saved to, tarpi's own folders.
-3. `src/textgen.rs` renders your context template (story string), instruct template, example dialogue and stop strings. `src/conn/` sends that prompt with the connection's own sampler values to the backend (llama.cpp's `/completion`).
+3. `src/textgen.rs` renders your context template (story string), instruct template, example dialogue and stop strings. `src/conn/` sends that prompt with the connection's own sampler values to the backend (llama.cpp's `/completion` or an OpenAI-compatible `/v1/completions`).
 4. The stream is rendered live and the chat is saved back to the same `.jsonl` file.
 
 ## Limitations
 
-- Only llama.cpp is supported, through a standalone connection (`/api`). No other server is contacted (apart from `tarpi serve` when you use `tarpi connect`, and a SillyTavern server for `import-st`).
+- Only llama.cpp and OpenAI-compatible text completion servers are supported, through a standalone connection (`/api`); the chat completions endpoint is not used. No other server is contacted (apart from `tarpi serve` when you use `tarpi connect`, and a SillyTavern server for `import-st`).
 - `tarpi connect` syncs whole files: there is no merging inside a chat, no encryption (plain HTTP with a token), and an open chat is not reloaded when another device changes it.
 - No World Info/lorebooks, vector memory, group chats, or tool calling. The prompt is therefore close to, but not byte-identical to, the web UI's when you use those.
 - Token counting for trimming history to the context window is an estimate (`chars_per_token`), not a real tokenizer. The totals in the status row are exact once the connection's tokenizer has answered (see Keys).
