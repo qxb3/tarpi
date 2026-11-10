@@ -19,6 +19,7 @@
 
 pub mod llamacpp;
 pub mod openai;
+pub mod openrouter;
 
 use crate::api::short;
 use crate::gen::{GenEvent, GenMsg};
@@ -242,15 +243,52 @@ pub trait Provider: Send + Sync {
     /// Path and body of a tokenize request, and how to read the count back.
     fn tokenize_request(&self, text: &str) -> (&'static str, Value);
     fn parse_token_count(&self, body: &Value) -> Option<usize>;
+
+    /// Where the backend lists its models, for kinds that have such a list
+    /// (OpenRouter). The `api` TUI then opens a filterable picker when the
+    /// model setting is edited. `None` (the default): a plain text field.
+    fn model_source(&self) -> Option<ModelSource> {
+        None
+    }
+    /// The models in the body `model_source().path` answered with.
+    fn parse_models(&self, _body: &Value) -> Vec<ModelEntry> {
+        Vec::new()
+    }
+}
+
+/// Where a kind of connection lists its models (see `Provider::model_source`).
+#[derive(Clone, Copy, Debug)]
+pub struct ModelSource {
+    /// Key of the setting that holds the model name.
+    pub param: &'static str,
+    /// GET path of the list.
+    pub path: &'static str,
+    /// Whether the list is only sent to callers with an API key.
+    pub needs_key: bool,
+}
+
+/// One model of such a list.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModelEntry {
+    pub id: String,
+    pub name: String,
+    pub context: Option<i64>,
+    /// Price as shown to people (`$0.15/$0.60 per M`, `free`), empty if unknown.
+    pub price: String,
 }
 
 static LLAMACPP: llamacpp::LlamaCpp = llamacpp::LlamaCpp;
 static OPENAI: openai::OpenAi = openai::OpenAi;
+static OPENROUTER: openrouter::OpenRouter = openrouter::OpenRouter;
 
 /// Every kind of connection tarpi knows. Add new ones here. The first is the
 /// one the very first `/api` creates.
 pub fn providers() -> Vec<&'static dyn Provider> {
-    vec![&LLAMACPP as &'static dyn Provider, &OPENAI as &'static dyn Provider]
+    vec![
+        &LLAMACPP as &'static dyn Provider,
+        &OPENAI as &'static dyn Provider,
+        &OPENROUTER as &'static dyn Provider,
+    ]
 }
 
 pub fn provider(kind: &str) -> Option<&'static dyn Provider> {
@@ -623,6 +661,43 @@ pub async fn probe(c: &Connection) -> Result<Info> {
         return Ok(p.parse_info(&v));
     }
     Err(last.unwrap_or_else(|| anyhow!("no answer from {}", c.base())))
+}
+
+/// Fetch the model list of a connection whose kind has one.
+pub async fn list_models(c: &Connection) -> Result<Vec<ModelEntry>> {
+    let p = c
+        .provider()
+        .ok_or_else(|| anyhow!("unknown connection kind '{}'", c.kind))?;
+    let src = p
+        .model_source()
+        .ok_or_else(|| anyhow!("{} has no model list", p.label()))?;
+    if c.url.trim().is_empty() {
+        bail!("no address set");
+    }
+    let http = client()?;
+    let url = format!("{}{}", c.base(), src.path);
+    let rb = http.get(&url).timeout(Duration::from_secs(20));
+    let rb = if src.needs_key { authed(rb, c) } else { rb };
+    let resp = rb
+        .send()
+        .await
+        .with_context(|| format!("could not reach {}", c.base()))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let detail = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|v| p.error_in(&v))
+            .unwrap_or_else(|| short(&text, 120));
+        bail!("{} returned {}{}: {}", src.path, status, status_hint(status), detail);
+    }
+    let v: Value = serde_json::from_str(&text)
+        .with_context(|| format!("unexpected response: {}", short(&text, 120)))?;
+    let list = p.parse_models(&v);
+    if list.is_empty() {
+        bail!("the model list is empty");
+    }
+    Ok(list)
 }
 
 /// `tarpi connect` (without `--local-api`): the host of the machine that runs

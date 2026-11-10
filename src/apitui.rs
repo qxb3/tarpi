@@ -5,7 +5,7 @@
 //! comes from the connection kind (`conn::Provider::params`), so a new kind of
 //! connection needs no changes here.
 
-use crate::conn::{self, Connection, Info, ParamDef, ParamKind, Store};
+use crate::conn::{self, Connection, Info, ModelEntry, ParamDef, ParamKind, Store};
 use anyhow::Result;
 use crossterm::event::{
     Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
@@ -24,6 +24,10 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 /// What a connection test came back with (`Err` = a message to show).
 type Probe = std::result::Result<Info, String>;
+
+/// A fetched model list: the address it was fetched from, then the list (or
+/// a message to show).
+type ModelsMsg = (String, std::result::Result<Vec<ModelEntry>, String>);
 
 // ------------------------------------------------------------------- state
 
@@ -56,6 +60,9 @@ enum Modal {
     PickKind(usize),
     /// Choosing a preset (Normal, Creative, ...) for the selected connection.
     PickPreset(usize),
+    /// Choosing the model from the backend's own list (`Provider::model_source`):
+    /// the typed filter and the highlighted entry of the matches.
+    PickModel { filter: Vec<char>, sel: usize },
 }
 
 struct Tui {
@@ -85,10 +92,22 @@ struct Tui {
     track_x: u16,
     track_w: u16,
     tx: UnboundedSender<(String, Probe)>,
+    /// The last model list fetched, with the address it came from.
+    models: Option<(String, Vec<ModelEntry>)>,
+    models_loading: bool,
+    models_err: Option<String>,
+    mtx: UnboundedSender<ModelsMsg>,
+    /// Where the model picker drew its list, and the first entry shown.
+    pick_rect: Rect,
+    pick_top: usize,
 }
 
 impl Tui {
-    fn new(store: Store, tx: UnboundedSender<(String, Probe)>) -> Tui {
+    fn new(
+        store: Store,
+        tx: UnboundedSender<(String, Probe)>,
+        mtx: UnboundedSender<ModelsMsg>,
+    ) -> Tui {
         let cur = store
             .connections
             .iter()
@@ -115,6 +134,12 @@ impl Tui {
             track_x: 0,
             track_w: 0,
             tx,
+            models: None,
+            models_loading: false,
+            models_err: None,
+            mtx,
+            pick_rect: Rect::default(),
+            pick_top: 0,
         };
         t.rebuild();
         t
@@ -166,6 +191,8 @@ impl Tui {
         self.cur = i;
         self.info = None;
         self.testing = false;
+        self.models_loading = false;
+        self.models_err = None;
         self.row = 1;
         self.scroll = 0;
         self.follow = true;
@@ -332,18 +359,194 @@ impl Tui {
         let n = match &self.info {
             Some(Ok(i)) => i.n_ctx,
             _ => None,
-        };
+        }
+        .or_else(|| self.model_ctx());
         let Some(n) = n else {
-            self.say("no context size known yet: test the connection first (t)", true);
+            self.say(
+                "no context size known yet: test the connection (t) or pick a model",
+                true,
+            );
             return;
         };
         match self.defs.iter().position(|d| d.key == "max_context") {
             Some(i) => {
                 let d = self.defs[i];
                 self.set_param(i, d.snap(n as f64));
-                self.say(format!("context size set to the server's {}", n), false);
+                self.say(format!("context size set to {}", n), false);
             }
             None => self.say("this connection has no context size setting", true),
+        }
+    }
+
+    // ------------------------------------------------------- model list
+
+    fn model_source(&self) -> Option<conn::ModelSource> {
+        self.conn()?.provider()?.model_source()
+    }
+
+    /// Address the selected connection's model list comes from.
+    fn models_key(&self) -> Option<String> {
+        self.conn().map(|c| c.base())
+    }
+
+    /// The fetched list, if it is the selected connection's.
+    fn cached_models(&self) -> Option<&Vec<ModelEntry>> {
+        let key = self.models_key()?;
+        match &self.models {
+            Some((k, list)) if *k == key => Some(list),
+            _ => None,
+        }
+    }
+
+    /// The model the connection is set to (empty = none).
+    fn current_model(&self) -> String {
+        let Some(src) = self.model_source() else {
+            return String::new();
+        };
+        let Some(c) = self.conn() else {
+            return String::new();
+        };
+        match self.defs.iter().find(|d| d.key == src.param) {
+            Some(d) => c.get(d).as_str().unwrap_or("").trim().to_string(),
+            None => String::new(),
+        }
+    }
+
+    /// Context length of the current model, when the list knows it.
+    fn model_ctx(&self) -> Option<i64> {
+        let cur = self.current_model();
+        if cur.is_empty() {
+            return None;
+        }
+        self.cached_models()?
+            .iter()
+            .find(|m| m.id == cur)
+            .and_then(|m| m.context)
+    }
+
+    /// Ids of the models matching `filter`, in list order.
+    fn match_ids(&self, filter: &[char]) -> Vec<String> {
+        let text: String = filter.iter().collect();
+        match self.cached_models() {
+            Some(list) => filter_models(list, &text)
+                .into_iter()
+                .map(|m| m.id.clone())
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Where the current model sits among the matches (0 if it is not there).
+    fn model_pos(&self, filter: &[char]) -> usize {
+        let cur = self.current_model();
+        self.match_ids(filter)
+            .iter()
+            .position(|id| *id == cur)
+            .unwrap_or(0)
+    }
+
+    fn load_models(&mut self) {
+        let Some(c) = self.conn().cloned() else {
+            return;
+        };
+        self.models_loading = true;
+        self.models_err = None;
+        let tx = self.mtx.clone();
+        tokio::spawn(async move {
+            let res = conn::list_models(&c).await.map_err(|e| format!("{:#}", e));
+            let _ = tx.send((c.base(), res));
+        });
+    }
+
+    fn on_models(&mut self, key: String, res: std::result::Result<Vec<ModelEntry>, String>) {
+        self.models_loading = false;
+        let current = self.models_key().as_deref() == Some(key.as_str());
+        match res {
+            Ok(list) => {
+                self.models = Some((key, list));
+                if current {
+                    self.models_err = None;
+                    // Put the highlight on the model in use, unless the person
+                    // already started typing or moving.
+                    let pos = if let Modal::PickModel { filter, sel } = &self.modal {
+                        if filter.is_empty() && *sel == 0 {
+                            Some(self.model_pos(filter))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    if let (Some(p), Modal::PickModel { sel, .. }) = (pos, &mut self.modal) {
+                        *sel = p;
+                    }
+                }
+            }
+            Err(e) => {
+                if current {
+                    self.models_err = Some(e);
+                }
+            }
+        }
+    }
+
+    fn open_model_picker(&mut self) {
+        if self.cached_models().is_none() {
+            self.load_models();
+        }
+        let filter: Vec<char> = Vec::new();
+        let sel = self.model_pos(&filter);
+        self.modal = Modal::PickModel { filter, sel };
+    }
+
+    /// Store `id` as the model (from the list, or typed when nothing matched).
+    fn pick_model(&mut self, id: &str) {
+        let Some(src) = self.model_source() else {
+            return;
+        };
+        let Some(i) = self.defs.iter().position(|d| d.key == src.param) else {
+            return;
+        };
+        self.set_param(i, Value::String(id.to_string()));
+        let ctx = self
+            .cached_models()
+            .and_then(|l| l.iter().find(|m| m.id == id))
+            .and_then(|m| m.context);
+        let msg = match ctx {
+            Some(n) => format!(
+                "model set to {} (context {}: press c to use it as Context size; s saves)",
+                id, n
+            ),
+            None => format!("model set to {} (press s to save)", id),
+        };
+        self.say(msg, false);
+    }
+
+    fn on_mouse_picker(&mut self, m: MouseEvent) {
+        let Modal::PickModel { filter, sel } = std::mem::replace(&mut self.modal, Modal::None)
+        else {
+            return;
+        };
+        let ids = self.match_ids(&filter);
+        let last = ids.len().saturating_sub(1);
+        let mut sel = sel.min(last);
+        let mut keep = true;
+        match m.kind {
+            MouseEventKind::ScrollUp => sel = sel.saturating_sub(3),
+            MouseEventKind::ScrollDown => sel = (sel + 3).min(last),
+            MouseEventKind::Down(MouseButton::Left) => {
+                if self.pick_rect.contains(Position::new(m.column, m.row)) {
+                    let idx = self.pick_top + (m.row - self.pick_rect.y) as usize;
+                    if let Some(id) = ids.get(idx) {
+                        keep = false;
+                        self.pick_model(id);
+                    }
+                }
+            }
+            _ => {}
+        }
+        if keep {
+            self.modal = Modal::PickModel { filter, sel };
         }
     }
 
@@ -373,6 +576,10 @@ impl Tui {
                 };
                 if matches!(d.kind, ParamKind::Toggle { .. }) {
                     self.adjust(1.0);
+                    return;
+                }
+                if self.model_source().is_some_and(|src| src.param == d.key) {
+                    self.open_model_picker();
                     return;
                 }
                 let v = self.value(&d);
@@ -680,6 +887,52 @@ impl Tui {
                     self.modal = Modal::PickPreset(i);
                 }
             }
+            Modal::PickModel { mut filter, mut sel } => {
+                let ids = self.match_ids(&filter);
+                let last = ids.len().saturating_sub(1);
+                let mut keep = true;
+                match k.code {
+                    KeyCode::Esc => keep = false,
+                    KeyCode::Enter => {
+                        let typed: String = filter.iter().collect();
+                        let typed = typed.trim();
+                        // The highlighted match, or (when nothing matches) what
+                        // was typed, so a model missing from the list still works.
+                        let chosen = match ids.get(sel) {
+                            Some(id) => Some(id.clone()),
+                            None if !typed.is_empty() => Some(typed.to_string()),
+                            None => None,
+                        };
+                        if let Some(id) = chosen {
+                            keep = false;
+                            self.pick_model(&id);
+                        }
+                    }
+                    KeyCode::Up => sel = sel.saturating_sub(1),
+                    KeyCode::Down => sel = (sel + 1).min(last),
+                    KeyCode::PageUp => sel = sel.saturating_sub(10),
+                    KeyCode::PageDown => sel = (sel + 10).min(last),
+                    KeyCode::Home => sel = 0,
+                    KeyCode::End => sel = last,
+                    KeyCode::Char('u') if ctrl => {
+                        filter.clear();
+                        sel = 0;
+                    }
+                    KeyCode::Char('r') if ctrl => self.load_models(),
+                    KeyCode::Char(c) if !ctrl => {
+                        filter.push(c);
+                        sel = 0;
+                    }
+                    KeyCode::Backspace => {
+                        filter.pop();
+                        sel = 0;
+                    }
+                    _ => {}
+                }
+                if keep {
+                    self.modal = Modal::PickModel { filter, sel };
+                }
+            }
             Modal::None => self.on_key_plain(k),
         }
     }
@@ -780,15 +1033,26 @@ impl Tui {
     }
 
     fn on_paste(&mut self, s: &str) {
-        if let Modal::Edit { buf, cur, .. } = &mut self.modal {
-            for c in s.chars().filter(|c| !c.is_control()) {
-                buf.insert(*cur, c);
-                *cur += 1;
+        match &mut self.modal {
+            Modal::Edit { buf, cur, .. } => {
+                for c in s.chars().filter(|c| !c.is_control()) {
+                    buf.insert(*cur, c);
+                    *cur += 1;
+                }
             }
+            Modal::PickModel { filter, sel } => {
+                filter.extend(s.chars().filter(|c| !c.is_control()));
+                *sel = 0;
+            }
+            _ => {}
         }
     }
 
     fn on_mouse(&mut self, m: MouseEvent) {
+        if matches!(self.modal, Modal::PickModel { .. }) {
+            self.on_mouse_picker(m);
+            return;
+        }
         if !matches!(self.modal, Modal::None) {
             return;
         }
@@ -868,6 +1132,28 @@ fn host_of(url: &str) -> String {
     let u = url.trim();
     let u = u.split_once("://").map(|(_, r)| r).unwrap_or(u);
     u.split('/').next().unwrap_or("").to_string()
+}
+
+/// The models whose id or name has every word of `filter` (any case).
+fn filter_models<'a>(list: &'a [ModelEntry], filter: &str) -> Vec<&'a ModelEntry> {
+    let words: Vec<String> = filter.split_whitespace().map(|w| w.to_lowercase()).collect();
+    list.iter()
+        .filter(|m| {
+            let hay = format!("{} {}", m.id, m.name).to_lowercase();
+            words.iter().all(|w| hay.contains(w.as_str()))
+        })
+        .collect()
+}
+
+/// `131072` -> `131k`, `1048576` -> `1M`.
+fn short_ctx(n: i64) -> String {
+    if n >= 1_000_000 {
+        format!("{}M", (n + 500_000) / 1_000_000)
+    } else if n >= 1000 {
+        format!("{}k", (n + 500) / 1000)
+    } else {
+        n.to_string()
+    }
 }
 
 const DIM: Color = Color::Rgb(128, 128, 128);
@@ -1006,7 +1292,7 @@ fn help_for(t: &Tui) -> String {
         Some(Row::Name) => "Name of this connection (used in api.yaml).".to_string(),
         Some(Row::Url) => "Address of the server, e.g. http://127.0.0.1:8080".to_string(),
         Some(Row::Key) => {
-            "Bearer token, only if the server runs with --api-key. Empty = none.".to_string()
+            "Bearer token: needed by hosted services (OpenRouter) and servers run with --api-key. Empty = none.".to_string()
         }
         Some(Row::Param(i)) => t.defs.get(*i).map(|d| d.help.to_string()).unwrap_or_default(),
         _ => String::new(),
@@ -1290,6 +1576,140 @@ fn draw(f: &mut Frame, t: &mut Tui) {
         );
     }
 
+    // ---- model picker
+    let picking = if let Modal::PickModel { filter, sel } = &t.modal {
+        Some((filter.iter().collect::<String>(), *sel))
+    } else {
+        None
+    };
+    if let Some((filter_s, sel)) = picking {
+        let rect = centered(area, 100, area.height.saturating_sub(2));
+        f.render_widget(Clear, rect);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(" Pick a model ");
+        let inner = block.inner(rect);
+        f.render_widget(block, rect);
+        let parts = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+        let head = " Filter: ";
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(head, Style::default().fg(Color::Cyan)),
+                Span::raw(filter_s.clone()),
+            ])),
+            parts[0],
+        );
+        let cx = parts[0].x + head.chars().count() as u16 + filter_s.chars().count() as u16;
+        f.set_cursor_position((
+            cx.min(parts[0].x + parts[0].width.saturating_sub(1)),
+            parts[0].y,
+        ));
+
+        let current = t.current_model();
+        let h = parts[2].height as usize;
+        let w = parts[2].width as usize;
+        let (lines, total, all, top) = {
+            let hits: Vec<&ModelEntry> = match t.cached_models() {
+                Some(l) => filter_models(l, &filter_s),
+                None => Vec::new(),
+            };
+            let all = t.cached_models().map(|l| l.len()).unwrap_or(0);
+            let total = hits.len();
+            let sel = sel.min(total.saturating_sub(1));
+            let mut top = t.pick_top;
+            if sel < top {
+                top = sel;
+            } else if h > 0 && sel >= top + h {
+                top = sel + 1 - h;
+            }
+            top = top.min(total.saturating_sub(h));
+            let mut lines: Vec<Line> = Vec::new();
+            for (i, m) in hits.iter().enumerate().skip(top).take(h) {
+                let mut right = String::new();
+                if let Some(n) = m.context {
+                    right.push_str(&format!("{} ctx", short_ctx(n)));
+                }
+                if !m.price.is_empty() {
+                    if !right.is_empty() {
+                        right.push_str("  ");
+                    }
+                    right.push_str(&m.price);
+                }
+                let right_w = right.chars().count();
+                let show_right = right_w > 0 && w > right_w + 14;
+                let left_w = if show_right { w - right_w - 2 } else { w };
+                let mark = if m.id == current { "*" } else { " " };
+                let left = clip(&format!(" {}{}", mark, m.id), left_w);
+                let left = format!("{:<lw$}", left, lw = left_w);
+                let base = if i == sel {
+                    Style::default().fg(Color::Black).bg(Color::Cyan)
+                } else {
+                    Style::default()
+                };
+                let dim = if i == sel { base } else { Style::default().fg(DIM) };
+                let mut spans = vec![Span::styled(left, base)];
+                if show_right {
+                    spans.push(Span::styled("  ", base));
+                    spans.push(Span::styled(right, dim));
+                }
+                lines.push(Line::from(spans));
+            }
+            (lines, total, all, top)
+        };
+        t.pick_top = top;
+        t.pick_rect = parts[2];
+        f.render_widget(Paragraph::new(lines), parts[2]);
+
+        let (msg, color) = if t.models_loading && all == 0 {
+            (" loading the model list\u{2026}".to_string(), Color::Yellow)
+        } else if let (Some(e), 0) = (&t.models_err, all) {
+            (
+                format!(" could not load the list: {} (Ctrl+R retries)", e),
+                Color::Red,
+            )
+        } else if total == 0 && !filter_s.trim().is_empty() {
+            (
+                format!(" no match: Enter uses '{}' as typed", filter_s.trim()),
+                Color::Yellow,
+            )
+        } else {
+            (
+                format!(
+                    " {} of {} models{}",
+                    total,
+                    all,
+                    if t.models_loading { " (refreshing\u{2026})" } else { "" }
+                ),
+                DIM,
+            )
+        };
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                clip(&msg, parts[1].width as usize),
+                Style::default().fg(color),
+            )),
+            parts[1],
+        );
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                clip(
+                    " \u{2191}\u{2193} select  Enter pick  Esc cancel  Ctrl+U clear  Ctrl+R reload  * = in use",
+                    parts[3].width as usize,
+                ),
+                Style::default().fg(DIM),
+            )),
+            parts[3],
+        );
+    }
+
     // ---- kind picker
     if let Modal::PickKind(sel) = &t.modal {
         let kinds = conn::providers();
@@ -1342,18 +1762,20 @@ pub async fn manage(term: &mut crate::Term, events: &mut EventStream) -> Result<
     }
 
     let (tx, mut rx) = unbounded_channel();
-    let mut tui = Tui::new(store, tx);
+    let (mtx, mut mrx) = unbounded_channel();
+    let mut tui = Tui::new(store, tx, mtx);
     tui.dirty = fresh;
     if fresh {
         tui.say("first connection created: set its address, then press s to save", false);
     }
-    event_loop(term, &mut tui, &mut rx, events).await
+    event_loop(term, &mut tui, &mut rx, &mut mrx, events).await
 }
 
 async fn event_loop(
     term: &mut crate::Term,
     t: &mut Tui,
     rx: &mut UnboundedReceiver<(String, Probe)>,
+    mrx: &mut UnboundedReceiver<ModelsMsg>,
     events: &mut EventStream,
 ) -> Result<()> {
     t.test();
@@ -1375,10 +1797,54 @@ async fn event_loop(
                     t.on_probe(name, res);
                 }
             }
+            m = mrx.recv() => {
+                if let Some((key, res)) = m {
+                    t.on_models(key, res);
+                }
+            }
         }
         if t.quit {
             break;
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(id: &str, name: &str) -> ModelEntry {
+        ModelEntry {
+            id: id.to_string(),
+            name: name.to_string(),
+            ..ModelEntry::default()
+        }
+    }
+
+    fn ids<'a>(list: &'a [ModelEntry], f: &str) -> Vec<&'a str> {
+        filter_models(list, f).iter().map(|m| m.id.as_str()).collect()
+    }
+
+    #[test]
+    fn filter_matches_every_word_in_id_or_name() {
+        let list = vec![
+            entry("meta-llama/llama-3.3-70b-instruct", "Meta: Llama 3.3 70B Instruct"),
+            entry("anthropic/claude-3.5-sonnet", "Anthropic: Claude 3.5 Sonnet"),
+            entry("mistralai/mistral-nemo:free", "Mistral: Nemo (free)"),
+        ];
+        assert_eq!(ids(&list, "").len(), 3);
+        assert_eq!(ids(&list, "LLAMA 70b"), ["meta-llama/llama-3.3-70b-instruct"]);
+        assert_eq!(ids(&list, "sonnet claude"), ["anthropic/claude-3.5-sonnet"]);
+        assert_eq!(ids(&list, "free"), ["mistralai/mistral-nemo:free"]);
+        assert!(ids(&list, "gpt").is_empty());
+    }
+
+    #[test]
+    fn context_is_short() {
+        assert_eq!(short_ctx(8192), "8k");
+        assert_eq!(short_ctx(131072), "131k");
+        assert_eq!(short_ctx(1048576), "1M");
+        assert_eq!(short_ctx(512), "512");
+    }
 }
