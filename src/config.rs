@@ -251,8 +251,9 @@ pub fn api_path() -> Option<PathBuf> {
 }
 
 /// `~/.config/tarpi/formatting.yaml`: the context and instruct templates (see `formatting`).
+/// Always this device's own: `tarpi serve` / `connect` do not share it.
 pub fn formatting_path() -> Option<PathBuf> {
-    data().map(|d| d.join("formatting.yaml"))
+    dir().map(|d| d.join("formatting.yaml"))
 }
 
 /// `~/.config/tarpi/persona/`: one `<id>.yaml` per persona, plus `active` (see `persona`).

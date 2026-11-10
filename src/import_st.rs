@@ -49,7 +49,7 @@ use clap::Parser;
         "  tarpi import-st http://127.0.0.1:8000 --overwrite"
     )
 )]
-struct ImportStCli {
+struct ImportStArgs {
     /// Address of the SillyTavern server, e.g. http://127.0.0.1:8000
     url: String,
 
@@ -73,7 +73,7 @@ fn with_scheme(url: &str) -> String {
 pub async fn run() -> Result<()> {
     // argv is `tarpi import-st ...`; drop the program name so "import-st"
     // plays the part of the binary name in clap's messages.
-    let cli = ImportStCli::parse_from(std::env::args().skip(1));
+    let cli = ImportStArgs::parse_from(std::env::args().skip(1));
     let server = with_scheme(&cli.url);
 
     let api = Api::connect(&server).await.with_context(|| {

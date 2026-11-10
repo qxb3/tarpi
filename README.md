@@ -25,7 +25,7 @@ Everything else happens inside the chat:
 | Command | What it does |
 | --- | --- |
 | `/chats` | opens a window over the chat with this character's chats: pick one (↑/↓ + Enter, or click / tap), choose `+ new chat`, or press `d` on one to delete it (asks `y`). Esc closes. The `_before-summary` copies are not listed. The chat that is open can't be deleted here (use `/newchat`), except when it is the last one: then it is deleted and tarpi exits |
-| `/one-shot` | locks **this chat file** as it is: editing, `/undo`, regenerating, `/continue`, swipes (and greeting switching) and summary branches are turned off. The status row asks you to type `/one-shot` a second time; typing anything else cancels. A grey `ONE SHOT MODE` tag stays at the start of the status row below the input box for as long as the chat is open; other status messages follow it after a `·`. A reply that is being written can't be stopped either (no Esc, no Stop button, and `/quit`, `/chats` and `/chars` wait until it is done). Sending new messages still works, and other chats are not affected. It is stored in the chat file's metadata (`st_cli_one_shot`); there is no command to undo it |
+| `/one-shot` | locks **this chat file** as it is: editing, `/undo`, regenerating, `/continue`, swipes (and greeting switching) and summary branches are turned off. The status row asks you to type `/one-shot` a second time; typing anything else cancels. A grey `ONE SHOT MODE` tag stays at the start of the status row below the input box for as long as the chat is open; other status messages follow it after a `·`. A reply that is being written can't be stopped either (no Esc, no Stop button, and `/quit`, `/chats` and `/chars` wait until it is done). Sending new messages still works, and other chats are not affected. It is stored in the chat file's metadata (`tarpi_one_shot`); there is no command to undo it |
 | `/persona` | opens a window to choose who you are in the chat; `+ new persona` creates one, `e` edits, `p` sets where its description goes into the prompt, `d` deletes (see Personas) |
 | `/system` | opens a window to choose the system prompt; `+ new system prompt` creates one, `e` edits, `d` deletes (see *System prompts*) |
 | `/prompt` | opens a window with the whole prompt the next reply would be sent with, as plain text (see *Prompt window*) |
@@ -87,14 +87,32 @@ tarpi connect                # afterwards; also all that is needed when the serv
 tarpi connect --local-api    # keep this device's own API connection (see below)
 ```
 
-**`tarpi serve`** does not open the chat screen. It prints the address and port and a **token** (none with `serve_trust_all: true`), then answers requests until you stop it with Ctrl+C. By default it listens on every network interface; `--local` limits it to `127.0.0.1`. It shares `characters/`, `chats/`, `persona/`, `system-prompt.jsonl`, `formatting.yaml` and `api.yaml` from `~/.config/tarpi/` and nothing else (`config.yaml`, `command_history`, `dictionary.txt` and the token stay on each machine). Every request needs the token, which is made the first time and kept in `~/.config/tarpi/serve-token` (not with `serve_trust_all: true`, see Security). You can keep using tarpi on the serving machine as usual.
+**`tarpi serve`** does not open the chat screen. It prints the address and port and a **token** (none with `serve_trust_all: true`), then answers requests until you stop it with Ctrl+C. By default it listens on every network interface; `--local` limits it to `127.0.0.1`. It shares `characters/`, `chats/`, `persona/`, `system-prompt.jsonl` and `api.yaml` from `~/.config/tarpi/` and nothing else (`config.yaml`, `formatting.yaml`, `command_history`, `dictionary.txt` and the token stay on each machine). Every request needs the token, which is made the first time and kept in `~/.config/tarpi/serve-token` (not with `serve_trust_all: true`, see Security). You can keep using tarpi on the serving machine as usual.
+
+**The log.** While it runs, `tarpi serve` prints one line per thing the connected devices do, with the time and the device's address:
+
+```
+14:02:11  192.168.1.31  first sync: 3 downloaded, 1 uploaded
+14:02:11  192.168.1.31  connected
+14:02:13  192.168.1.31  opened chat Sofia03 with Sofia
+14:05:40  192.168.1.31  updated chat Sofia03 with Sofia (uploaded)
+14:06:02  192.168.1.31  switched to chat Sofia01 with Sofia
+14:07:30  192.168.1.31  switched to Mira: opened chat Mira01
+14:09:12  192.168.1.31  added character Nadia (uploaded)
+14:09:12  192.168.1.31  synced: 1 downloaded
+14:11:48  192.168.1.31  left chat Mira01 with Mira
+14:11:49  192.168.1.31  disconnected after 9m 38s
+```
+
+What the server sees by itself is the live connection (`connected` / `disconnected after ...`), every upload (`added` for a file that did not exist yet, such as a new chat or an imported character, `updated` for one that did), every delete, uploads it refused because the file had changed here meanwhile, and wrong tokens. What only the device knows (a chat opened, switched or left, a new chat or a switch to another character, and the result of each sync, including a failed one, told once) it tells the server in a short note (`POST /v1/event`), which the server prints; an older `tarpi serve` just ignores those notes. Nothing is printed on the device's own screen. The server only prints; nothing is written to a file.
 
 **`tarpi connect [token]`** connects to the machine named by `serve_url` and keeps a *copy* of its data in `~/.config/tarpi/remote/<host>-<port>/`. Then you pick a character as in plain `tarpi` and the normal chat screen opens on that copy, so everything works as it does locally, also when the connection drops for a while. `serve_url` is `host:port` (the port may be left out for 7878) or `http://host:port`; without it `connect` says so. The token is the one `tarpi serve` prints; give it once and it is remembered (give the new one after `--new-token`). It can also be set in the `TARPI_TOKEN` environment variable.
 
-- The copy is brought up to date before the screen opens, kept in step every 3 seconds while it is open, and synced once more when you quit. Progress is not drawn on the chat screen; the last result is in `sync.log` in the copy's folder.
+- The copy is brought up to date before the screen opens, and synced once more when you quit. While it is open, a change here (looked for every 0.2 seconds) or on the server (the server pushes a note over the open connection) is synced at once; a slow check every 30 seconds is only a safety net (every 3 seconds against an older `tarpi serve`). Progress is not drawn on the chat screen; the last result is in `sync.log` in the copy's folder.
 - A file only the server changed is downloaded, a file only this device changed or created is uploaded, and deletes are passed on. Downloaded files keep the server's modification time, so "latest chat" is the same on every device.
 - A file changed on **both** sides keeps the newer version; the older one is kept beside it as `<file>.conflict-<time>` (not listed by tarpi, not shared). A file that one side changed and the other deleted is never deleted. A server that suddenly lists no files at all is never mirrored as "delete everything".
 - Token counts (the status row) are asked from the server's own backend through `tarpi serve`, so the address in the shared connection does not have to be reachable from this device. For replies and the connection check, a shared address of `127.0.0.1`, `localhost` or `0.0.0.0` is read as the server's host (same port), so llama.cpp must listen on a network address there (`--host 0.0.0.0`). With `--local-api` this device's own connection counts them.
+- The connection is watched over one TCP connection that stays open (both sides send a byte every 50 ms): if `tarpi serve` is stopped or the machine goes away, or this device loses its network, `tarpi connect` quits at once; a link that just goes silent is noticed after 0.3 seconds. A busy or slow link can therefore close it by mistake; nothing is lost when that happens. Against an older `tarpi serve` it asks every 2 seconds instead (about 6 seconds). Your changes stay in the local copy and are sent the next time you connect. A server that answers with a refusal (a new token, say) is still "there".
 - `--local-api` keeps `api.yaml` on this device: a phone usually cannot reach a model at the server's `127.0.0.1:8080`, so give it its own connection with `/api`. Without it, the API connections are shared like everything else.
 - Chats open on two devices at once behave like two terminals on one file: when another device has changed the open chat, saving it is refused (`save refused ... Reopen tarpi`) and nothing is lost; reopen the chat to load the other device's version.
 
@@ -133,11 +151,11 @@ Only llama.cpp is built in, but a connection kind is one small file: implement `
 
 ## Formatting
 
-`/formatting` opens a full-screen editor for how the prompt is laid out. The settings are tarpi's own, kept in `~/.config/tarpi/formatting.yaml` (every setting is written out; hand edits are fine). Until you have saved it, the built-in defaults apply, and the editor starts from them. Nothing here is read from a SillyTavern server.
+`/formatting` opens a full-screen editor for how the prompt is laid out. The settings are tarpi's own, kept in `~/.config/tarpi/formatting.yaml` (every setting is written out; hand edits are fine). It is local to each device: `tarpi serve` and `tarpi connect` do not share it, so every device has its own formatting. Until you have saved it, the built-in defaults apply, and the editor starts from them. Nothing here is read from a SillyTavern server.
 
-- **Context template**: the story string (`{{#if description}}...{{/if}}`, `{{description}}`, `{{personality}}`, `{{scenario}}`, `{{persona}}`, `{{system}}`, `{{char}}`, `{{user}}`), the example separator and chat start, and the stop-on-separators / stop-on-names switches.
-- **Instruct template**: instruct mode on/off, names (`none` / `force` / `always`), wrap and macros, the prefix and suffix of user, assistant and system messages, first / last assistant prefix, the stop sequence, sequences as stop strings, and the story string prefix / suffix.
-- **Reply cleanup**: trim unfinished sentences, collapse blank lines, single line.
+- **Context template**: the story string (`{{#if description}}...{{/if}}`, `{{description}}`, `{{personality}}`, `{{scenario}}`, `{{persona}}`, `{{system}}`, `{{char}}`, `{{user}}`), where the story string goes (`prompt`: top of the prompt, or `chat`: into the history at a depth and as a system / user / assistant message), *Always add the name* (end a non-instruct prompt with `Name:`), *Example messages* (`gradual push-out`, `always include` or `never include`), the example separator and chat start, and the stop-on-separators / stop-on-names switches.
+- **Instruct template**: instruct mode on/off, names (`none` / `force` / `always`), wrap and macros, the prefix and suffix of user, assistant and system messages, first / last assistant prefix, first / last user prefix, last system prefix, system-same-as-user, skip examples, the stop sequence, sequences as stop strings, and the story string prefix / suffix.
+- **Reply cleanup**: trim unfinished sentences, collapse blank lines, single line, and custom stop strings (one per line, with or without macros).
 
 Texts are typed on one line in a small window: type `\n` for a line break and `\\` for a backslash. `p` offers presets for the part the cursor is in, as starting points. **Instruct template**: Off, ChatML, Llama 3, Llama 2, Mistral, Mistral V7, Phi-3, Phi-4, Gemma, Zephyr, Command R, DeepSeek V3, OpenChat, Granite, Vicuna, Alpaca and Metharme (roughly the chat templates llama.cpp knows); they replace the instruct template and keep the story string. **Context template**: Default, Short, Labeled, Pygmalion and No separators; they replace the story string, example separator and chat start and keep the stop switches. Reply cleanup has no presets.
 
@@ -295,7 +313,7 @@ Details:
 - The summary is written with the active API connection (`/api`), with its own settings: the reply length is raised as needed and sampling is made calm (low temperature, no DRY / XTC / penalties / dynamic temperature, no extra stop strings). Your saved connection is not changed. The character card, system prompt and persona are not part of that request.
 - A chat that does not fit into the context together with its summary is read in parts: each request gets the summary so far plus the next part of the chat. If the *Context size* is too small even for that, `/summarize` says so and does nothing.
 - Before anything is changed, the full chat is also saved as `<chat>_before-summary` (then `...2`, `...3`). It is a normal chat file, but `/chats` does not list it, and `/deletebranch` removes it again. If that copy cannot be saved, the chat is left alone.
-- The branches are stored in the chat file, inside the first message (`st_cli_branch`), so the file stays a normal `.jsonl`. The web UI shows the branch that was showing when you left.
+- The branches are stored in the chat file, inside the first message (`tarpi_branch`), so the file stays a normal `.jsonl`. The web UI shows the branch that was showing when you left.
 - `Ctrl+S` / **Card save** is not offered on the summary: it is never written into the character card. Branched chats no longer get the card's alternate greetings added as swipes. `/undo` (with or without a number) will not delete the first message of a branched chat.
 - It needs at least three messages. Summaries are written by the model, so read the result; branch 1 and the saved copy have everything.
 - Chats summarized by an older version (summary as a second swipe of the first message) are left as they are and behave like a normal chat; run `/summarize` again to get branches. Chats with the earlier two-branch format load as they are.
@@ -328,7 +346,16 @@ tarpi import https://pygmalion.chat/character/<id>        # pygmalion.chat
 tarpi import https://example.com/cards/sofia.png         # direct link to a card .png or .json
 ```
 
-The card is saved as it came into `~/.config/tarpi/characters/`, named after the character (`Sofia.png`, or `Sofia-2.png` when that name is taken; a PNG stays a PNG, JSON stays JSON). Before saving, tarpi checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and gives a clear error if not. Any other http(s) link is treated as a direct link to a card file: tarpi downloads it itself (up to 50 MB; the file type is detected from its content, not the URL) and runs the same check. chub.ai (also characterhub.org) and pygmalion.chat links (`/character/<id>`) are downloaded by tarpi straight from those sites (chub.ai's download endpoint, pygmalion.chat's export endpoint); no other program is needed. Lorebook links are refused.
+The card is saved as it came into `~/.config/tarpi/characters/`, named after the character (`Sofia.png`, or `Sofia-2.png` when that name is taken; a PNG stays a PNG, JSON stays JSON). Before saving, tarpi checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and gives a clear error if not. Any other http(s) link is treated as a direct link to a card file: tarpi downloads it itself (up to 50 MB; the file type is detected from its content, not the URL) and runs the same check. chub.ai (also characterhub.org) and pygmalion.chat links (`/character/<id>`) are downloaded by tarpi straight from those sites (chub.ai: the card PNG on its image host, then its download endpoints one after the other, because chub changes them now and then; pygmalion.chat: its export endpoint). When every attempt fails, each one's reason is listed; downloading the card PNG in a browser and importing the file always works; no other program is needed. Lorebook links are refused.
+
+### Importing to the machine you `connect` to
+
+```
+tarpi import sofia.png --remote
+tarpi import https://chub.ai/characters/<creator>/<n> --remote
+```
+
+Without `--remote`, `tarpi import` fills this device's own `~/.config/tarpi/characters/`, which `tarpi connect` does not use (it works on a copy of the server's data). With `--remote` the card goes to the machine named by `serve_url` (see *Sharing between devices*): tarpi reaches the server, brings the local copy in `remote/` up to date (so a name that is already taken there is noticed and the card becomes `Sofia-2.png`), imports into that copy and uploads the card at once. Every other device that connects gets it at its next sync. The token is the remembered one (or `TARPI_TOKEN`, or it is asked for), and the server's log shows `added character Sofia (uploaded)`. If the upload fails the card stays in the local copy and is sent the next time you run `tarpi connect`.
 
 ### Copying everything from SillyTavern
 
@@ -356,8 +383,6 @@ No setup needed. tarpi notices it runs on Android:
 Enter sends; for a new line use the Termux extra-keys row: ALT then Enter, or CTRL then J. ESC on that row leaves INSERT mode, as does typing the NORMAL-mode keys (`qq` by default) quickly.
 
 ## Build
-
-(tarpi reads only `~/.config/tarpi/`. A folder left over from the old name, `~/.config/st-cli/`, is ignored; copy it to `~/.config/tarpi/` yourself to keep its characters, chats and settings.)
 
 ```
 cargo build --release

@@ -1,5 +1,5 @@
 //! `tarpi serve`: share this machine's characters, chats, personas, system
-//! prompts, formatting and API connections with other devices running
+//! prompts and API connections with other devices running
 //! `tarpi connect`. It does not open the chat screen; it just answers requests
 //! until you stop it (Ctrl+C).
 //!
@@ -16,7 +16,9 @@
 //! | `GET /v1/file?path=P` | the file's bytes (its time is in `X-Tarpi-Mtime`) |
 //! | `PUT /v1/file?path=P&base=H&mtime=M` | write the file, but only if it still has hash `H` (empty: only if it does not exist yet); otherwise `409` |
 //! | `DELETE /v1/file?path=P&base=H` | delete it, same rule |
+//! | `GET /v1/watch` | stays open; a byte every 50 ms (both ways), so the other side sees at once when this one is gone |
 //! | `POST /v1/tokenize` | `{"text", "connection"}`: token count from this machine's backend |
+//! | `POST /v1/event` | `{"text"}`: a line about what the device just did (opened a chat, ...), printed in this machine's log |
 //!
 //! Only the files listed in `mirror` can be reached; any other path is
 //! refused. The connection is plain HTTP: use it on a network you trust, or
@@ -41,7 +43,7 @@ use tokio::net::{TcpListener, TcpStream};
     name = "tarpi serve",
     about = "Share your characters, chats and settings with other devices running `tarpi connect`",
     long_about = "Serve the data in ~/.config/tarpi (characters, chats, personas, system \
-                  prompts, formatting and the API connections) to other devices, which \
+                  prompts and the API connections) to other devices, which \
                   keep a copy of it in step with `tarpi connect`. Nothing is drawn on the \
                   screen: the command just runs until you stop it with Ctrl+C. By default \
                   it listens on every network interface; --local limits it to this \
@@ -83,6 +85,9 @@ struct State {
     /// Held while a file is checked and changed, so two clients cannot both
     /// pass the "still the version you saw" check.
     write_lock: tokio::sync::Mutex<()>,
+    /// Changes whenever a shared file does (see `monitor`); every watching
+    /// device is told at once and syncs.
+    changes: tokio::sync::watch::Sender<u64>,
 }
 
 struct Req {
@@ -208,7 +213,9 @@ pub async fn run() -> Result<()> {
         token,
         trust_all,
         write_lock: tokio::sync::Mutex::new(()),
+        changes: tokio::sync::watch::channel(0u64).0,
     });
+    tokio::spawn(monitor(state.clone()));
 
     loop {
         let (sock, peer) = match listener.accept().await {
@@ -220,17 +227,97 @@ pub async fn run() -> Result<()> {
         };
         let st = state.clone();
         tokio::spawn(async move {
-            let _ = tokio::time::timeout(Duration::from_secs(300), handle(sock, peer, st)).await;
+            handle(sock, peer, st).await;
         });
     }
 }
 
+/// Look at the shared files every 200 ms (hashes are kept, so only files whose
+/// size or time changed are read again) and tell the watching devices when
+/// something is different: a device's upload, or this machine's own tarpi.
+async fn monitor(st: Arc<State>) {
+    let mut last = 0u64;
+    loop {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let st2 = st.clone();
+        let d = tokio::task::spawn_blocking(move || {
+            let files = st2.scanner.lock().unwrap_or_else(|e| e.into_inner()).scan();
+            mirror::digest(&files)
+        })
+        .await;
+        if let Ok(d) = d {
+            if d != last {
+                last = d;
+                st.changes.send_replace(d);
+            }
+        }
+    }
+}
+
+/// How often a `tarpi connect` device that watches this server is sent a byte.
+const BEAT: Duration = Duration::from_millis(50);
+
 async fn handle(mut sock: TcpStream, peer: SocketAddr, st: Arc<State>) {
-    let reply = match read_req(&mut sock).await {
-        Ok(req) => route(&st, req, peer).await,
-        Err(r) => r,
+    let limit = Duration::from_secs(300);
+    let req = match tokio::time::timeout(limit, read_req(&mut sock)).await {
+        Ok(Ok(req)) => req,
+        Ok(Err(r)) => return write_reply(&mut sock, r).await,
+        Err(_) => return,
+    };
+    // The one request that is not answered and closed: see `watch`.
+    if req.method == "GET" && req.path == "/v1/watch" {
+        return watch(sock, &req, &st, peer).await;
+    }
+    let reply = match tokio::time::timeout(limit, route(&st, req, peer)).await {
+        Ok(r) => r,
+        Err(_) => Reply::text(504, "timed out"),
     };
     write_reply(&mut sock, reply).await;
+}
+
+/// `GET /v1/watch`: a connection that stays open and gets a byte every
+/// 50 ms ([`BEAT`]), so a `tarpi connect` device on the other end learns at once when
+/// this machine or the link goes away (the connection closes or the bytes
+/// stop). It ends when the device hangs up.
+async fn watch(mut sock: TcpStream, req: &Req, st: &Arc<State>, peer: SocketAddr) {
+    if !st.trust_all && !token_ok(&st.token, req.bearer.as_deref()) {
+        println!("{}  {}  refused: missing or wrong token", stamp(), peer.ip());
+        return write_reply(&mut sock, Reply::text(401, "missing or wrong token")).await;
+    }
+    let _ = sock.set_nodelay(true);
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
+    if sock.write_all(head.as_bytes()).await.is_err() {
+        return;
+    }
+    println!("{}  {}  connected", stamp(), peer.ip());
+    let since = std::time::Instant::now();
+    let mut tick = tokio::time::interval(BEAT);
+    let mut scratch = [0u8; 64];
+    let mut changes = st.changes.subscribe();
+    // The state at the start is what the device has just synced to.
+    changes.borrow_and_update();
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                if sock.write_all(b"\n").await.is_err() {
+                    break;
+                }
+            }
+            // `c`: a shared file changed, sync now.
+            c = changes.changed() => {
+                if c.is_err() || sock.write_all(b"c").await.is_err() {
+                    break;
+                }
+            }
+            // The device never sends anything more; a read that ends means it left.
+            r = sock.read(&mut scratch) => {
+                if matches!(r, Ok(0) | Err(_)) {
+                    break;
+                }
+            }
+        }
+    }
+    println!("{}  {}  disconnected after {}", stamp(), peer.ip(), how_long(since.elapsed()));
 }
 
 fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -319,6 +406,7 @@ async fn write_reply(sock: &mut TcpStream, r: Reply) {
         409 => "Conflict",
         411 => "Length Required",
         413 => "Payload Too Large",
+        504 => "Gateway Timeout",
         431 => "Request Header Fields Too Large",
         _ => "Error",
     };
@@ -345,6 +433,40 @@ fn token_ok(want: &str, got: Option<&str>) -> bool {
     };
     let (a, b) = (want.as_bytes(), got.as_bytes());
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// `5s`, `3m 04s`, `1h 02m`.
+fn how_long(d: Duration) -> String {
+    let t = d.as_secs();
+    if t < 60 {
+        format!("{}s", t)
+    } else if t < 3600 {
+        format!("{}m {:02}s", t / 60, t % 60)
+    } else {
+        format!("{}h {:02}m", t / 3600, (t % 3600) / 60)
+    }
+}
+
+/// What a device says it did, made safe to print: no control characters
+/// (nobody can move the cursor of this terminal), at most 300 characters.
+fn clean_event(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).take(300).collect()
+}
+
+/// `POST /v1/event`: print a line about what a `tarpi connect` device did.
+fn event(req: &Req, peer: SocketAddr) -> Reply {
+    let v: serde_json::Value = match serde_json::from_slice(&req.body) {
+        Ok(v) => v,
+        Err(_) => return Reply::text(400, "expected JSON"),
+    };
+    let Some(text) = v.get("text").and_then(|t| t.as_str()) else {
+        return Reply::text(400, "missing text");
+    };
+    let text = clean_event(text);
+    if !text.is_empty() {
+        println!("{}  {}  {}", stamp(), peer.ip(), text);
+    }
+    Reply::json(200, &json!({ "ok": true }))
 }
 
 fn stamp() -> String {
@@ -407,6 +529,7 @@ async fn route(st: &Arc<State>, req: Req, peer: SocketAddr) -> Reply {
             Reply::json(200, &Manifest { files })
         }
         ("POST", "/v1/tokenize") => tokenize(&req).await,
+        ("POST", "/v1/event") => event(&req, peer),
         ("GET", "/v1/file") => get_file(st, &req),
         ("PUT", "/v1/file") => put_file(st, &req, peer).await,
         ("DELETE", "/v1/file") => delete_file(st, &req, peer).await,
@@ -464,12 +587,16 @@ async fn put_file(st: &Arc<State>, req: &Req, peer: SocketAddr) -> Reply {
     let _guard = st.write_lock.lock().await;
     let now = current_hash(&path);
     if now.as_deref() != base_of(req) {
+        println!("{}  {}  refused {}: it changed here in the meantime", stamp(), peer.ip(), mirror::describe(&rel));
         return Reply::json(409, &json!({ "error": "changed", "hash": now }));
     }
     if let Err(e) = mirror::write_atomic(&path, &req.body, mtime) {
         return Reply::text(500, &format!("{:#}", e));
     }
-    println!("{}  {}  wrote {}", stamp(), peer.ip(), rel);
+    // A file that did not exist yet is a new chat, a new character (imported
+    // on the device) and so on; otherwise it is a change to an existing one.
+    let verb = if now.is_none() { "added" } else { "updated" };
+    println!("{}  {}  {} {} (uploaded)", stamp(), peer.ip(), verb, mirror::describe(&rel));
     Reply::json(
         200,
         &json!({ "hash": mirror::hash_bytes(&req.body), "mtime": mtime }),
@@ -493,6 +620,24 @@ async fn delete_file(st: &Arc<State>, req: &Req, peer: SocketAddr) -> Reply {
     if let Err(e) = std::fs::remove_file(&path) {
         return Reply::text(500, &format!("{}", e));
     }
-    println!("{}  {}  deleted {}", stamp(), peer.ip(), rel);
+    println!("{}  {}  deleted {}", stamp(), peer.ip(), mirror::describe(&rel));
     Reply::json(200, &json!({ "deleted": true }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn durations_read_naturally() {
+        assert_eq!(how_long(Duration::from_secs(5)), "5s");
+        assert_eq!(how_long(Duration::from_secs(184)), "3m 04s");
+        assert_eq!(how_long(Duration::from_secs(3720)), "1h 02m");
+    }
+
+    #[test]
+    fn events_lose_control_characters_and_length() {
+        assert_eq!(clean_event("opened\x1b[2J chat\n"), "opened[2J chat");
+        assert_eq!(clean_event(&"a".repeat(500)).chars().count(), 300);
+    }
 }

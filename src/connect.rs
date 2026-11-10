@@ -1,5 +1,5 @@
 //! `tarpi connect [token]`: use the chats, characters, personas, system
-//! prompts, formatting and API connection of the machine that runs `tarpi
+//! prompts and API connection of the machine that runs `tarpi
 //! serve` (`serve_url` in `config.yaml`), from this device. It first asks the
 //! server whether it wants a token (that is the server's `serve_trust_all`),
 //! and only asks for one when it does.
@@ -35,6 +35,7 @@ use reqwest::{Method, StatusCode};
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -47,7 +48,7 @@ const SYNC_EVERY: u64 = 3;
     about = "Chat with the characters and chats of the machine named by `serve_url` in config.yaml",
     long_about = "Connect to the machine that runs `tarpi serve` (its address is `serve_url` \
                   in ~/.config/tarpi/config.yaml) and use its characters, chats, personas, \
-                  system prompts, formatting and API connection from this device. A copy of \
+                  system prompts and API connection from this device (formatting stays on each device). A copy of \
                   them is kept in ~/.config/tarpi/remote/ and brought up to date before the \
                   chat opens, every few seconds while it is open, and when you quit. Then \
                   you pick a character, as in plain `tarpi`. The token is the one `tarpi \
@@ -143,6 +144,42 @@ pub struct Stats {
     pub conflicts: usize,
 }
 
+impl Stats {
+    /// "2 downloaded, 1 uploaded", `None` when the round changed nothing.
+    fn describe(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        for (n, what) in [
+            (self.pulled, "downloaded"),
+            (self.pushed, "uploaded"),
+            (self.deleted, "deleted"),
+            (self.conflicts, "changed on both sides"),
+        ] {
+            if n > 0 {
+                parts.push(format!("{} {}", n, what));
+            }
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(", "))
+        }
+    }
+}
+
+/// Where [`report`] sends its lines; set while `tarpi connect` is running.
+static REPORTER: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>> =
+    std::sync::Mutex::new(None);
+
+/// Tell the server's log what this device just did ("opened chat Sofia03 with
+/// Sofia"). Does nothing outside `tarpi connect`, never waits, and a server
+/// that does not know the route (an older tarpi) or is gone is ignored. Lines
+/// are sent in the order they were reported.
+pub fn report(text: impl Into<String>) {
+    if let Some(tx) = REPORTER.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let _ = tx.send(text.into());
+    }
+}
+
 /// The state of one connection: where the server is, where the copy is, and
 /// what both sides agreed on last time.
 pub struct Client {
@@ -201,6 +238,16 @@ impl Client {
         } else {
             r.bearer_auth(&self.token)
         }
+    }
+
+    /// Tell the server's log something (see `report`); a failure is ignored.
+    pub async fn event(&self, text: &str) {
+        let _ = self
+            .req(Method::POST, "/v1/event")
+            .timeout(Duration::from_secs(5))
+            .json(&serde_json::json!({ "text": text }))
+            .send()
+            .await;
     }
 
     /// Ask the server, without a token, whether it wants one. A server that
@@ -479,10 +526,122 @@ impl Client {
     }
 }
 
+/// Set by the watchdog when `tarpi serve` stopped answering (see `run`).
+static LOST: AtomicBool = AtomicBool::new(false);
+
+/// `true` once the server this device is connected to has gone away. The chat
+/// screen checks it and quits.
+pub fn server_lost() -> bool {
+    LOST.load(Ordering::Relaxed)
+}
+
+/// How often the server is asked whether it is still there, how long one
+/// answer may take, and how many misses in a row mean it is gone.
+const WATCH_EVERY: Duration = Duration::from_secs(2);
+const WATCH_TIMEOUT: Duration = Duration::from_secs(3);
+const WATCH_MISSES: u32 = 3;
+/// With the persistent connection (`watch`): the server sends a byte every
+/// 50 ms and so does this device, so this long without one from the server
+/// means the link is dead.
+const BEAT_TIMEOUT: Duration = Duration::from_millis(300);
+const BEAT_SEND: Duration = Duration::from_millis(50);
+
+/// Set when the server says a shared file changed, so the sync runs at once.
+static WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+/// The persistent connection is up: the server tells us about changes, so the
+/// slow poll is only a safety net.
+static WATCH_ON: AtomicBool = AtomicBool::new(false);
+
+enum Watched {
+    /// The connection closed, failed or went silent.
+    Lost,
+    /// The server does not know `/v1/watch` (an older tarpi), or it is not plain HTTP.
+    Unsupported,
+}
+
+/// Hold one TCP connection to `tarpi serve` open (`GET /v1/watch`) and return
+/// when it is gone. A closed or reset connection is noticed at once; a link
+/// that just goes quiet (wifi dropped) within [`BEAT_TIMEOUT`].
+async fn watch_connection(base: &str, token: &str) -> Watched {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let Some(hostport) = base.strip_prefix("http://") else {
+        return Watched::Unsupported;
+    };
+    let hostport = hostport.trim_end_matches('/');
+    let Ok(Ok(mut sock)) = tokio::time::timeout(WATCH_TIMEOUT, tokio::net::TcpStream::connect(hostport)).await else {
+        return Watched::Lost;
+    };
+    let _ = sock.set_nodelay(true);
+    let mut req = format!("GET /v1/watch HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n", hostport);
+    if !token.is_empty() {
+        req.push_str(&format!("Authorization: Bearer {}\r\n", token));
+    }
+    req.push_str("\r\n");
+    if sock.write_all(req.as_bytes()).await.is_err() {
+        return Watched::Lost;
+    }
+    let mut head: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 256];
+    let mut checked = false;
+    loop {
+        match tokio::time::timeout(BEAT_TIMEOUT.max(WATCH_TIMEOUT), sock.read(&mut chunk)).await {
+            Ok(Ok(n)) if n > 0 => {
+                if !checked {
+                    head.extend_from_slice(&chunk[..n]);
+                    if head.windows(4).any(|w| w == b"\r\n\r\n") {
+                        // Anything but 200 (404 from an older server, 401 ...): not a watch.
+                        if !head.starts_with(b"HTTP/1.1 200") {
+                            return Watched::Unsupported;
+                        }
+                        checked = true;
+                    }
+                }
+            }
+            _ => return Watched::Lost,
+        }
+        if checked {
+            break;
+        }
+    }
+    // From here on: a byte each way every 50 ms. Writing fails at once when this
+    // device has no route any more (its wifi went off); the server's bytes
+    // stopping for BEAT_TIMEOUT or its end closing covers the rest.
+    let (mut rd, mut wr) = sock.into_split();
+    let reader = async {
+        loop {
+            match tokio::time::timeout(BEAT_TIMEOUT, rd.read(&mut chunk)).await {
+                Ok(Ok(n)) if n > 0 => {
+                    if chunk[..n].contains(&b'c') {
+                        WAKE.notify_one();
+                    }
+                }
+                _ => break,
+            }
+        }
+    };
+    let writer = async {
+        loop {
+            tokio::time::sleep(BEAT_SEND).await;
+            if wr.write_all(b"\n").await.is_err() {
+                break;
+            }
+        }
+    };
+    WATCH_ON.store(true, Ordering::Relaxed);
+    tokio::select! {
+        _ = reader => {}
+        _ = writer => {}
+    }
+    WATCH_ON.store(false, Ordering::Relaxed);
+    Watched::Lost
+}
+
 /// The background sync of a running chat screen.
 pub struct Session {
     client: Arc<tokio::sync::Mutex<Client>>,
     task: tokio::task::JoinHandle<()>,
+    watchdog: tokio::task::JoinHandle<()>,
+    reporter: tokio::task::JoinHandle<()>,
 }
 
 impl Session {
@@ -490,14 +649,36 @@ impl Session {
     /// been closed, so a failure may be printed).
     pub async fn finish(self) {
         self.task.abort();
-        let mut c = self.client.lock().await;
-        match c.cycle().await {
-            Ok(_) => {}
-            Err(e) => eprintln!(
-                "tarpi: the last sync with {} failed: {:#}\n(your changes are kept here and are sent next time you connect)",
-                c.base, e
-            ),
+        if server_lost() {
+            self.watchdog.abort();
+            self.reporter.abort();
+            let c = self.client.lock().await;
+            eprintln!(
+                "tarpi: lost the connection to {} (is `tarpi serve` still running?); quit.\n\
+                 (your changes are kept here and are sent next time you connect)",
+                c.base
+            );
+            return;
         }
+        {
+            let mut c = self.client.lock().await;
+            match c.cycle().await {
+                Ok(s) => {
+                    if let Some(t) = s.describe() {
+                        report(format!("synced on quit: {}", t));
+                    }
+                }
+                Err(e) => eprintln!(
+                    "tarpi: the last sync with {} failed: {:#}\n(your changes are kept here and are sent next time you connect)",
+                    c.base, e
+                ),
+            }
+        }
+        // Let the server hear what is still queued, then close the live link
+        // (the server logs that the device left).
+        *REPORTER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let _ = tokio::time::timeout(Duration::from_secs(3), self.reporter).await;
+        self.watchdog.abort();
     }
 }
 
@@ -516,13 +697,30 @@ fn log_status(root: &std::path::Path, res: &Result<Stats>) {
     let _ = std::fs::write(root.join("sync.log"), line);
 }
 
+/// One number for the shared files here (see `mirror::digest`).
+async fn local_digest(scanner: &Arc<std::sync::Mutex<Scanner>>) -> u64 {
+    let sc = scanner.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::mirror::digest(&sc.lock().unwrap_or_else(|e| e.into_inner()).scan())
+    })
+    .await
+    .unwrap_or(0)
+}
+
 /// Connect, bring the local copy up to date, and start keeping it in step.
 /// Returns the running sync; the caller then opens the chat as usual and calls
 /// `Session::finish` after it.
-pub async fn run() -> Result<Session> {
-    // argv is `tarpi connect ...`; drop the program name so "connect" plays
-    // the part of the binary name in clap's messages.
-    let cli = ConnectCli::parse_from(std::env::args().skip(1));
+/// A reached and authenticated server, with this device's copy of its data
+/// set up as the folder every store reads and writes.
+struct Link {
+    client: Client,
+    base: String,
+    token: String,
+}
+
+/// Find the server named by `serve_url`, make sure of the token, set the copy
+/// in `~/.config/tarpi/remote/` as the data folder and check the server answers.
+async fn open(token_arg: Option<String>, local_api: bool) -> Result<Link> {
     let cfg = config::load()?;
     let address = cfg
         .serve_url
@@ -545,9 +743,9 @@ pub async fn run() -> Result<Session> {
 
     // From here on every store reads and writes the copy.
     config::set_data_dir(root.clone());
-    config::set_api_local(cli.local_api);
+    config::set_api_local(local_api);
 
-    let mut client = Client::new(base.clone(), String::new(), root.clone(), !cli.local_api)?;
+    let mut client = Client::new(base.clone(), String::new(), root.clone(), !local_api)?;
 
     // Ask the server whether it wants a token. If not, none is asked for or
     // sent. If so: the one given now, else the one remembered, else ask.
@@ -555,7 +753,7 @@ pub async fn run() -> Result<Session> {
     let (token, is_new) = if !client.needs_token().await? {
         (String::new(), false)
     } else {
-        match cli.token.clone().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
+        match token_arg.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
             Some(t) => (t, true),
             None => match std::fs::read_to_string(&token_file)
                 .ok()
@@ -569,19 +767,63 @@ pub async fn run() -> Result<Session> {
     };
     client.token = token.clone();
     client.ping().await?;
+    if is_new {
+        let _ = std::fs::write(&token_file, format!("{}\n", token));
+        private(&token_file);
+    }
+    Ok(Link { client, base, token })
+}
+
+/// `tarpi import --remote`: reach the server, bring the local copy up to date
+/// (so a card name that is taken there is noticed) and return the connection.
+/// From here on the stores read and write the copy; the caller imports, then
+/// calls `Client::cycle` to upload it.
+pub async fn open_remote() -> Result<Client> {
+    let token = std::env::var("TARPI_TOKEN").ok();
+    let Link { mut client, base, .. } = open(token, false).await?;
+    eprintln!("Syncing with {} ...", base);
+    client.cycle().await?;
+    Ok(client)
+}
+
+pub async fn run() -> Result<Session> {
+    // argv is `tarpi connect ...`; drop the program name so "connect" plays
+    // the part of the binary name in clap's messages.
+    let cli = ConnectCli::parse_from(std::env::args().skip(1));
+    let Link { mut client, base, token } = open(cli.token.clone(), cli.local_api).await?;
+    let root = client.root.clone();
     // The shared connection's address belongs to the server: it counts tokens,
     // and a loopback / 0.0.0.0 address is read as the server's host.
     if !cli.local_api {
         crate::conn::set_remote_tokenizer(base.clone(), token.clone());
         crate::conn::set_remote_host(&base);
     }
-    if is_new {
-        let _ = std::fs::write(&token_file, format!("{}\n", token));
-        private(&token_file);
-    }
+
+    // What this device does is told to the server's log (see `report`).
+    let (report_tx, mut report_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    *REPORTER.lock().unwrap_or_else(|e| e.into_inner()) = Some(report_tx);
+    let reporter = {
+        let (http, url, tok) = (client.http.clone(), format!("{}/v1/event", base), token.clone());
+        tokio::spawn(async move {
+            while let Some(text) = report_rx.recv().await {
+                let mut rb = http
+                    .post(&url)
+                    .timeout(Duration::from_secs(5))
+                    .json(&serde_json::json!({ "text": text }));
+                if !tok.is_empty() {
+                    rb = rb.bearer_auth(&tok);
+                }
+                let _ = rb.send().await;
+            }
+        })
+    };
 
     println!("Syncing with {} ...", base);
     let stats = client.cycle().await?;
+    report(match stats.describe() {
+        Some(t) => format!("first sync: {}", t),
+        None => "first sync: already in step".to_string(),
+    });
     println!(
         "{} downloaded, {} uploaded, {} deleted{}",
         stats.pulled,
@@ -597,18 +839,90 @@ pub async fn run() -> Result<Session> {
         }
     );
 
+    let scanner = client.scanner.clone();
     let client = Arc::new(tokio::sync::Mutex::new(client));
     let bg = client.clone();
     let log_root = root.clone();
+    // Sync as soon as something changed: here (looked at every 200 ms) or on
+    // the server (it tells us over the watch connection). Without the watch
+    // connection (an older server), and as a safety net with it, every so often.
     let task = tokio::spawn(async move {
+        let mut last_err: Option<String> = None;
+        let mut last = local_digest(&scanner).await;
+        let mut since = std::time::Instant::now();
         loop {
-            tokio::time::sleep(Duration::from_secs(SYNC_EVERY)).await;
+            let every = if WATCH_ON.load(Ordering::Relaxed) {
+                Duration::from_secs(30)
+            } else {
+                Duration::from_secs(SYNC_EVERY)
+            };
+            tokio::select! {
+                _ = WAKE.notified() => {}
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                    if local_digest(&scanner).await == last && since.elapsed() < every {
+                        continue;
+                    }
+                }
+            }
             let res = bg.lock().await.cycle().await;
             log_status(&log_root, &res);
+            match &res {
+                Ok(s) => {
+                    last_err = None;
+                    if let Some(t) = s.describe() {
+                        report(format!("synced: {}", t));
+                    }
+                }
+                // The same failure every few seconds is told once.
+                Err(e) => {
+                    let m = format!("sync failed: {:#}", e);
+                    if last_err.as_deref() != Some(m.as_str()) {
+                        report(m.clone());
+                    }
+                    last_err = Some(m);
+                }
+            }
+            // What the sync itself downloaded is not a new change.
+            last = local_digest(&scanner).await;
+            since = std::time::Instant::now();
         }
     });
 
-    Ok(Session { client, task })
+    // Keep an eye on the server apart from the sync (which can sit in a long
+    // request): when it stops answering, the chat screen quits.
+    let ping_url = format!("{}/v1/ping", base);
+    let (watch_base, watch_token) = (base.clone(), token.clone());
+    let watchdog = tokio::spawn(async move {
+        // The persistent connection first: it notices a loss at once. An older
+        // server without it is watched by asking every few seconds instead.
+        match watch_connection(&watch_base, &watch_token).await {
+            Watched::Lost => {
+                LOST.store(true, Ordering::Relaxed);
+                return;
+            }
+            Watched::Unsupported => {}
+        }
+        let Ok(http) = reqwest::Client::builder().timeout(WATCH_TIMEOUT).build() else {
+            return;
+        };
+        let mut misses = 0u32;
+        loop {
+            tokio::time::sleep(WATCH_EVERY).await;
+            // Any answer, even a refusal, means the server is there.
+            match http.get(&ping_url).send().await {
+                Ok(_) => misses = 0,
+                Err(_) => {
+                    misses += 1;
+                    if misses >= WATCH_MISSES {
+                        LOST.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    Ok(Session { client, task, watchdog, reporter })
 }
 
 #[cfg(test)]

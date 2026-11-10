@@ -68,6 +68,9 @@ const fn fld(
 }
 
 const NAMES: &[&str] = &["none", "force", "always"];
+const STORY_POS: &[&str] = &["prompt", "chat"];
+const ROLES: &[&str] = &["system", "user", "assistant"];
+const EXAMPLES: &[&str] = &["gradual push-out", "always include", "never include"];
 
 const STORY: &str = "{{#if system}}{{system}}\n{{/if}}{{#if wiBefore}}{{wiBefore}}\n{{/if}}\
 {{#if description}}{{description}}\n{{/if}}{{#if personality}}{{char}}'s personality: {{personality}}\n{{/if}}\
@@ -77,6 +80,16 @@ const STORY: &str = "{{#if system}}{{system}}\n{{/if}}{{#if wiBefore}}{{wiBefore
 pub static FIELDS: &[Field] = &[
     fld(Sec::Context, "story_string", "Story string", Kind::Text, STORY,
         "Top of the prompt. Fields: {{system}} {{description}} {{personality}} {{scenario}} {{persona}} {{char}} {{user}}, and {{#if x}}...{{/if}}."),
+    fld(Sec::Context, "story_string_position", "Story string position", Kind::Choice(STORY_POS), "prompt",
+        "prompt: at the top of the prompt. chat: inserted into the chat history at the depth below."),
+    fld(Sec::Context, "story_string_depth", "Story string depth", Kind::Text, "1",
+        "Only for position chat: messages from the end (0 = after the last message)."),
+    fld(Sec::Context, "story_string_role", "Story string role", Kind::Choice(ROLES), "system",
+        "Only for position chat: sent as a system, user or assistant message."),
+    fld(Sec::Context, "always_force_name2", "Always add the name", Kind::Toggle, "true",
+        "Without instruct mode, end the prompt with \"{{char}}:\" so the reply starts as the character."),
+    fld(Sec::Context, "examples", "Example messages", Kind::Choice(EXAMPLES), "gradual push-out",
+        "gradual push-out: dropped first when the context is full. always include: kept, older chat is cut instead. never include: left out."),
     fld(Sec::Context, "example_separator", "Example separator", Kind::Text, "***",
         "Line put before each block of example dialogue."),
     fld(Sec::Context, "chat_start", "Chat start", Kind::Text, "***",
@@ -109,6 +122,16 @@ pub static FIELDS: &[Field] = &[
         "Used instead of the assistant prefix for the first reply. Empty = same."),
     fld(Sec::Instruct, "last_output_sequence", "Last assistant prefix", Kind::Text, "",
         "Used instead of the assistant prefix for the reply being written. Empty = same."),
+    fld(Sec::Instruct, "first_input_sequence", "First user prefix", Kind::Text, "",
+        "Used instead of the user prefix for your first message. Empty = same."),
+    fld(Sec::Instruct, "last_input_sequence", "Last user prefix", Kind::Text, "",
+        "Used instead of the user prefix for your newest message. Empty = same."),
+    fld(Sec::Instruct, "last_system_sequence", "Last system prefix", Kind::Text, "",
+        "Used instead of the system prefix for the newest system message. Empty = same."),
+    fld(Sec::Instruct, "system_same_as_user", "System same as user", Kind::Toggle, "false",
+        "Send system messages with the user prefix and suffix."),
+    fld(Sec::Instruct, "skip_examples", "Skip examples", Kind::Toggle, "false",
+        "Leave the instruct sequences off the example dialogue (plain text)."),
     fld(Sec::Instruct, "stop_sequence", "Stop sequence", Kind::Text, "",
         "Ends the reply (several: one per line, type \\n between them)."),
     fld(Sec::Instruct, "sequences_as_stop_strings", "Sequences as stops", Kind::Toggle, "false",
@@ -123,6 +146,10 @@ pub static FIELDS: &[Field] = &[
         "Turn runs of blank lines in the prompt into one line break."),
     fld(Sec::Reply, "single_line", "Single line", Kind::Toggle, "false",
         "Stop the reply at its first line break."),
+    fld(Sec::Reply, "custom_stopping_strings", "Custom stop strings", Kind::Text, "",
+        "Extra strings that end the reply, one per line (type \\n between them)."),
+    fld(Sec::Reply, "custom_stopping_strings_macro", "Macros in stop strings", Kind::Toggle, "true",
+        "Replace {{char}} and {{user}} inside the custom stop strings."),
 ];
 
 impl Field {
@@ -447,7 +474,9 @@ impl Formatting {
     /// stop switches).
     pub fn apply_preset(&mut self, p: &Preset) {
         for fd in FIELDS.iter().filter(|f| f.sec == p.sec) {
-            if !(p.sec == Sec::Context && fd.kind == Kind::Toggle) {
+            let keep = p.sec == Sec::Context
+                && !matches!(fd.key, "story_string" | "example_separator" | "chat_start");
+            if !keep {
                 self.reset(fd);
             }
         }
@@ -477,18 +506,41 @@ impl Formatting {
             settings["power_user"] = json!({});
         }
         let pu = &mut settings["power_user"];
-        pu["context"] = Value::Object(self.section(Sec::Context));
+        let mut context = self.section(Sec::Context);
+        let text_of = |m: &Map<String, Value>, k: &str| -> String {
+            m.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
+        };
+        // The prompt builder reads these three as numbers.
+        let pos = if text_of(&context, "story_string_position") == "chat" { 1 } else { 0 };
+        let depth = text_of(&context, "story_string_depth").trim().parse::<i64>().unwrap_or(1).clamp(0, 9999);
+        let role = match text_of(&context, "story_string_role").as_str() {
+            "user" => 1,
+            "assistant" => 2,
+            _ => 0,
+        };
+        context.insert("story_string_position".into(), json!(pos));
+        context.insert("story_string_depth".into(), json!(depth));
+        context.insert("story_string_role".into(), json!(role));
+        let examples = text_of(&context, "examples");
+        pu["context"] = Value::Object(context);
         pu["instruct"] = Value::Object(self.section(Sec::Instruct));
-        for (k, v) in self.section(Sec::Reply) {
+        let mut reply = self.section(Sec::Reply);
+        // The prompt builder reads the custom stop strings as a JSON list in a string.
+        let stops: Vec<String> = text_of(&reply, "custom_stopping_strings")
+            .split('\n')
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect();
+        reply.insert(
+            "custom_stopping_strings".into(),
+            json!(if stops.is_empty() { String::new() } else { json!(stops).to_string() }),
+        );
+        for (k, v) in reply {
             pu[k] = v;
         }
-        // Other keys the prompt builders read: fixed here, so nothing a
-        // server might have set for them ever applies.
-        pu["always_force_name2"] = json!(true);
-        pu["pin_examples"] = json!(false);
-        pu["strip_examples"] = json!(false);
-        pu["custom_stopping_strings"] = json!("");
-        pu["custom_stopping_strings_macro"] = json!(true);
+        pu["always_force_name2"] = self.get(field_of("always_force_name2"));
+        pu["pin_examples"] = json!(examples == "always include");
+        pu["strip_examples"] = json!(examples == "never include");
     }
 
     // ---- the file
@@ -533,6 +585,10 @@ impl Formatting {
         std::fs::rename(&tmp, &path).with_context(|| format!("writing {}", path.display()))?;
         Ok(())
     }
+}
+
+fn field_of(key: &str) -> &'static Field {
+    FIELDS.iter().find(|f| f.key == key).expect("known setting")
 }
 
 /// Put the formatting into the in-memory settings: `formatting.yaml` when it
@@ -703,6 +759,44 @@ mod tests {
         for fd in FIELDS {
             assert_eq!(back.get(fd), f.get(fd), "{}", fd.key);
         }
+    }
+
+    #[test]
+    fn the_new_settings_reach_the_prompt_builder() {
+        let mut f = Formatting::default();
+        f.set(field("story_string_position"), json!("chat"));
+        f.set(field("story_string_depth"), json!("3"));
+        f.set(field("story_string_role"), json!("user"));
+        f.set(field("always_force_name2"), json!(false));
+        f.set(field("examples"), json!("never include"));
+        f.set(field("custom_stopping_strings"), json!("###\n[END]"));
+        let mut s = json!({});
+        f.apply(&mut s);
+        let pu = &s["power_user"];
+        assert_eq!(pu["context"]["story_string_position"], 1);
+        assert_eq!(pu["context"]["story_string_depth"], 3);
+        assert_eq!(pu["context"]["story_string_role"], 1);
+        assert_eq!(pu["always_force_name2"], false);
+        assert_eq!(pu["pin_examples"], false);
+        assert_eq!(pu["strip_examples"], true);
+        assert_eq!(pu["custom_stopping_strings"], "[\"###\",\"[END]\"]");
+        f.set(field("examples"), json!("always include"));
+        f.set(field("story_string_depth"), json!("abc"));
+        f.apply(&mut s);
+        assert_eq!(s["power_user"]["pin_examples"], true);
+        assert_eq!(s["power_user"]["context"]["story_string_depth"], 1);
+    }
+
+    #[test]
+    fn defaults_keep_the_old_behaviour() {
+        let mut s = json!({});
+        Formatting::default().apply(&mut s);
+        let pu = &s["power_user"];
+        assert_eq!(pu["context"]["story_string_position"], 0);
+        assert_eq!(pu["always_force_name2"], true);
+        assert_eq!(pu["pin_examples"], false);
+        assert_eq!(pu["strip_examples"], false);
+        assert_eq!(pu["custom_stopping_strings"], "");
     }
 
     #[test]

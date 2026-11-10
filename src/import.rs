@@ -29,10 +29,15 @@ use std::path::PathBuf;
         "  tarpi import https://chub.ai/characters/user/sofia-1a2b3c\n",
         "  tarpi import chub.ai/characters/user/sofia-1a2b3c\n",
         "  tarpi import https://pygmalion.chat/character/<id>\n",
-        "  tarpi import https://example.com/cards/sofia.png    direct link to a .png / .json card"
+        "  tarpi import https://example.com/cards/sofia.png    direct link to a .png / .json card\n",
+        "  tarpi import sofia.png --remote               add it to the machine `tarpi serve` runs on"
     )
 )]
 struct ImportCli {
+    /// Import into the data of the machine named by `serve_url` (as `tarpi connect` does) and upload the card to it, instead of into this device's own characters folder
+    #[arg(long)]
+    remote: bool,
+
     /// A card file (.png / .json), a chub.ai / pygmalion.chat character URL, a direct link to a .png / .json card, or JSON text
     source: String,
 }
@@ -136,20 +141,45 @@ pub async fn run() -> Result<()> {
         (None, None) => unreachable!("a source is either local or a URL"),
     };
 
+    // `--remote`: work on the copy of the server's data (brought up to date
+    // first, so a name that is taken there is noticed).
+    let mut remote_client = if cli.remote {
+        Some(crate::connect::open_remote().await?)
+    } else {
+        None
+    };
+
     let saved = charstore::save(&bytes, &file_name, None, false)?;
     let name = if saved.name.is_empty() {
         saved.avatar.clone()
     } else {
         saved.name.clone()
     };
-    println!(
-        "Imported \"{}\" ({}) into {}",
-        name,
-        saved.avatar,
-        config::characters_dir()
-            .map(|d| d.display().to_string())
-            .unwrap_or_else(|| "the characters folder".to_string())
-    );
+    if let Some(client) = remote_client.as_mut() {
+        let stats = client.cycle().await.context(
+            "the card is saved in the local copy but could not be uploaded; \
+             it is sent the next time you run `tarpi connect`",
+        )?;
+        if stats.pushed == 0 {
+            bail!(
+                "the card is saved in the local copy but the server did not take it; \
+                 it is sent the next time you run `tarpi connect`"
+            );
+        }
+        client
+            .event(&format!("imported character {} (tarpi import --remote)", name))
+            .await;
+        println!("Imported \"{}\" ({}) and uploaded it to the server", name, saved.avatar);
+    } else {
+        println!(
+            "Imported \"{}\" ({}) into {}",
+            name,
+            saved.avatar,
+            config::characters_dir()
+                .map(|d| d.display().to_string())
+                .unwrap_or_else(|| "the characters folder".to_string())
+        );
+    }
     println!("Chat with it:  tarpi \"{}\"", name);
     Ok(())
 }
@@ -285,29 +315,61 @@ fn chub_full_path(url: &str) -> Result<String> {
     Ok(format!("{}/{}", seg[0], seg[1]))
 }
 
-/// Download a character from chub.ai (also characterhub.org): its own
-/// download endpoint returns the card as a PNG.
-async fn download_chub(url: &str) -> Result<(Vec<u8>, String)> {
-    let full = chub_full_path(url)?;
-    let resp = http_client()?
-        .post("https://api.chub.ai/api/characters/download")
-        .json(&serde_json::json!({ "format": "tavern", "fullPath": full, "version": "main" }))
-        .send()
-        .await
-        .context("downloading from chub.ai")?;
+/// The card PNG of a chub.ai character, as chub's image host serves it (the
+/// card is embedded in it).
+fn chub_cdn_url(full: &str) -> String {
+    format!("https://avatars.charhub.io/avatars/{}/chara_card_v2.png", full)
+}
+
+/// Send a request that should answer with a card; the bytes are returned only
+/// if they really are one (an error page or a plain picture is not).
+async fn fetch_card(rb: reqwest::RequestBuilder) -> Result<Vec<u8>> {
+    let resp = rb.send().await.context("no answer")?;
     let status = resp.status();
     if !status.is_success() {
-        if status.as_u16() == 404 {
-            bail!("chub.ai has no character '{}' (or it is private)", full);
-        }
-        bail!("chub.ai download failed ({})", status);
+        bail!("{}", status);
     }
-    let bytes = resp.bytes().await.context("reading download")?.to_vec();
+    let bytes = resp.bytes().await.context("reading the download")?.to_vec();
     if bytes.len() > MAX_DIRECT {
-        bail!("the download is too large for a character card");
+        bail!("too large for a character card");
     }
-    let name = full.rsplit('/').next().unwrap_or("card");
-    Ok((bytes, format!("{}.png", name)))
+    validate(&bytes).map_err(|e| anyhow!("not a card ({}, {})", sniff(&bytes), e))?;
+    Ok(bytes)
+}
+
+/// Download a character from chub.ai (also characterhub.org). chub changes
+/// its endpoints now and then, so several are tried in turn: the card PNG on
+/// the image host first, then the download endpoints of the API.
+async fn download_chub(url: &str) -> Result<(Vec<u8>, String)> {
+    let full = chub_full_path(url)?;
+    let name = full.rsplit('/').next().unwrap_or("card").to_string();
+    let client = http_client()?;
+    let mut tried: Vec<String> = Vec::new();
+
+    let cdn = chub_cdn_url(&full);
+    match fetch_card(client.get(&cdn).header("Referer", "https://chub.ai/")).await {
+        Ok(b) => return Ok((b, format!("{}.png", name))),
+        Err(e) => tried.push(format!("avatars.charhub.io: {:#}", e)),
+    }
+    for host in ["https://gateway.chub.ai", "https://api.chub.ai"] {
+        let rb = client
+            .post(format!("{}/api/characters/download", host))
+            .header("Referer", "https://chub.ai/")
+            .json(&serde_json::json!({ "format": "tavern", "fullPath": full, "version": "main" }));
+        match fetch_card(rb).await {
+            Ok(b) => return Ok((b, format!("{}.png", name))),
+            Err(e) => tried.push(format!("{}: {:#}", host.trim_start_matches("https://"), e)),
+        }
+    }
+    if tried.iter().all(|t| t.contains("404")) {
+        bail!("chub.ai has no character '{}' (or it is private)", full);
+    }
+    bail!(
+        "chub.ai download failed for '{}':\n  - {}\nDownload the card PNG from the character's page \
+         in a browser and import the file instead.",
+        full,
+        tried.join("\n  - ")
+    )
 }
 
 /// Download a character from pygmalion.chat: its export endpoint returns the
@@ -444,15 +506,15 @@ fn check_pygmalion_url(url: &str) -> Result<Site> {
 /// card (`spec`), a V1 card (`name`) or a Pygmalion card (`char_name`).
 fn validate(bytes: &[u8]) -> Result<Kind> {
     if bytes.starts_with(&PNG_SIG) {
-        if !png_has_card(bytes) {
-            bail!(
-                "this PNG has no embedded character data (no `chara` or `ccv3` chunk). \
-                 It is a plain image, not a card."
-            );
-        }
+        charstore::check_png_card(bytes).context(
+            "this PNG is not a character card (a card has its data embedded in a `chara` or \
+             `ccv3` text chunk; a plain image has none)",
+        )?;
         return Ok(Kind::Png);
     }
-    let v: Value = serde_json::from_slice(bytes)
+    // A file saved by some editors starts with a byte order mark.
+    let text = String::from_utf8_lossy(bytes);
+    let v: Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
         .map_err(|e| anyhow!("not a PNG, and not valid JSON either ({})", e))?;
     check_card_json(&v)?;
     Ok(Kind::Json)
@@ -480,37 +542,6 @@ fn check_card_json(v: &Value) -> Result<()> {
 }
 
 const PNG_SIG: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
-
-/// Whether the PNG has a tEXt chunk whose keyword is `chara` or `ccv3`
-/// (where SillyTavern looks for the base64 card).
-fn png_has_card(bytes: &[u8]) -> bool {
-    let mut pos = PNG_SIG.len();
-    while pos + 8 <= bytes.len() {
-        let len = u32::from_be_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]])
-            as usize;
-        let kind = &bytes[pos + 4..pos + 8];
-        let start = pos + 8;
-        let Some(end) = start.checked_add(len) else {
-            return false;
-        };
-        if end > bytes.len() {
-            return false;
-        }
-        if kind == b"tEXt" {
-            let data = &bytes[start..end];
-            let kw = data.split(|b| *b == 0).next().unwrap_or(&[]);
-            let kw = kw.to_ascii_lowercase();
-            if kw == b"chara" || kw == b"ccv3" {
-                return true;
-            }
-        }
-        if kind == b"IEND" {
-            return false;
-        }
-        pos = end + 4; // skip the CRC
-    }
-    false
-}
 
 fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
@@ -545,6 +576,50 @@ mod tests {
             assert_eq!(chub_full_path(u).unwrap(), "user/sofia-1a2b3c", "{}", u);
         }
         assert!(chub_full_path("https://chub.ai/characters/user").is_err());
+    }
+
+    #[test]
+    fn chub_cards_come_from_the_image_host() {
+        assert_eq!(
+            chub_cdn_url("cutenotlewd/cricket-674c71b2"),
+            "https://avatars.charhub.io/avatars/cutenotlewd/cricket-674c71b2/chara_card_v2.png"
+        );
+    }
+
+    /// A PNG made of nothing but a `chara` text chunk and the end chunk (the
+    /// checks read chunks, not pixels, and do not look at the CRCs).
+    fn tiny_card_png(card_b64: &str) -> Vec<u8> {
+        let mut v = PNG_SIG.to_vec();
+        let mut body = b"chara\0".to_vec();
+        body.extend_from_slice(card_b64.as_bytes());
+        v.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        v.extend_from_slice(b"tEXt");
+        v.extend_from_slice(&body);
+        v.extend_from_slice(&[0, 0, 0, 0]);
+        v.extend_from_slice(&[0, 0, 0, 0]);
+        v.extend_from_slice(b"IEND");
+        v.extend_from_slice(&[0, 0, 0, 0]);
+        v
+    }
+
+    #[test]
+    fn local_cards_are_recognised() {
+        // `{"name":"A"}` in base64
+        assert_eq!(validate(&tiny_card_png("eyJuYW1lIjoiQSJ9")).unwrap(), Kind::Png);
+        assert!(validate(&tiny_card_png("not base64!")).is_err());
+        let mut plain = PNG_SIG.to_vec();
+        plain.extend_from_slice(&[0, 0, 0, 0]);
+        plain.extend_from_slice(b"IEND");
+        plain.extend_from_slice(&[0, 0, 0, 0]);
+        assert!(validate(&plain).is_err());
+        assert_eq!(validate(br#"{"name":"A"}"#).unwrap(), Kind::Json);
+        assert_eq!(validate("\u{feff}{\"name\":\"A\"}".as_bytes()).unwrap(), Kind::Json);
+        assert_eq!(
+            validate(br#"{"spec":"chara_card_v2","data":{"name":"A"}}"#).unwrap(),
+            Kind::Json
+        );
+        assert!(validate(br#"{"entries":{}}"#).is_err());
+        assert!(validate(b"hello").is_err());
     }
 
     #[test]

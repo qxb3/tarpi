@@ -178,6 +178,16 @@ fn read_png_card(bytes: &[u8]) -> Result<(Value, bool)> {
     Ok((v, had_v3))
 }
 
+/// Check that `bytes` is a PNG with a usable card inside (the same reading
+/// `save` does), for `tarpi import` to refuse a plain picture early.
+pub fn check_png_card(bytes: &[u8]) -> Result<()> {
+    let (raw, _) = read_png_card(bytes)?;
+    if !looks_like_card(&raw) {
+        bail!("the data in this PNG is not a character card");
+    }
+    Ok(())
+}
+
 /// The PNG with its card data replaced by `card` (the picture is untouched).
 fn rewrite_png(bytes: &[u8], card: &Value, with_v3: bool) -> Result<Vec<u8>> {
     let chunks = png_chunks(bytes).ok_or_else(|| anyhow!("not a valid PNG file"))?;

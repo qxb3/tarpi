@@ -134,16 +134,12 @@ impl ChatState {
     }
 
     /// Header followed by messages, ready for `/api/chats/save`.
-    /// Is this chat marked `/one-shot`? (Kept in the chat file's metadata; the
-    /// first name of the flag, `st_cli_as_is`, still counts.)
+    /// Is this chat marked `/one-shot`? (Kept in the chat file's metadata.)
     pub fn is_one_shot(&self) -> bool {
         self.header
             .get("chat_metadata")
-            .map(|m| {
-                ["st_cli_one_shot", "st_cli_as_is"]
-                    .iter()
-                    .any(|k| m.get(*k).and_then(|v| v.as_bool()).unwrap_or(false))
-            })
+            .and_then(|m| m.get("tarpi_one_shot"))
+            .and_then(|v| v.as_bool())
             .unwrap_or(false)
     }
 
@@ -156,7 +152,7 @@ impl ChatState {
         {
             self.header["chat_metadata"] = json!({});
         }
-        self.header["chat_metadata"]["st_cli_one_shot"] = json!(true);
+        self.header["chat_metadata"]["tarpi_one_shot"] = json!(true);
     }
 
     pub fn lines(&self) -> Vec<Value> {
@@ -401,7 +397,7 @@ pub fn reset_swipes(m: &mut Value, text: &str, model: &str, started: &str, finis
 /// the web UI simply ignores it. Shape: `{ "active": n, "branches": [slot, ..] }`
 /// where a slot is `{ "first": message, "tail": [messages] }` and the slot of
 /// the active branch is `null` (its messages are the visible ones).
-pub const BRANCH_KEY: &str = "st_cli_branch";
+pub const BRANCH_KEY: &str = "tarpi_branch";
 
 /// `(active, total)` branch position, 0-based active, `None` when the chat
 /// has no branches. Branch 0 is the actual conversation, every other branch a

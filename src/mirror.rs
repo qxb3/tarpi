@@ -4,7 +4,7 @@
 //!
 //! The shared files are the ones in `~/.config/tarpi/` that hold your data:
 //! `characters/`, `chats/`, `persona/`, `system-prompt.jsonl`,
-//! `formatting.yaml` and `api.yaml`. `config.yaml`, `command_history`,
+//! and `api.yaml`. `config.yaml`, `formatting.yaml`, `command_history`,
 //! `dictionary.txt` and `serve-token` belong to the machine and are never
 //! shared.
 //!
@@ -26,7 +26,7 @@ pub const DEFAULT_PORT: u16 = 7878;
 /// Folders that are shared, whole.
 const DIRS: &[&str] = &["characters", "chats", "persona"];
 /// Single files that are shared.
-const FILES: &[&str] = &["system-prompt.jsonl", "formatting.yaml", "api.yaml"];
+const FILES: &[&str] = &["system-prompt.jsonl", "api.yaml"];
 const API_FILE: &str = "api.yaml";
 
 /// One file in a listing.
@@ -86,6 +86,22 @@ pub fn valid_path(p: &str) -> bool {
         FILES.contains(&parts[0])
     } else {
         DIRS.contains(&parts[0])
+    }
+}
+
+/// A short plain description of a shared file for the logs (`tarpi serve`
+/// prints what the devices do): `chats/Sofia/Sofia03.jsonl` is "chat Sofia03
+/// with Sofia", `characters/Sofia.png` is "character Sofia".
+pub fn describe(path: &str) -> String {
+    let parts: Vec<&str> = path.split('/').collect();
+    let stem = |f: &str| f.rsplit_once('.').map(|(a, _)| a).unwrap_or(f).to_string();
+    match parts.as_slice() {
+        ["chats", who, .., file] => format!("chat {} with {}", stem(file), who),
+        ["characters", .., file] => format!("character {}", stem(file)),
+        ["persona", .., file] => format!("persona {}", stem(file)),
+        ["system-prompt.jsonl"] => "the system prompts".to_string(),
+        ["api.yaml"] => "the API connections".to_string(),
+        _ => path.to_string(),
     }
 }
 
@@ -203,6 +219,18 @@ impl Scanner {
         out.sort_by(|a, b| a.path.cmp(&b.path));
         out
     }
+}
+
+/// One number for a whole file list (paths and contents): it changes when
+/// any shared file was added, changed or removed.
+pub fn digest(entries: &[Entry]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for e in entries {
+        e.path.hash(&mut h);
+        e.hash.hash(&mut h);
+    }
+    h.finish()
 }
 
 /// Collect the regular files below `dir` (symbolic links are not followed).
@@ -358,6 +386,15 @@ pub fn parse_query(q: &str) -> HashMap<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn files_are_described_in_words() {
+        assert_eq!(describe("chats/Sofia/Sofia03.jsonl"), "chat Sofia03 with Sofia");
+        assert_eq!(describe("characters/Sofia.png"), "character Sofia");
+        assert_eq!(describe("persona/Me.json"), "persona Me");
+        assert_eq!(describe("system-prompt.jsonl"), "the system prompts");
+        assert_eq!(describe("api.yaml"), "the API connections");
+    }
+
     use super::*;
 
     fn e(path: &str, hash: &str, mtime: u64) -> Entry {
@@ -389,7 +426,7 @@ mod tests {
         assert!(valid_path("characters/Sofia.png"));
         assert!(valid_path("persona/active"));
         assert!(valid_path("system-prompt.jsonl"));
-        assert!(valid_path("formatting.yaml"));
+        assert!(!valid_path("formatting.yaml"));
         assert!(valid_path("api.yaml"));
         assert!(!valid_path("config.yaml"));
         assert!(!valid_path("serve-token"));
@@ -411,7 +448,7 @@ mod tests {
     fn the_api_file_can_be_left_out() {
         assert!(in_scope("api.yaml", true));
         assert!(!in_scope("api.yaml", false));
-        assert!(in_scope("formatting.yaml", false));
+        assert!(!in_scope("formatting.yaml", true));
     }
 
     #[test]

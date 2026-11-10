@@ -65,6 +65,15 @@ use crate::character::Character;
 use crate::chat::{file_id, ChatState};
 use crate::jv::*;
 
+/// How the chat screen of a round was reached (told to the `tarpi serve` log
+/// when connected, see `connect::report`).
+#[derive(Clone, Copy)]
+enum Arrival {
+    Start,
+    Chat,
+    Character,
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "tarpi",
@@ -138,7 +147,7 @@ enum Commands {
     /// Delete a character card together with all of its chats (asks first)
     #[command(disable_help_flag = true)]
     Delete(Rest),
-    /// Share characters, chats, personas, system prompts, formatting and API connections with other devices (no chat screen)
+    /// Share characters, chats, personas, system prompts and API connections with other devices (no chat screen)
     #[command(disable_help_flag = true)]
     Serve(Rest),
     /// Chat using the data of a machine that runs `tarpi serve`, keeping a copy in step
@@ -642,7 +651,13 @@ async fn run_tui(
                     app.on_gen_event(m).await;
                 }
             }
-            _ = tick.tick() => app.on_tick(),
+            _ = tick.tick() => {
+                // `tarpi connect`: the server went away, so there is nothing to chat on.
+                if connect::server_lost() {
+                    app.should_quit = true;
+                }
+                app.on_tick()
+            }
         }
         if app.open_api {
             app.open_api = false;
@@ -734,6 +749,7 @@ async fn main() -> Result<()> {
 
     // One round per chat screen. Choosing something in the `/chats` or
     // `/characters` window leaves the screen and comes back here for the next round.
+    let mut arrival = Arrival::Start;
     loop {
         let avatar = jstr(&entry, "avatar");
         // The list may be "shallow" (lazyLoadCharacters), so always fetch the full card.
@@ -782,6 +798,15 @@ async fn main() -> Result<()> {
             (st, synced)
         };
 
+        let char_name = character.name.clone();
+        connect::report(match (created_new, arrival) {
+            (true, _) => format!("started a new chat {} with {}", file, char_name),
+            (false, Arrival::Start) => format!("opened chat {} with {}", file, char_name),
+            (false, Arrival::Chat) => format!("switched to chat {} with {}", file, char_name),
+            (false, Arrival::Character) => {
+                format!("switched to {}: opened chat {}", char_name, file)
+            }
+        });
         let (gen_tx, mut gen_rx) = unbounded_channel();
         let mut app = App::new(
             settings,
@@ -820,12 +845,22 @@ async fn main() -> Result<()> {
         let _ = term.show_cursor();
         result?;
         mouse_on = app.mouse || touch;
+        if connect::server_lost() {
+            break;
+        }
 
         match app.exit_to.take() {
-            None => break,
+            None => {
+                connect::report(format!("left chat {} with {}", file, char_name));
+                break;
+            }
             Some(app::Exit::NewChat) => want = Want::New,
-            Some(app::Exit::Chat(file)) => want = Want::File(file),
+            Some(app::Exit::Chat(file)) => {
+                arrival = Arrival::Chat;
+                want = Want::File(file);
+            }
             Some(app::Exit::Character(avatar)) => {
+                arrival = Arrival::Character;
                 // Read the list again: cards may have been added since the start.
                 let fresh = charstore::list();
                 entry = fresh
