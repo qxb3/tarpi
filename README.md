@@ -1,8 +1,8 @@
 # st-cli
 
-A chat-only terminal client for a running [SillyTavern](https://github.com/SillyTavern/SillyTavern) server.
+A chat-only terminal client that uses a running [SillyTavern](https://github.com/SillyTavern/SillyTavern) server for its settings and templates. Characters, personas and chats are st-cli's own.
 
-SillyTavern keeps doing everything else (characters, API keys, connections, presets, personas). `st-cli` only chats, using whatever is currently configured in the web UI, and saves chats to the same `.jsonl` files, so you can switch between the TUI and the web UI at any time.
+Characters and personas are st-cli's own, kept in `~/.config/st-cli/characters/` and `~/.config/st-cli/persona/` (see Importing characters and Personas). Chats are st-cli's too (`~/.config/st-cli/chats/`). SillyTavern only supplies its settings and the context / instruct templates. `st-cli` only chats. Chats are saved as SillyTavern-format `.jsonl` files in `~/.config/st-cli/chats/`.
 
 ```
 st-cli                  # pick a character, then chat
@@ -11,11 +11,12 @@ st-cli sofia 3          # open Sofia's chat number 3 (or by name: Sofia03)
 st-cli sofia -n         # start a new chat (named Sofia01, Sofia02, ...)
 st-cli -l               # list characters
 st-cli sofia -l         # list Sofia's chats
-st-cli import <source>  # import a character card (see below)
-st-cli delete [sofia]   # delete a character and all its chats (asks first)
+st-cli import <source>  # add a character card to ~/.config/st-cli/characters (see below)
+st-cli import-st <url>  # copy the personas and characters of a SillyTavern server
+st-cli delete [sofia]   # delete a character card and all its chats (asks first)
 ```
 
-That is the whole command line: `[character] [chat]`, plus `-n` (new chat) and `-l` (list). The server address is set with `url` in `~/.config/st-cli/config.yaml`.
+That is the whole command line: `[character] [chat]`, plus `-n` (new chat) and `-l` (list), and the commands `import`, `import-st` and `delete`. The server address is set with `url` in `~/.config/st-cli/config.yaml`.
 
 Everything else happens inside the chat:
 
@@ -91,7 +92,18 @@ Only llama.cpp is built in, but a connection kind is one small file: implement `
 
 ## Personas
 
-`/persona` inside a chat opens a window with every persona saved in SillyTavern as `Name (Title)` with a short preview of its description; the active one is marked `(current)`. Pick one with ↑/↓ + Enter (or click / tap); Esc closes it. The choice is written to SillyTavern's settings (`user_avatar`, name, description, position), the same fields the web UI changes when you click a persona, so st-cli and the web UI both use it from then on. It applies to the chat from the next message on. The first row, `+ new persona`, opens a form (name, title, description; Ctrl+S saves, Esc cancels) and makes the persona in SillyTavern with a plain placeholder picture you can change in the web UI. `e` on a persona opens the same form for it; `d` deletes it (asks `y`, removes its picture like the web UI does; the persona in use can't be deleted). A web UI tab that is already open needs a reload to show the change.
+Personas belong to st-cli, not to SillyTavern. Each one is a small YAML file in `~/.config/st-cli/persona/` (`<id>.yaml` with `name`, `title`, `description`, `position`, `depth`, `role`, `lorebook`; hand edits are fine), and the file `persona/active` holds the id of the one in use. SillyTavern's own persona settings are never read for chatting and never written.
+
+`/persona` inside a chat opens a window with every persona as `Name (Title)` with a short preview of its description; the active one is marked `(current)`. Pick one with ↑/↓ + Enter (or click / tap); Esc closes it. The choice applies to the chat from the next message on (and to chats open in other terminals, which re-read the folder before every reply). The first row, `+ new persona`, opens a form (name, title, description; Ctrl+S saves, Esc cancels). `e` on a persona opens the same form for it; `d` deletes it (asks `y`; the persona in use can't be deleted). With no persona saved yet the list shows a plain `User`, which is written to disk once you edit it.
+
+### Importing from SillyTavern
+
+```
+st-cli import-st http://127.0.0.1:8000
+st-cli import-st http://127.0.0.1:8000 --overwrite
+```
+
+Copies every persona (and every character, see Characters) of that SillyTavern server (name, title, description, position, depth, role, lorebook) into the persona folder. The server is only read, never changed, and the personas' pictures are not copied. `<url>` may be left out to use `url` from `config.yaml`, and `host:port` works without `http://`. Personas may share a name: each gets its own file (`alex.yaml`, `alex-2.yaml`, ...; the window tells them apart by title and description preview, and a new persona made with `+ new persona` can reuse a name too). A persona identical to one already here (same name, title and description) is skipped, so running it again is safe; `--overwrite` / `-o` replaces the one with the same name and title instead of adding another. If you have not chosen a persona here yet, the one the server had active becomes yours too.
 
 The chat's top bar reads ` st-cli <version> ` (white badge) `<character>/<chat file> • <persona> (<title>) • <api>@host:port`, e.g. `Mirei/Mire01`. The API type is what SillyTavern is set to; `host:port` is the `url` from `config.yaml`. Message names are black on white, with a grey rule between messages (none under the last one).
 
@@ -114,7 +126,7 @@ All fields except the card file and the depth prompt (shown read-only) can be ed
 | Ctrl+U / Ctrl+D (NORMAL / VISUAL mode) | half a window up / down; on reaching the edge of a field, move into the previous / next field |
 | click | put the cursor in that field |
 | mouse wheel | scroll the window |
-| Ctrl+S, `:w` (NORMAL mode, vim modes on), or the **Save** button | write the changed fields to the character card on the server (`/api/characters/edit-attribute`, as Card save does) and close |
+| Ctrl+S, `:w` (NORMAL mode, vim modes on), or the **Save** button | write the changed fields to the character card file in `~/.config/st-cli/characters/` (as Card save does) and close |
 | Esc (see above), or the **Cancel** button | close without saving |
 
 The focused field is edited with the same editor as the chat box, so the vim modes work there too (unless `vim.enabled: false`): `qq` typed quickly or Esc goes to NORMAL mode, `i a I A o O` back to INSERT, then all the motions and operators from the tables above, VISUAL mode, and the `:%s/find/new/` command line (find / replace only ever touches the field you are in, never the rest of the card; while you type it the matches are highlighted and, once you type the replacement, the field shows the result with the new text in green, with the field name and match count on the row above the buttons; the mode shows on the bottom edge). In NORMAL mode `j` / `k` on the last / first row of a field carry on to the next / previous field. With vim modes on, Esc in INSERT mode goes to NORMAL mode; Esc in NORMAL mode closes the window, and when there are unsaved changes it asks for a second Esc first.
@@ -161,7 +173,7 @@ Details:
 
 - The summary is written with the active API connection (`/api`), with its own settings: the reply length is raised as needed and sampling is made calm (low temperature, no DRY / XTC / penalties / dynamic temperature, no extra stop strings). Your saved connection is not changed. The character card, system prompt and persona are not part of that request.
 - A chat that does not fit into the context together with its summary is read in parts: each request gets the summary so far plus the next part of the chat. If the *Context size* is too small even for that, `/summarize` says so and does nothing.
-- Before anything is changed, the full chat is also saved as `<chat>_before-summary` (then `...2`, `...3`). It is a normal chat file on the server, but `/chats` does not list it, and `/deletebranch` removes it again. If that copy cannot be saved, the chat is left alone.
+- Before anything is changed, the full chat is also saved as `<chat>_before-summary` (then `...2`, `...3`). It is a normal chat file, but `/chats` does not list it, and `/deletebranch` removes it again. If that copy cannot be saved, the chat is left alone.
 - The branches are stored in the chat file, inside the first message (`st_cli_branch`), so the file stays a normal `.jsonl`. The web UI shows the branch that was showing when you left.
 - `Ctrl+S` / **Card save** is not offered on the summary: it is never written into the character card. Branched chats no longer get the card's alternate greetings added as swipes. `/undo` (with or without a number) will not delete the first message of a branched chat.
 - It needs at least three messages. Summaries are written by the model, so read the result; branch 1 and the saved copy have everything.
@@ -170,6 +182,19 @@ Details:
 ## Placeholders and tidy text
 
 `{{user}}`, `{{char}}` and the old `<USER>` / `<BOT>` / `<CHAR>` / `<GROUP>` are replaced in greetings (when a chat is created) and in every message on screen. When you send a message, macros such as `{{roll:1d6}}`, `{{random::a::b}}`, `{{time}}`, `{{date}}`, `{{time_UTC+2}}`, `{{newline}}`, `{{trim}}` and `{{//comment}}` are filled in like in SillyTavern, and unknown ones are left as typed. Messages you send or edit (and replies) are trimmed: no spaces or empty lines at the start or end, no trailing spaces on lines.
+
+## Chats
+
+Chats belong to st-cli too: `~/.config/st-cli/chats/<Name>/<chat>.jsonl`, one folder per character (named like the card file without `.png`). The files are the same SillyTavern `.jsonl` format as before (header line, then one message per line, unknown fields kept), so a chat folder copied from SillyTavern's `data/<user>/chats/` works as it is. Saving refuses to overwrite a file that another terminal changed in the meantime (`chat_metadata.integrity`), as SillyTavern did; reopen st-cli to reload it. `st-cli import-st <url>` copies the chats of every character of a server here (a chat that already exists here is kept; `--overwrite` replaces it). SillyTavern is still contacted for its settings and context / instruct templates, so it needs to be running.
+
+## Characters
+
+Characters belong to st-cli, not to SillyTavern. Each card is a file in `~/.config/st-cli/characters/`:
+
+- `Name.png`: a card PNG with the card embedded (the `chara` / `ccv3` text chunks SillyTavern, chub.ai and others use). The picture is what `/char-img` shows.
+- `Name.json`: a card that is only JSON (V1, V2, V3 or Pygmalion). It has no picture. V1 and Pygmalion cards are read as V2; if you edit one with `/char` or Card save it is saved back as V2.
+
+A character is identified by `Name.png` whichever of the two it is stored as; that name is also the folder its chats live in (see Chats). `/char` and Card save edit the card file right here (a PNG keeps its picture; only the embedded card data is rewritten). Cards you drop into the folder by hand are picked up the next time the list is read.
 
 ## Importing characters
 
@@ -182,9 +207,11 @@ st-cli import https://pygmalion.chat/character/<id>        # pygmalion.chat
 st-cli import https://example.com/cards/sofia.png         # direct link to a card .png or .json
 ```
 
-st-cli does not convert anything itself. The card is sent to SillyTavern's own import endpoint (`/api/characters/import`, what the web UI's import button uses), so the server reads V1/V2/V3/Pygmalion JSON and PNG cards and saves it the same way. URLs are downloaded by the server too (`/api/content/importURL`). Before sending, st-cli checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and gives a clear error if not. Any other http(s) link is treated as a direct link to a card file: st-cli downloads it itself (up to 50 MB; the file type is detected from its content, not the URL), runs the same check, and uploads it to SillyTavern. Supported card sites: chub.ai (also characterhub.org) and pygmalion.chat (`/char/<id>` links; the server fetches the card by its id); lorebook links are refused.
+The card is saved as it came into `~/.config/st-cli/characters/`, named after the character (`Sofia.png`, or `Sofia-2.png` when that name is taken; a PNG stays a PNG, JSON stays JSON). Before saving, st-cli checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and gives a clear error if not. Any other http(s) link is treated as a direct link to a card file: st-cli downloads it itself (up to 50 MB; the file type is detected from its content, not the URL) and runs the same check. chub.ai (also characterhub.org) and pygmalion.chat links (`/character/<id>`) are downloaded by the SillyTavern server (`/api/content/importURL`), so it must be running for those (`url` in `config.yaml`); the card is still saved here, not there. Lorebook links are refused.
 
-The server comes from `url` in `config.yaml`, as for chatting.
+### Copying everything from SillyTavern
+
+`st-cli import-st <url>` (see Personas) also copies every character of that server into the characters folder, as its card PNG with the same file name, and copies its chats into the chats folder (see Chats). A character that is already here is skipped (`--overwrite` replaces it).
 
 ## Deleting characters
 
@@ -194,7 +221,7 @@ st-cli delete sofia     # a partial name works
 st-cli delete sofia -y  # no confirmation question (needed when not in a terminal)
 ```
 
-It shows how many chats the character has and asks `Really delete? [y/N]`. Then SillyTavern's own delete call (`/api/characters/delete` with `delete_chats`) removes the card and every chat file. This cannot be undone.
+It shows how many chats the character has and asks `Really delete? [y/N]`. Then the card file is deleted from the characters folder and the character's folder in `chats/` goes with it. This cannot be undone. Nothing on a SillyTavern server is touched.
 
 ## Phone / Termux (touch)
 
@@ -283,7 +310,7 @@ The row under the input box shows the totals on the right: the number of message
 | PgUp/PgDn, mouse wheel, ↑/↓ | scroll the chat (↑/↓ move the cursor while editing). The wheel (or a swipe) over the text box scrolls only the box, anywhere else only the chat; typing or moving the cursor snaps the box back to the cursor |
 | `/undo [n]` or `/u [n]` | delete the last message, or the last `n` (`/undo 3`); stops at the first message of a branched chat |
 | `/new` | new chat with this character (keeps the current one) |
-| `/newchat` or `/nc` | delete this chat on the server and start a new one |
+| `/newchat` or `/nc` | delete this chat and start a new one |
 | F1 or `/help` | help window; scroll it with ↑/↓ (or j/k), PgUp/PgDn, Home/End or the mouse wheel, any other key closes it |
 | Ctrl+C / Ctrl+D | quit |
 
@@ -341,10 +368,10 @@ The pattern is matched as plain text (no regular expressions yet), so `.` and `*
 
 ## How it works
 
-SillyTavern only supplies characters, chats, personas and the context / instruct templates; the prompt is built client side and the reply comes straight from your API connection (`/api`). Before every reply st-cli re-reads both SillyTavern's settings and `api.yaml`, so a change to a template, persona or sampler value applies to the next message.
+SillyTavern only supplies the chats and the context / instruct templates (characters and personas are st-cli's own, in `~/.config/st-cli/characters/` and `~/.config/st-cli/persona/`); the prompt is built client side and the reply comes straight from your API connection (`/api`). Before every reply st-cli re-reads both SillyTavern's settings and `api.yaml`, so a change to a template, persona or sampler value applies to the next message.
 
 1. `GET /csrf-token` (+ optional login), then `POST /api/settings/get`.
-2. Character card from `/api/characters/get`; chats via `/api/chats/get` and `/api/chats/save`.
+2. Character card from `~/.config/st-cli/characters/`; chats via `/api/chats/get` and `/api/chats/save`.
 3. `src/textgen.rs` renders your context template (story string), instruct template, example dialogue and stop strings. `src/conn/` sends that prompt with the connection's own sampler values to the backend (llama.cpp's `/completion`).
 4. The stream is rendered live and the chat is saved back to the same `.jsonl` file.
 

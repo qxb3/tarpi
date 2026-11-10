@@ -1,16 +1,16 @@
-//! `st-cli import <file | url | json>`: add a character card to SillyTavern.
+//! `st-cli import <file | url | json>`: add a character card to st-cli's own
+//! characters folder (`~/.config/st-cli/characters/`, see `charstore`).
 //!
-//! The card itself is never converted here. SillyTavern's own
-//! `POST /api/characters/import` reads V1, V2/V3 and Pygmalion JSON as well as
-//! PNGs with an embedded card, so the file is sent as it is and the server
-//! saves it exactly like the web UI's "Import character" button does. For
-//! URLs, `POST /api/content/importURL` makes the server download the card
-//! (chub.ai / characterhub.org / pygmalion.chat). This module only checks the input first so
-//! that a wrong file fails with a clear message instead of a bare 400.
+//! The card is stored as it came: a PNG with an embedded card stays a PNG, a
+//! JSON card (V1, V2, V3, Pygmalion) stays JSON. Only chub.ai / characterhub.org
+//! / pygmalion.chat links need SillyTavern, because its server does the
+//! download (`POST /api/content/importURL`); the card is still saved here, not
+//! there. This module checks the input first so that a wrong file fails with a
+//! clear message.
 
 use crate::api::Api;
+use crate::charstore;
 use crate::config;
-use crate::jv::*;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use serde_json::Value;
@@ -19,10 +19,11 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(
     name = "st-cli import",
-    about = "Import a character card into SillyTavern",
-    long_about = "Import a character card into SillyTavern. The card is saved by the \
-                  SillyTavern server itself (like the web UI's import button), so the \
-                  character shows up in the web UI right away.",
+    about = "Import a character card into st-cli",
+    long_about = "Import a character card into st-cli's own characters folder, \
+                  ~/.config/st-cli/characters/. PNG cards keep their picture, JSON-only \
+                  cards are stored as JSON. chub.ai and pygmalion.chat links are \
+                  downloaded through SillyTavern, so it must be running for those.",
     after_help = concat!(
         "EXAMPLES:\n",
         "  st-cli import sofia.png                        V2/V3 card PNG\n",
@@ -69,23 +70,12 @@ impl Kind {
             Kind::Json => "json",
         }
     }
-    fn mime(self) -> &'static str {
-        match self {
-            Kind::Png => "image/png",
-            Kind::Json => "application/json",
-        }
-    }
 }
 
 pub async fn run() -> Result<()> {
     // argv is `st-cli import ...`; drop the program name so that "import"
     // plays the part of the binary name in clap's messages.
     let cli = ImportCli::parse_from(std::env::args().skip(1));
-    let cfg = config::load()?;
-    let server = cfg
-        .url
-        .clone()
-        .unwrap_or_else(|| "http://127.0.0.1:8000".to_string());
 
     // Check local input before touching the network.
     let source = classify(&cli.source)?;
@@ -114,20 +104,28 @@ pub async fn run() -> Result<()> {
         }
     }
 
-    let api = Api::connect(&server).await.with_context(|| {
-        format!(
-            "Is SillyTavern running at {}? Start it, or set `url:` in \
-             ~/.config/st-cli/config.yaml",
-            server
-        )
-    })?;
-
-    let (bytes, file_name, kind) = match (local, remote) {
+    let (bytes, file_name, _kind) = match (local, remote) {
         (Some(x), _) => x,
         (None, Some((u, site))) => {
             eprintln!("Downloading...");
             let (bytes, name, content) = match site {
                 Site::Chub | Site::Pygmalion => {
+                    // These sites are fetched by the SillyTavern server; the
+                    // card is saved here, not there.
+                    let cfg = config::load()?;
+                    let server = cfg
+                        .url
+                        .clone()
+                        .unwrap_or_else(|| "http://127.0.0.1:8000".to_string());
+                    let api = Api::connect(&server).await.with_context(|| {
+                        format!(
+                            "chub.ai and pygmalion.chat links are downloaded through \
+                             SillyTavern. Is it running at {}? Start it, or set `url:` in \
+                             ~/.config/st-cli/config.yaml, or download the card file yourself \
+                             and import that",
+                            server
+                        )
+                    })?;
                     let d = api.import_url(&u).await?;
                     (d.bytes, d.file_name, d.kind)
                 }
@@ -153,25 +151,20 @@ pub async fn run() -> Result<()> {
         (None, None) => unreachable!("a source is either local or a URL"),
     };
 
-    let saved = api
-        .import_character(bytes, &file_name, kind.file_type(), kind.mime())
-        .await?;
-
-    // `saved` is the new avatar file name without ".png". Look the character
-    // up for a friendly message; failing to do so is not an error.
-    let avatar = format!("{}.png", saved);
-    let name = api
-        .characters()
-        .await
-        .ok()
-        .and_then(|list| {
-            list.iter()
-                .find(|c| jstr(c, "avatar") == avatar)
-                .map(|c| jstr(c, "name"))
-        })
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| saved.clone());
-    println!("Imported \"{}\" ({})", name, avatar);
+    let saved = charstore::save(&bytes, &file_name, None, false)?;
+    let name = if saved.name.is_empty() {
+        saved.avatar.clone()
+    } else {
+        saved.name.clone()
+    };
+    println!(
+        "Imported \"{}\" ({}) into {}",
+        name,
+        saved.avatar,
+        config::characters_dir()
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|| "the characters folder".to_string())
+    );
     println!("Chat with it:  st-cli \"{}\"", name);
     Ok(())
 }

@@ -3,6 +3,8 @@ mod apitui;
 mod app;
 mod cardedit;
 mod character;
+mod charstore;
+mod chatstore;
 mod charimg;
 mod chat;
 mod clipboard;
@@ -13,6 +15,7 @@ mod delete;
 mod gen;
 mod history;
 mod import;
+mod import_st;
 mod input;
 mod jv;
 mod persona;
@@ -59,9 +62,12 @@ use crate::jv::*;
     name = "st-cli",
     version,
     about = "Terminal chat client for a running SillyTavern server",
-    long_about = "Chat with a SillyTavern character from the terminal. Characters, chats and \
-                  personas live in SillyTavern; replies come from the API connection managed \
-                  with `/api` inside a chat.",
+    long_about = "Chat with a character from the terminal. Characters and personas are kept by \
+                  st-cli itself in ~/.config/st-cli/characters/ and ~/.config/st-cli/persona/ \
+                  (add cards with `st-cli import`, copy yours from SillyTavern with `st-cli \
+                  import-st <url>`). Chats are saved in ~/.config/st-cli/chats/. SillyTavern is \
+                  still used for its settings and templates; replies come from the API \
+                  connection managed with `/api` inside a chat.",
     args_conflicts_with_subcommands = true,
     disable_help_subcommand = true,
     after_help = concat!(
@@ -110,10 +116,13 @@ struct Cli {
 /// command name on (`Rest`).
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Import a character card (PNG or JSON file, chub.ai / pygmalion.chat URL, or JSON text)
+    /// Import a character card into st-cli's characters folder (PNG or JSON file, chub.ai / pygmalion.chat URL, or JSON text)
     #[command(disable_help_flag = true)]
     Import(Rest),
-    /// Delete a character together with all of its chats (asks first)
+    /// Copy the personas and characters of a SillyTavern server into st-cli's own folders
+    #[command(disable_help_flag = true)]
+    ImportSt(Rest),
+    /// Delete a character card together with all of its chats (asks first)
     #[command(disable_help_flag = true)]
     Delete(Rest),
 }
@@ -395,7 +404,7 @@ const MENU_ROWS: usize = 40;
 /// Numbered character menu. Typing part of a name narrows the list.
 fn pick_character(list: &[Value]) -> Result<&Value> {
     if list.is_empty() {
-        bail!("SillyTavern has no characters yet. Create or import one in the web UI first.");
+        bail!("No characters yet. Add one with `st-cli import <card>` (or copy yours from SillyTavern with `st-cli import-st <url>`).");
     }
     let mut sorted: Vec<&Value> = list.iter().collect();
     sorted.sort_by_key(|c| char_display_name(c).to_lowercase());
@@ -621,6 +630,7 @@ async fn main() -> Result<()> {
     // them again from the command line. Everything else is the chat CLI.
     match &cli.command {
         Some(Commands::Import(_)) => return import::run().await,
+        Some(Commands::ImportSt(_)) => return import_st::run().await,
         Some(Commands::Delete(_)) => return delete::run().await,
         None => {}
     }
@@ -645,7 +655,7 @@ async fn main() -> Result<()> {
         )
     })?;
 
-    let characters = api.characters().await?;
+    let characters = charstore::list();
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
 
     // ---- -l: list characters, or one character's chats, and exit
@@ -653,7 +663,7 @@ async fn main() -> Result<()> {
         match cli.character.as_deref() {
             Some(q) => {
                 let entry = find_character(&characters, q)?;
-                let mut chats = api.chats(&jstr(entry, "avatar")).await?;
+                let mut chats = chatstore::list(&jstr(entry, "avatar"))?;
                 sort_chats_newest_first(&mut chats);
                 if chats.is_empty() {
                     println!("(no chats yet for {})", char_display_name(entry));
@@ -695,17 +705,17 @@ async fn main() -> Result<()> {
     loop {
         let avatar = jstr(&entry, "avatar");
         // The list may be "shallow" (lazyLoadCharacters), so always fetch the full card.
-        let full = api.character(&avatar).await?;
+        let full = charstore::get(&avatar)?;
         let character = Character::from_value(&full);
 
-        let mut chats = api.chats(&avatar).await?;
+        let mut chats = chatstore::list(&avatar)?;
         sort_chats_newest_first(&mut chats);
         let ids: Vec<String> = chats.iter().map(file_id).collect();
         let next_name = chat::next_chat_name(&character.name, &ids);
 
         let mut settings = api.settings().await?;
         persona::normalize(&mut settings);
-        let user_name = persona::current(&settings).name;
+        let user_name = persona::current().name;
         let persona_text = jstr(settings.get("power_user").unwrap_or(&Value::Null), "persona_description");
 
         let explicit = matches!(want, Want::File(_));
@@ -725,7 +735,7 @@ async fn main() -> Result<()> {
             }
             (st, false)
         } else {
-            let lines = api.load_chat(&avatar, &character.name, &file).await?;
+            let lines = chatstore::load(&avatar, &file)?;
             if lines.is_empty() && explicit {
                 bail!(
                     "chat '{}' not found for {}. Run `st-cli {} -l`.",
@@ -786,7 +796,7 @@ async fn main() -> Result<()> {
             Some(app::Exit::Chat(file)) => want = Want::File(file),
             Some(app::Exit::Character(avatar)) => {
                 // Read the list again: cards may have been added since the start.
-                let fresh = api.characters().await?;
+                let fresh = charstore::list();
                 entry = fresh
                     .iter()
                     .find(|c| jstr(c, "avatar") == avatar)

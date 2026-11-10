@@ -180,6 +180,21 @@ pub fn api_path() -> Option<PathBuf> {
     dir().map(|d| d.join("api.yaml"))
 }
 
+/// `~/.config/st-cli/persona/`: one `<id>.yaml` per persona, plus `active` (see `persona`).
+pub fn persona_dir() -> Option<PathBuf> {
+    dir().map(|d| d.join("persona"))
+}
+
+/// `~/.config/st-cli/characters/`: the character cards, `.png` (card embedded) or `.json` (see `charstore`).
+pub fn characters_dir() -> Option<PathBuf> {
+    dir().map(|d| d.join("characters"))
+}
+
+/// `~/.config/st-cli/chats/`: one folder per character, one `.jsonl` per chat (see `chatstore`).
+pub fn chats_dir() -> Option<PathBuf> {
+    dir().map(|d| d.join("chats"))
+}
+
 fn legacy_path() -> Option<PathBuf> {
     dir().map(|d| d.join("config.toml"))
 }

@@ -12,6 +12,8 @@ use crate::history::History;
 use crate::input::{Input, Mode};
 use crate::picker::{Action as PickAction, Item as PickItem, Picker};
 use crate::jv::*;
+use crate::chatstore;
+use crate::charstore;
 use crate::persona;
 use crate::prompt;
 use crate::prose;
@@ -425,7 +427,7 @@ impl App {
     ) -> App {
         persona::normalize(&mut settings);
         let (user_name, persona_title) = {
-            let p = persona::current(&settings);
+            let p = persona::current();
             (p.name, p.title)
         };
         let (persona, persona_position) = match settings.get("power_user") {
@@ -1819,13 +1821,9 @@ impl App {
 
     async fn write_greeting_to_card(&mut self, slot: GreetingSlot, text: &str) -> anyhow::Result<()> {
         let avatar = self.character.avatar.clone();
-        // Read the card fresh: it may have been changed in the web UI.
-        let full = self.api.character(&avatar).await?;
+        // Read the card fresh: it may have been edited since the chat opened.
+        let full = charstore::get(&avatar)?;
         let data = full.get("data").cloned().unwrap_or(Value::Null);
-        let card_name = {
-            let n = jstr(&full, "name");
-            if n.trim().is_empty() { self.character.name.clone() } else { n }
-        };
         // The chat shows {{char}} / {{user}} already replaced. Put them back
         // if the card text used them, so the card keeps working with any persona.
         let unsubst = |raw: &str| -> String {
@@ -1859,9 +1857,7 @@ impl App {
                     if d.trim().is_empty() { jstr(&full, "first_mes") } else { d }
                 };
                 let value = unsubst(&raw);
-                self.api
-                    .edit_card_attribute(&avatar, &card_name, "first_mes", &Value::String(value.clone()))
-                    .await?;
+                charstore::set_field(&avatar, "first_mes", &Value::String(value.clone()))?;
                 self.character.first_mes = value;
             }
             GreetingSlot::Alt(n) => {
@@ -1882,9 +1878,7 @@ impl App {
                 let raw = arr[pos].as_str().unwrap_or("").to_string();
                 let value = unsubst(&raw);
                 arr[pos] = Value::String(value.clone());
-                self.api
-                    .edit_card_attribute(&avatar, &card_name, "alternate_greetings", &Value::Array(arr))
-                    .await?;
+                charstore::set_field(&avatar, "alternate_greetings", &Value::Array(arr))?;
                 if let Some(slot) = self.character.alternate_greetings.get_mut(n) {
                     *slot = value;
                 }
@@ -1897,13 +1891,7 @@ impl App {
 
     /// `/characters`: choose another character to chat with.
     async fn open_characters_picker(&mut self) {
-        let list = match self.api.characters().await {
-            Ok(l) => l,
-            Err(e) => {
-                self.set_status(format!("{:#}", e), true);
-                return;
-            }
-        };
+        let list = charstore::list();
         let mut sorted: Vec<&Value> = list.iter().collect();
         sorted.sort_by_key(|c| crate::char_display_name(c).to_lowercase());
         let items: Vec<PickItem> = sorted
@@ -1929,7 +1917,7 @@ impl App {
 
     /// `/chats`: open, create or delete a chat of this character.
     async fn open_chats_picker(&mut self) {
-        let mut chats = match self.api.chats(&self.chat.avatar).await {
+        let mut chats = match chatstore::list(&self.chat.avatar) {
             Ok(c) => c,
             Err(e) => {
                 self.set_status(format!("{:#}", e), true);
@@ -1973,14 +1961,7 @@ impl App {
     /// `/persona`: choose who you are in this chat, make a new persona (the
     /// first row), edit one (`e`) or delete one (`d`).
     async fn open_persona_picker(&mut self) {
-        let settings = match self.api.settings().await {
-            Ok(s) => s,
-            Err(e) => {
-                self.set_status(format!("{:#}", e), true);
-                return;
-            }
-        };
-        let active = persona::current(&settings).avatar;
+        let active = persona::current().id;
         let mut items = vec![PickItem {
             key: NEW_PERSONA.to_string(),
             label: "+ new persona".to_string(),
@@ -1989,40 +1970,31 @@ impl App {
             deletable: false,
             editable: false,
         }];
-        items.extend(persona::list(&settings).into_iter().map(|p| PickItem {
+        items.extend(persona::list().into_iter().map(|p| PickItem {
             label: p.label(),
             detail: persona::brief(&p.description, 80),
-            current: p.avatar == active,
+            current: p.id == active,
             deletable: true,
             editable: true,
-            key: p.avatar,
+            key: p.id,
         }));
         self.picker = Some((PickKind::Personas, Picker::new("persona", items)));
     }
 
-    /// Open the persona form for `avatar`, or an empty one for a new persona.
-    async fn open_persona_form(&mut self, avatar: Option<String>) {
-        let (name, title, description) = match &avatar {
+    /// Open the persona form for `id`, or an empty one for a new persona.
+    async fn open_persona_form(&mut self, id: Option<String>) {
+        let (name, title, description) = match &id {
             None => (String::new(), String::new(), String::new()),
-            Some(a) => {
-                let settings = match self.api.settings().await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        self.set_status(format!("{:#}", e), true);
-                        return;
-                    }
-                };
-                match persona::list(&settings).into_iter().find(|p| p.avatar == *a) {
-                    Some(p) => (p.name, p.title, p.description),
-                    None => {
-                        self.set_status("that persona no longer exists", true);
-                        return;
-                    }
+            Some(a) => match persona::list().into_iter().find(|p| p.id == *a) {
+                Some(p) => (p.name, p.title, p.description),
+                None => {
+                    self.set_status("that persona no longer exists", true);
+                    return;
                 }
-            }
+            },
         };
         self.card_modal = Some(CardModal::persona(&name, &title, &description, &self.input));
-        self.persona_edit = Some(PersonaEdit { avatar });
+        self.persona_edit = Some(PersonaEdit { avatar: id });
     }
 
     /// Ctrl+S in the persona form: create or update the persona, then show the
@@ -2040,40 +2012,17 @@ impl App {
             return;
         }
         let existing = self.persona_edit.as_ref().and_then(|e| e.avatar.clone());
-        let mut settings = match self.api.settings().await {
-            Ok(s) => s,
+        let msg = match persona::put(existing.as_deref(), &name, &title, &description) {
+            Ok(_) if existing.is_some() => format!("saved persona {}", name),
+            Ok(_) => format!("created persona {}", name),
             Err(e) => {
-                self.card_note(format!("{:#}", e), true);
+                self.card_note(format!("could not save the persona: {:#}", e), true);
                 return;
             }
         };
-        let msg = match existing {
-            Some(avatar) => {
-                persona::put(&mut settings, &avatar, &name, &title, &description);
-                if let Err(e) = self.api.save_settings(&settings).await {
-                    self.card_note(format!("could not save the persona: {:#}", e), true);
-                    return;
-                }
-                self.apply_settings(settings);
-                format!("saved persona {}", name)
-            }
-            None => {
-                let avatar = match self.api.upload_avatar(persona::AVATAR_PNG.to_vec()).await {
-                    Ok(a) => a,
-                    Err(e) => {
-                        self.card_note(format!("could not create the persona: {:#}", e), true);
-                        return;
-                    }
-                };
-                persona::put(&mut settings, &avatar, &name, &title, &description);
-                if let Err(e) = self.api.save_settings(&settings).await {
-                    let _ = self.api.delete_avatar(&avatar).await;
-                    self.card_note(format!("could not save the persona: {:#}", e), true);
-                    return;
-                }
-                format!("created persona {}", name)
-            }
-        };
+        // The active persona may just have been edited.
+        let settings = self.settings.clone();
+        self.apply_settings(settings);
         self.card_modal = None;
         self.persona_edit = None;
         self.open_persona_picker().await;
@@ -2084,28 +2033,20 @@ impl App {
 
     /// Delete a persona chosen in the `/persona` window; the window stays open.
     async fn persona_delete(&mut self, key: &str) {
-        let note = match self.api.settings().await {
-            Err(e) => (format!("{:#}", e), true),
-            Ok(mut settings) => {
-                if persona::current(&settings).avatar == key {
-                    (
-                        "that persona is in use \u{2014} switch to another one first".to_string(),
-                        true,
-                    )
-                } else {
-                    persona::remove(&mut settings, key);
-                    match self.api.save_settings(&settings).await {
-                        Ok(()) => {
-                            // The picture goes too, like the web UI's delete.
-                            let _ = self.api.delete_avatar(key).await;
-                            if let Some((_, p)) = self.picker.as_mut() {
-                                p.remove(key);
-                            }
-                            ("deleted the persona".to_string(), false)
-                        }
-                        Err(e) => (format!("could not delete the persona: {:#}", e), true),
+        let note = if persona::current().id == key {
+            (
+                "that persona is in use \u{2014} switch to another one first".to_string(),
+                true,
+            )
+        } else {
+            match persona::remove(key) {
+                Ok(()) => {
+                    if let Some((_, p)) = self.picker.as_mut() {
+                        p.remove(key);
                     }
+                    ("deleted the persona".to_string(), false)
                 }
+                Err(e) => (format!("could not delete the persona: {:#}", e), true),
             }
         };
         if let Some((_, p)) = self.picker.as_mut() {
@@ -2113,30 +2054,20 @@ impl App {
         }
     }
 
-    /// Make `avatar` the active persona: saved to SillyTavern's settings (as
-    /// the web UI does) and used by this chat from the next message on.
-    async fn switch_persona(&mut self, avatar: &str) {
-        let mut settings = match self.api.settings().await {
-            Ok(s) => s,
-            Err(e) => {
-                self.set_status(format!("{:#}", e), true);
-                return;
-            }
-        };
-        if persona::current(&settings).avatar == avatar {
+    /// Make `id` the active persona: remembered in st-cli's persona folder and
+    /// used by this chat from the next message on.
+    async fn switch_persona(&mut self, id: &str) {
+        if persona::current().id == id {
             return;
         }
-        let p = match persona::activate(&mut settings, avatar) {
+        let p = match persona::activate(id) {
             Ok(p) => p,
             Err(e) => {
-                self.set_status(format!("{:#}", e), true);
+                self.set_status(format!("could not switch the persona: {:#}", e), true);
                 return;
             }
         };
-        if let Err(e) = self.api.save_settings(&settings).await {
-            self.set_status(format!("could not save the persona: {:#}", e), true);
-            return;
-        }
+        let settings = self.settings.clone();
         self.apply_settings(settings);
         self.set_status(format!("now chatting as {}", p.label()), false);
     }
@@ -2200,12 +2131,12 @@ impl App {
             self.quit().await;
             let avatar = self.chat.avatar.clone();
             let mut names = vec![key.to_string()];
-            if let Ok(chats) = self.api.chats(&avatar).await {
+            if let Ok(chats) = chatstore::list(&avatar) {
                 let ids: Vec<String> = chats.iter().map(chat::file_id).collect();
                 names.extend(chat::backups_of(key, &ids));
             }
             for name in names {
-                let _ = self.api.delete_chat(&avatar, &name).await;
+                let _ = chatstore::delete(&avatar, &name);
             }
             return;
         }
@@ -2215,7 +2146,7 @@ impl App {
                 true,
             )
         } else {
-            match self.api.delete_chat(&self.chat.avatar, key).await {
+            match chatstore::delete(&self.chat.avatar, key) {
                 Ok(()) => {
                     if let Some((_, p)) = self.picker.as_mut() {
                         p.remove(key);
@@ -2239,7 +2170,7 @@ impl App {
         } else {
             self.character.avatar.clone()
         };
-        let res = match self.api.character_image(&avatar).await {
+        let res = match charstore::image(&avatar) {
             Ok(bytes) => ImageModal::new(&self.character.name, &bytes),
             Err(e) => Err(e),
         };
@@ -2251,9 +2182,9 @@ impl App {
 
     /// `/character`: open the card of this character as an editable form.
     async fn open_card_modal(&mut self) {
-        // Read the card fresh: it may have been changed in the web UI.
+        // Read the card fresh: it may have been edited since the chat opened.
         let avatar = self.character.avatar.clone();
-        let shown = match self.api.character(&avatar).await {
+        let shown = match charstore::get(&avatar) {
             Ok(v) => {
                 let mut ch = Character::from_value(&v);
                 if ch.avatar.trim().is_empty() {
@@ -2302,24 +2233,9 @@ impl App {
             return;
         }
         let avatar = self.character.avatar.clone();
-        let card_name = match self.api.character(&avatar).await {
-            Ok(full) => {
-                let n = jstr(&full, "name");
-                if n.trim().is_empty() { self.character.name.clone() } else { n }
-            }
-            Err(e) => {
-                self.card_note(format!("{:#}", e), true);
-                self.set_status(format!("{:#}", e), true);
-                return;
-            }
-        };
         let total = changes.len();
         for (key, value) in changes {
-            if let Err(e) = self
-                .api
-                .edit_card_attribute(&avatar, &card_name, key, &value)
-                .await
-            {
+            if let Err(e) = charstore::set_field(&avatar, key, &value) {
                 self.card_note(format!("{:#}", e), true);
                 self.set_status(format!("{:#}", e), true);
                 return;
@@ -2831,7 +2747,7 @@ impl App {
             self.user_name.clone(),
             self.persona_title.clone(),
         ];
-        for p in crate::persona::list(&self.settings) {
+        for p in crate::persona::list() {
             names.push(p.name);
             names.push(p.title);
         }
@@ -2918,7 +2834,7 @@ impl App {
             self.set_status("stop the generation first (Esc)", false);
             return;
         }
-        let ids: Vec<String> = match self.api.chats(&self.chat.avatar).await {
+        let ids: Vec<String> = match chatstore::list(&self.chat.avatar) {
             Ok(list) => list.iter().map(chat::file_id).collect(),
             Err(_) => vec![self.chat.file.clone()],
         };
@@ -2934,7 +2850,7 @@ impl App {
         self.set_status(format!("started new chat: {}", self.chat.file), false);
     }
 
-    /// `/newchat` (`/nc`): deletes the chat file on the server right away and
+    /// `/newchat` (`/nc`): deletes the chat file right away and
     /// starts a fresh chat.
     async fn delete_chat(&mut self) {
         if self.is_generating() {
@@ -2942,7 +2858,7 @@ impl App {
             return;
         }
         let file = self.chat.file.clone();
-        match self.api.delete_chat(&self.chat.avatar, &file).await {
+        match chatstore::delete(&self.chat.avatar, &file) {
             Ok(()) => {
                 self.new_chat().await;
                 let now = self.chat.file.clone();
@@ -3012,14 +2928,14 @@ impl App {
         // The full-chat copy `/summarize` kept goes with the branch: the newest
         // one, or all that are left when no branch remains.
         let mut gone: Vec<String> = Vec::new();
-        if let Ok(chats) = self.api.chats(&self.chat.avatar).await {
+        if let Ok(chats) = chatstore::list(&self.chat.avatar) {
             let ids: Vec<String> = chats.iter().map(chat::file_id).collect();
             let mut backups = chat::backups_of(&self.chat.file, &ids);
             if left >= 2 {
                 backups = backups.into_iter().last().into_iter().collect();
             }
             for name in backups {
-                if self.api.delete_chat(&self.chat.avatar, &name).await.is_ok() {
+                if chatstore::delete(&self.chat.avatar, &name).is_ok() {
                     gone.push(name);
                 }
             }
@@ -3183,7 +3099,7 @@ impl App {
     }
 
     /// Re-read the user's settings from SillyTavern so changes made in the
-    /// web UI (API, model, preset, templates, persona) apply to the next reply.
+    /// web UI (API, model, preset, templates) and in the persona folder apply to the next reply.
     async fn refresh_settings(&mut self) {
         self.reload_connection();
         match self.api.settings().await {
@@ -3200,7 +3116,7 @@ impl App {
         if let Some(c) = &self.conn {
             conn::overlay(&mut settings, c);
         }
-        let p = persona::current(&settings);
+        let p = persona::current();
         self.user_name = p.name;
         self.persona_title = p.title;
         if let Some(pu) = settings.get("power_user") {
@@ -3686,10 +3602,7 @@ impl App {
     /// Save the chat as it is now under a new name (`<chat>_before-summary`,
     /// then `...2`, `...3`), and return that name.
     async fn backup_chat(&self) -> anyhow::Result<String> {
-        let existing: Vec<String> = self
-            .api
-            .chats(&self.chat.avatar)
-            .await?
+        let existing: Vec<String> = chatstore::list(&self.chat.avatar)?
             .iter()
             .map(chat::file_id)
             .collect();
@@ -3700,14 +3613,7 @@ impl App {
             name = format!("{}{}", base, n);
             n += 1;
         }
-        self.api
-            .save_chat(
-                &self.chat.avatar,
-                &self.chat.char_name,
-                &name,
-                &self.chat.copy_lines(),
-            )
-            .await?;
+        chatstore::save(&self.chat.avatar, &name, &self.chat.copy_lines())?;
         Ok(name)
     }
 
@@ -3715,15 +3621,7 @@ impl App {
 
     pub async fn save(&mut self) {
         let lines = self.chat.lines();
-        let result = self
-            .api
-            .save_chat(
-                &self.chat.avatar,
-                &self.chat.char_name,
-                &self.chat.file,
-                &lines,
-            )
-            .await;
+        let result = chatstore::save(&self.chat.avatar, &self.chat.file, &lines);
         if let Err(e) = result {
             self.set_status(format!("{:#}", e), true);
         }

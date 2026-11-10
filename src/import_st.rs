@@ -1,0 +1,236 @@
+//! `st-cli import-st <url>`: copy the personas and the characters of a
+//! SillyTavern server into st-cli's own folders (`~/.config/st-cli/persona/`
+//! and `~/.config/st-cli/characters/`, see `persona` and `charstore`).
+//!
+//! Only reads from the server; nothing there is changed. A persona's picture is
+//! not copied. A character is copied as its card PNG with the file name it has
+//! on the server. Its chats are copied too (`~/.config/st-cli/chats/`); a chat
+//! that already exists here is kept unless `--overwrite` is given.
+//! Personas may share a name: an identical one (name, title and description) is
+//! skipped, so the command can be run again safely; with `--overwrite` one with
+//! the same name and title is replaced. Characters are skipped when a card of
+//! that file name is already here, or replaced with `--overwrite`.
+
+use crate::api::Api;
+use crate::charstore;
+use crate::chatstore;
+use crate::config;
+use crate::jv::*;
+use crate::persona::{self, Imported};
+use anyhow::{Context, Result};
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "st-cli import-st",
+    about = "Import the personas and characters of a SillyTavern server into st-cli",
+    long_about = "Copy every persona (name, title, description, position, depth, role and \
+                  lorebook) and every character card of a running SillyTavern server into \
+                  st-cli's own folders, ~/.config/st-cli/persona/ and \
+                  ~/.config/st-cli/characters/. Nothing is changed on the server. Every character's chats \
+                  are copied to ~/.config/st-cli/chats/ too (chats that already exist here \
+                  are kept). A character that is already here is skipped. \
+                  Personas with the same name are kept side by side; an identical one \
+                  is skipped, and --overwrite replaces one with the same name and title.",
+    after_help = concat!(
+        "EXAMPLES:\n",
+        "  st-cli import-st http://127.0.0.1:8000\n",
+        "  st-cli import-st 192.168.1.20:8000\n",
+        "  st-cli import-st http://127.0.0.1:8000 --overwrite"
+    )
+)]
+struct ImportStCli {
+    /// Address of the SillyTavern server, e.g. http://127.0.0.1:8000
+    /// (default: `url` from config.yaml)
+    url: Option<String>,
+
+    /// Replace a persona with the same name and title, and a character with the same
+    /// file name, instead of skipping it
+    #[arg(short, long)]
+    overwrite: bool,
+}
+
+/// `host:port` becomes `http://host:port`.
+fn with_scheme(url: &str) -> String {
+    let t = url.trim();
+    let lower = t.to_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        t.to_string()
+    } else {
+        format!("http://{}", t)
+    }
+}
+
+pub async fn run() -> Result<()> {
+    // argv is `st-cli import-st ...`; drop the program name so "import-st"
+    // plays the part of the binary name in clap's messages.
+    let cli = ImportStCli::parse_from(std::env::args().skip(1));
+    let cfg = config::load()?;
+    let server = with_scheme(
+        &cli.url
+            .or(cfg.url)
+            .unwrap_or_else(|| "http://127.0.0.1:8000".to_string()),
+    );
+
+    let api = Api::connect(&server).await.with_context(|| {
+        format!(
+            "Is SillyTavern running at {}? Start it, or check the address",
+            server
+        )
+    })?;
+    let settings = api.settings().await?;
+    let found = persona::st_list(&settings);
+    let st_active = persona::st_active_id(&settings);
+    if found.is_empty() {
+        println!("No personas found on {}.", server);
+    }
+
+    let found_any = !found.is_empty();
+    let (mut added, mut updated, mut skipped) = (0, 0, 0);
+    let mut active_here: Option<String> = None;
+    for p in found {
+        let label = p.label();
+        let is_active = p.id == st_active;
+        let outcome = persona::import(p, cli.overwrite)?;
+        match &outcome {
+            Imported::Added(_) => {
+                added += 1;
+                println!("  added    {}", label);
+            }
+            Imported::Updated(_) => {
+                updated += 1;
+                println!("  updated  {}", label);
+            }
+            Imported::Skipped(_) => {
+                skipped += 1;
+                println!("  skipped  {} (identical one already here)", label);
+            }
+        }
+        if is_active {
+            active_here = Some(outcome.id().to_string());
+        }
+    }
+
+    // First import on a fresh install: keep using the persona the server had.
+    let mut note = String::new();
+    if let Some(id) = active_here {
+        if persona::activate_if_unset(&id)? {
+            note = " The server's active persona is now yours too.".to_string();
+        }
+    }
+    if found_any {
+        println!(
+            "Personas: {} added, {} updated, {} skipped ({}).{}",
+            added,
+            updated,
+            skipped,
+            config::persona_dir()
+                .map(|d| d.display().to_string())
+                .unwrap_or_else(|| "the persona folder".to_string()),
+            note
+        );
+    }
+
+    // ---- characters
+    let list = api.characters().await?;
+    if list.is_empty() {
+        println!("No characters found on {}.", server);
+    }
+    let (mut c_added, mut c_updated, mut c_skipped, mut c_failed) = (0, 0, 0, 0);
+    let (mut chats_added, mut chats_skipped, mut chats_failed) = (0, 0, 0);
+    for c in &list {
+        let avatar = jstr(c, "avatar");
+        let name = {
+            let n = jstr(c, "name");
+            if n.is_empty() {
+                avatar.clone()
+            } else {
+                n
+            }
+        };
+        let stem = avatar.strip_suffix(".png").unwrap_or(&avatar).to_string();
+        let result = async {
+            if avatar.is_empty() {
+                anyhow::bail!("no file name");
+            }
+            let existed = charstore::get(&avatar).is_ok();
+            if existed && !cli.overwrite {
+                return Ok::<_, anyhow::Error>("skipped");
+            }
+            let bytes = api.character_image(&avatar).await?;
+            charstore::save(&bytes, &avatar, Some(&stem), cli.overwrite)?;
+            Ok(if existed { "updated" } else { "added" })
+        }
+        .await;
+        // The chats of every character that is here now (also one that was
+        // already here), unless a chat of that name exists locally.
+        if !matches!(result, Err(_)) && !avatar.is_empty() {
+            match api.chats(&avatar).await {
+                Ok(chats) => {
+                    for ch in &chats {
+                        let file = crate::chat::file_id(ch);
+                        let one = async {
+                            let lines = api.load_chat(&avatar, &name, &file).await?;
+                            if lines.is_empty() {
+                                anyhow::bail!("empty chat");
+                            }
+                            chatstore::import(&avatar, &file, &lines, cli.overwrite)
+                        }
+                        .await;
+                        match one {
+                            Ok(true) => chats_added += 1,
+                            Ok(false) => chats_skipped += 1,
+                            Err(e) => {
+                                chats_failed += 1;
+                                println!("  chat failed  {} / {}: {:#}", name, file, e);
+                            }
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+        match result {
+            Ok("added") => {
+                c_added += 1;
+                println!("  added    {}", name);
+            }
+            Ok("updated") => {
+                c_updated += 1;
+                println!("  updated  {}", name);
+            }
+            Ok(_) => {
+                c_skipped += 1;
+                println!("  skipped  {} (already here, use --overwrite to replace)", name);
+            }
+            Err(e) => {
+                c_failed += 1;
+                println!("  failed   {}: {:#}", name, e);
+            }
+        }
+    }
+    if !list.is_empty() {
+        println!(
+            "Characters: {} added, {} updated, {} skipped, {} failed ({}).",
+            c_added,
+            c_updated,
+            c_skipped,
+            c_failed,
+            config::characters_dir()
+                .map(|d| d.display().to_string())
+                .unwrap_or_else(|| "the characters folder".to_string())
+        );
+    }
+    if chats_added + chats_skipped + chats_failed > 0 {
+        println!(
+            "Chats: {} added, {} skipped, {} failed ({}).",
+            chats_added,
+            chats_skipped,
+            chats_failed,
+            config::chats_dir()
+                .map(|d| d.display().to_string())
+                .unwrap_or_else(|| "the chats folder".to_string())
+        );
+    }
+    Ok(())
+}

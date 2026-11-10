@@ -106,25 +106,12 @@ impl Api {
         serde_json::from_str(raw).context("parsing SillyTavern settings.json")
     }
 
-    /// Write the whole settings.json back (`/api/settings/save`), which is
-    /// what the web UI does when a setting changes.
-    pub async fn save_settings(&self, settings: &Value) -> Result<()> {
-        self.post_json("/api/settings/save", settings).await?;
-        Ok(())
-    }
-
     pub async fn characters(&self) -> Result<Vec<Value>> {
         let v = self.post_json("/api/characters/all", &json!({})).await?;
         match v {
             Value::Array(a) => Ok(a),
             _ => bail!("unexpected response from /api/characters/all"),
         }
-    }
-
-    /// Full character card (not the shallow list entry).
-    pub async fn character(&self, avatar: &str) -> Result<Value> {
-        self.post_json("/api/characters/get", &json!({ "avatar_url": avatar }))
-            .await
     }
 
     /// Chat files for a character. Each entry has `file_name` ("x.jsonl"),
@@ -151,63 +138,6 @@ impl Api {
             Value::Array(a) => Ok(a),
             _ => Ok(Vec::new()), // `{}` when the file does not exist
         }
-    }
-
-    /// Delete a chat file for good (`/api/chats/delete`, like the web UI's
-    /// "delete chat" button). `file` is the name without `.jsonl`.
-    pub async fn delete_chat(&self, avatar: &str, file: &str) -> Result<()> {
-        let name = if file.ends_with(".jsonl") {
-            file.to_string()
-        } else {
-            format!("{}.jsonl", file)
-        };
-        let body = json!({ "chatfile": name, "avatar_url": avatar });
-        let resp = self
-            .post("/api/chats/delete")
-            .timeout(Duration::from_secs(30))
-            .json(&body)
-            .send()
-            .await
-            .context("POST /api/chats/delete")?;
-        let status = resp.status();
-        if status.is_success() {
-            return Ok(());
-        }
-        let text = resp.text().await.unwrap_or_default();
-        bail!("delete failed ({}): {}", status, short(&text, 200));
-    }
-
-    /// Add a user avatar image (`/api/avatars/upload`, the web UI's persona
-    /// "create" button). Returns the file name the server gave it.
-    pub async fn upload_avatar(&self, png: Vec<u8>) -> Result<String> {
-        let part = reqwest::multipart::Part::bytes(png)
-            .file_name("persona.png".to_string())
-            .mime_str("image/png")?;
-        let form = reqwest::multipart::Form::new().part("avatar", part);
-        let resp = self
-            .post("/api/avatars/upload")
-            .timeout(Duration::from_secs(60))
-            .multipart(form)
-            .send()
-            .await
-            .context("POST /api/avatars/upload")?;
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            bail!("avatar upload failed ({}): {}", status, short(&text, 200));
-        }
-        let v: Value = serde_json::from_str(&text).context("invalid JSON from avatar upload")?;
-        v.get("path")
-            .and_then(|p| p.as_str())
-            .map(|p| p.to_string())
-            .ok_or_else(|| anyhow!("avatar upload had no file name: {}", short(&text, 200)))
-    }
-
-    /// Delete a user avatar image (`/api/avatars/delete`).
-    pub async fn delete_avatar(&self, avatar: &str) -> Result<()> {
-        self.post_json("/api/avatars/delete", &json!({ "avatar": avatar }))
-            .await?;
-        Ok(())
     }
 
     /// Ask the server to download a card from a URL (chub.ai, ...), like the
@@ -243,138 +173,6 @@ impl Api {
             file_name,
             kind,
         })
-    }
-
-    /// Upload a card to `/api/characters/import` (the web UI's import button).
-    /// `file_type` is `png` or `json`. Returns the new avatar name without ".png".
-    pub async fn import_character(
-        &self,
-        bytes: Vec<u8>,
-        file_name: &str,
-        file_type: &str,
-        mime: &str,
-    ) -> Result<String> {
-        let part = reqwest::multipart::Part::bytes(bytes)
-            .file_name(file_name.to_string())
-            .mime_str(mime)?;
-        let form = reqwest::multipart::Form::new()
-            .text("file_type", file_type.to_string())
-            .part("avatar", part);
-        let resp = self
-            .post("/api/characters/import")
-            .timeout(Duration::from_secs(60))
-            .multipart(form)
-            .send()
-            .await
-            .context("POST /api/characters/import")?;
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            bail!(
-                "SillyTavern refused the card ({}): {}",
-                status,
-                short(&text, 200)
-            );
-        }
-        let v: Value = serde_json::from_str(&text).context("invalid JSON from import")?;
-        if v.get("error").and_then(|e| e.as_bool()).unwrap_or(false) {
-            bail!("SillyTavern could not read this file as a character card");
-        }
-        v.get("file_name")
-            .and_then(|f| f.as_str())
-            .map(|f| f.to_string())
-            .ok_or_else(|| anyhow!("import response had no file_name: {}", short(&text, 200)))
-    }
-
-    /// Delete a character card. With `delete_chats`, its whole chat folder
-    /// goes too (`/api/characters/delete`, as in the web UI).
-    pub async fn delete_character(&self, avatar: &str, delete_chats: bool) -> Result<()> {
-        let resp = self
-            .post("/api/characters/delete")
-            .timeout(Duration::from_secs(60))
-            .json(&json!({ "avatar_url": avatar, "delete_chats": delete_chats }))
-            .send()
-            .await
-            .context("POST /api/characters/delete")?;
-        let status = resp.status();
-        if status.is_success() {
-            return Ok(());
-        }
-        let text = resp.text().await.unwrap_or_default();
-        bail!("delete failed ({}): {}", status, short(&text, 200));
-    }
-
-    /// Set one field of a character card for good (`/api/characters/edit-attribute`,
-    /// which writes both the top-level and the `data.*` copy). SillyTavern only
-    /// answers when it worked or the field is unknown; on other failures it
-    /// stays silent, hence the timeout.
-    pub async fn edit_card_attribute(
-        &self,
-        avatar: &str,
-        ch_name: &str,
-        field: &str,
-        value: &Value,
-    ) -> Result<()> {
-        let body = json!({
-            "avatar_url": avatar,
-            "ch_name": ch_name,
-            "field": field,
-            "value": value,
-        });
-        let resp = self
-            .post("/api/characters/edit-attribute")
-            .timeout(Duration::from_secs(20))
-            .json(&body)
-            .send()
-            .await
-            .with_context(|| {
-                format!(
-                    "SillyTavern did not confirm the change to `{}` (the card may be an \
-                     old V1 card without a data block)",
-                    field
-                )
-            })?;
-        let status = resp.status();
-        if status.is_success() {
-            return Ok(());
-        }
-        let text = resp.text().await.unwrap_or_default();
-        bail!("saving to the card failed ({}): {}", status, short(&text, 200));
-    }
-
-    pub async fn save_chat(
-        &self,
-        avatar: &str,
-        ch_name: &str,
-        file: &str,
-        lines: &[Value],
-    ) -> Result<()> {
-        let body = json!({
-            "ch_name": ch_name,
-            "file_name": file,
-            "avatar_url": avatar,
-            "chat": lines,
-            "force": false,
-        });
-        let resp = self
-            .post("/api/chats/save")
-            .timeout(Duration::from_secs(30))
-            .json(&body)
-            .send()
-            .await
-            .context("POST /api/chats/save")?;
-        let status = resp.status();
-        if status.is_success() {
-            return Ok(());
-        }
-        let text = resp.text().await.unwrap_or_default();
-        if text.contains("integrity") {
-            bail!(
-                "save refused: the chat file changed elsewhere (e.g. in the web UI). \
-                 Reopen st-cli to reload it."
-            );
-        }
-        bail!("save failed ({}): {}", status, short(&text, 200));
     }
 }
 
