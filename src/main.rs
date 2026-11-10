@@ -11,6 +11,7 @@ mod clipboard;
 mod cmds;
 mod config;
 mod conn;
+mod connect;
 mod delete;
 mod fmttui;
 mod formatting;
@@ -21,12 +22,14 @@ mod import;
 mod import_st;
 mod input;
 mod jv;
+mod mirror;
 mod note;
 mod persona;
 mod picker;
 mod posedit;
 mod prompt;
 mod prose;
+mod serve;
 mod spell;
 mod summary;
 mod sysprompt;
@@ -94,6 +97,9 @@ use crate::jv::*;
         "  /continue       continue the last reply (/c)\n",
         "  /undo [n]       delete the last message, or the last n (/u)\n",
         "  /help           all keys and commands\n",
+        "\nSHARING BETWEEN DEVICES:\n",
+        "  tarpi serve             share your characters, chats and settings on the network\n",
+        "  tarpi connect [token]   use them from another device (serve_url in config.yaml)\n",
         "\nTyping / opens a command menu above the input box; the top entry is picked\n(Tab, Shift+Tab, Up, Down to change it, Enter to run).\nWith only a / in the box, Up brings back the commands you ran before."
     )
 )]
@@ -132,6 +138,12 @@ enum Commands {
     /// Delete a character card together with all of its chats (asks first)
     #[command(disable_help_flag = true)]
     Delete(Rest),
+    /// Share characters, chats, personas, system prompts, formatting and API connections with other devices (no chat screen)
+    #[command(disable_help_flag = true)]
+    Serve(Rest),
+    /// Chat using the data of a machine that runs `tarpi serve`, keeping a copy in step
+    #[command(disable_help_flag = true)]
+    Connect(Rest),
 }
 
 /// Everything after a command's name, passed on unchanged (`--help` included).
@@ -652,13 +664,18 @@ async fn run_tui(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
     // The commands have their own arguments and `--help`: each module reads
     // them again from the command line. Everything else is the chat CLI.
-    match &cli.command {
+    // `connect` is the chat CLI too, on a copy of another machine's data: it
+    // syncs first (see `connect`), then you pick a character as usual.
+    let mut sync_session: Option<connect::Session> = None;
+    match cli.command.take() {
         Some(Commands::Import(_)) => return import::run().await,
         Some(Commands::ImportSt(_)) => return import_st::run().await,
         Some(Commands::Delete(_)) => return delete::run().await,
+        Some(Commands::Serve(_)) => return serve::run().await,
+        Some(Commands::Connect(_)) => sync_session = Some(connect::run().await?),
         None => {}
     }
     let cfg = config::load()?;
@@ -819,6 +836,10 @@ async fn main() -> Result<()> {
                 want = Want::Latest;
             }
         }
+    }
+    // `tarpi connect`: send what changed during the last seconds.
+    if let Some(session) = sync_session {
+        session.finish().await;
     }
     Ok(())
 }

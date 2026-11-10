@@ -1,6 +1,8 @@
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
 /// Settings read from `~/.config/tarpi/config.yaml`.
 ///
@@ -8,9 +10,6 @@ use std::path::PathBuf;
 /// `config.toml` (same keys) is still read when there is no `config.yaml`.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct FileConfig {
-    /// Base URL of a SillyTavern server, e.g. "http://127.0.0.1:8000". Only
-    /// `tarpi import-st` uses it (as its default); chatting never contacts it.
-    pub url: Option<String>,
     /// Rough characters-per-token ratio used when trimming old history to fit
     /// the context window. Lower = more conservative. Default 3.2.
     pub chars_per_token: Option<f32>,
@@ -26,6 +25,14 @@ pub struct FileConfig {
     /// Offline spell checking in the chat input box: misspelled words get a
     /// red underline. Default false (off).
     pub spellcheck: Option<bool>,
+    /// Address of the machine that runs `tarpi serve`, e.g. "192.168.1.20:7878"
+    /// (port 7878 if left out). `tarpi connect` uses it. Default: none.
+    pub serve_url: Option<String>,
+    /// `true`: no token is needed between `tarpi serve` and `tarpi connect`.
+    /// On the serving machine, `serve` lets every client in; on the other
+    /// device, `connect` does not ask for a token. `false` (default): the
+    /// token is required.
+    pub serve_trust_all: Option<bool>,
     mouse: Option<MouseConfig>,
     vim: Option<VimConfig>,
 }
@@ -113,10 +120,6 @@ impl FileConfig {
 const TEMPLATE: &str = "\
 # tarpi configuration. Every option is optional; the values below are the defaults.
 
-# SillyTavern server, used only by `tarpi import-st` when no address is given.
-# Chatting never contacts it.
-# url: http://127.0.0.1:8000
-
 # Characters per token, used to trim old chat history to fit the context window.
 # Lower is more conservative.
 # chars_per_token: 3.2
@@ -146,6 +149,18 @@ const TEMPLATE: &str = "\
 # Off by default.
 # spellcheck: false
 
+# Sharing between devices (`tarpi serve` / `tarpi connect`).
+# serve_url: the machine that runs `tarpi serve`, for `tarpi connect` on this
+# device (host:port; the port may be left out for 7878).
+# serve_url: 192.168.1.20:7878
+# serve_trust_all: true needs no token: `tarpi serve` (on the serving machine)
+# lets every client in without one, and `tarpi connect` finds that out from the
+# server and does not ask for one (it only matters on the serving machine).
+# Anyone who can reach the port can then read and change everything shared,
+# API keys included, so only use it on a network you fully trust.
+# false: the token `tarpi serve` prints is required.
+# serve_trust_all: false
+
 mouse:
   # Phones (Termux): tapping the input box opens the on-screen keyboard.
   # (tarpi turns mouse reporting off for a moment so the tap reaches the
@@ -168,8 +183,48 @@ vim:
   leader: space
 ";
 
+/// `~/.config/tarpi`: where the settings that belong to this machine live
+/// (`config.yaml`, `command_history`, `dictionary.txt`) and, normally, the data.
 fn dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("tarpi"))
+}
+
+/// Set by `tarpi connect`: the folder that holds a copy of the server's data.
+static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+/// `tarpi connect --local-api`: `api.yaml` stays on this machine.
+static API_LOCAL: AtomicBool = AtomicBool::new(false);
+
+/// Where the shared data lives (characters, chats, personas, system prompts,
+/// formatting, API connections): `~/.config/tarpi`, unless `tarpi connect` has
+/// pointed it at its copy of a server's data (see `connect`).
+fn data() -> Option<PathBuf> {
+    DATA_DIR.get().cloned().or_else(dir)
+}
+
+/// `tarpi connect`: use `path` instead of `~/.config/tarpi` for the shared data.
+/// Only the first call counts; call it before anything reads the data.
+pub fn set_data_dir(path: PathBuf) {
+    let _ = DATA_DIR.set(path);
+}
+
+/// `tarpi connect --local-api`: keep `api.yaml` in `~/.config/tarpi` instead of syncing it.
+pub fn set_api_local(local: bool) {
+    API_LOCAL.store(local, Ordering::Relaxed);
+}
+
+/// `~/.config/tarpi` itself, whatever `set_data_dir` says.
+pub fn local_dir() -> Option<PathBuf> {
+    dir()
+}
+
+/// The folder the shared data is read from and written to (what `tarpi serve` serves).
+pub fn data_root() -> Option<PathBuf> {
+    data()
+}
+
+/// `~/.config/tarpi/serve-token`: the secret `tarpi connect` must present to `tarpi serve`.
+pub fn serve_token_path() -> Option<PathBuf> {
+    dir().map(|d| d.join("serve-token"))
 }
 
 pub fn config_path() -> Option<PathBuf> {
@@ -188,32 +243,36 @@ pub fn history_path() -> Option<PathBuf> {
 
 /// `~/.config/tarpi/api.yaml`: the standalone API connections (see `conn`).
 pub fn api_path() -> Option<PathBuf> {
-    dir().map(|d| d.join("api.yaml"))
+    if API_LOCAL.load(Ordering::Relaxed) {
+        dir().map(|d| d.join("api.yaml"))
+    } else {
+        data().map(|d| d.join("api.yaml"))
+    }
 }
 
 /// `~/.config/tarpi/formatting.yaml`: the context and instruct templates (see `formatting`).
 pub fn formatting_path() -> Option<PathBuf> {
-    dir().map(|d| d.join("formatting.yaml"))
+    data().map(|d| d.join("formatting.yaml"))
 }
 
 /// `~/.config/tarpi/persona/`: one `<id>.yaml` per persona, plus `active` (see `persona`).
 pub fn persona_dir() -> Option<PathBuf> {
-    dir().map(|d| d.join("persona"))
+    data().map(|d| d.join("persona"))
 }
 
 /// `~/.config/tarpi/system-prompt.jsonl`: the system prompts, one JSON object per line (see `sysprompt`).
 pub fn sysprompt_path() -> Option<PathBuf> {
-    dir().map(|d| d.join("system-prompt.jsonl"))
+    data().map(|d| d.join("system-prompt.jsonl"))
 }
 
 /// `~/.config/tarpi/characters/`: the character cards, `.png` (card embedded) or `.json` (see `charstore`).
 pub fn characters_dir() -> Option<PathBuf> {
-    dir().map(|d| d.join("characters"))
+    data().map(|d| d.join("characters"))
 }
 
 /// `~/.config/tarpi/chats/`: one folder per character, one `.jsonl` per chat (see `chatstore`).
 pub fn chats_dir() -> Option<PathBuf> {
-    dir().map(|d| d.join("chats"))
+    data().map(|d| d.join("chats"))
 }
 
 fn legacy_path() -> Option<PathBuf> {

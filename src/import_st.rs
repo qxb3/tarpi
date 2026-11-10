@@ -51,8 +51,7 @@ use clap::Parser;
 )]
 struct ImportStCli {
     /// Address of the SillyTavern server, e.g. http://127.0.0.1:8000
-    /// (default: `url` from config.yaml)
-    url: Option<String>,
+    url: String,
 
     /// Replace a persona with the same name and title, a system prompt with the same
     /// name, and a character with the same file name, instead of skipping it
@@ -75,12 +74,7 @@ pub async fn run() -> Result<()> {
     // argv is `tarpi import-st ...`; drop the program name so "import-st"
     // plays the part of the binary name in clap's messages.
     let cli = ImportStCli::parse_from(std::env::args().skip(1));
-    let cfg = config::load()?;
-    let server = with_scheme(
-        &cli.url
-            .or(cfg.url)
-            .unwrap_or_else(|| "http://127.0.0.1:8000".to_string()),
-    );
+    let server = with_scheme(&cli.url);
 
     let api = Api::connect(&server).await.with_context(|| {
         format!(

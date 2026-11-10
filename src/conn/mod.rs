@@ -282,7 +282,11 @@ impl Connection {
     /// The address without a trailing slash (or `/v1`).
     pub fn base(&self) -> String {
         let b = self.url.trim().trim_end_matches('/');
-        b.strip_suffix("/v1").unwrap_or(b).trim_end_matches('/').to_string()
+        let b = b.strip_suffix("/v1").unwrap_or(b).trim_end_matches('/');
+        match REMOTE_HOST.get() {
+            Some(h) => with_remote_host(b, h),
+            None => b.to_string(),
+        }
     }
 
     pub fn get(&self, d: &ParamDef) -> Value {
@@ -609,8 +613,95 @@ pub async fn probe(c: &Connection) -> Result<Info> {
     Err(last.unwrap_or_else(|| anyhow!("no answer from {}", c.base())))
 }
 
-/// Exact token count of `text` from the backend's own tokenizer.
+/// `tarpi connect` (without `--local-api`): the host of the machine that runs
+/// `tarpi serve`. A shared connection whose address is `127.0.0.1`,
+/// `localhost` or `0.0.0.0` means "this machine" to the one that wrote it, so
+/// here it is read as that host instead (same port).
+static REMOTE_HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// `serve_base` is the server's address as `tarpi connect` uses it
+/// (`http://192.168.1.20:7878`); only its host is kept.
+pub fn set_remote_host(serve_base: &str) {
+    if let Some((host, _)) = split_host(serve_base) {
+        let _ = REMOTE_HOST.set(host);
+    }
+}
+
+/// `(host, rest)` of `scheme://host[:port]/path`: the host without its port
+/// (an IPv6 host keeps its brackets) and everything after it.
+fn split_host(url: &str) -> Option<(String, String)> {
+    let (scheme, after) = url.split_once("://")?;
+    let end = after.find('/').unwrap_or(after.len());
+    let (auth, path) = after.split_at(end);
+    let (host, port) = if auth.starts_with('[') {
+        let close = auth.find(']')?;
+        (&auth[..=close], &auth[close + 1..])
+    } else {
+        match auth.rfind(':') {
+            Some(i) => (&auth[..i], &auth[i..]),
+            None => (auth, ""),
+        }
+    };
+    Some((host.to_string(), format!("{}://{{}}{}{}", scheme, port, path)))
+}
+
+fn is_this_machine(host: &str) -> bool {
+    let h = host.trim_matches(|c| c == '[' || c == ']').to_lowercase();
+    h == "localhost" || h == "0.0.0.0" || h == "::" || h == "::1" || h.starts_with("127.")
+}
+
+/// `url` with a loopback / unspecified host replaced by `host`.
+fn with_remote_host(url: &str, host: &str) -> String {
+    match split_host(url) {
+        Some((h, template)) if is_this_machine(&h) => template.replacen("{}", host, 1),
+        _ => url.to_string(),
+    }
+}
+
+/// `tarpi connect` (without `--local-api`): the server (address, token) whose
+/// backend does the tokenizing, because the connection's own address (often
+/// `127.0.0.1:8080`) belongs to the machine that runs `tarpi serve`.
+static REMOTE_TOKENIZER: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+
+pub fn set_remote_tokenizer(base: String, token: String) {
+    let _ = REMOTE_TOKENIZER.set((base, token));
+}
+
+/// Ask `tarpi serve` to count `text` with its backend. `None` when that
+/// server does not know the route (an older tarpi): count directly instead.
+async fn remote_count(base: &str, token: &str, c: &Connection, text: &str) -> Result<Option<usize>> {
+    let url = format!("{}/v1/tokenize", base);
+    let mut rb = client()?
+        .post(&url)
+        .timeout(Duration::from_secs(60))
+        .json(&json!({ "text": text, "connection": c.name }));
+    if !token.is_empty() {
+        rb = rb.bearer_auth(token);
+    }
+    let resp = rb.send().await.with_context(|| format!("POST {}", url))?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+        return Ok(None);
+    }
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("{} returned {}: {}", url, status, short(&body, 200));
+    }
+    let v: Value = serde_json::from_str(&body).with_context(|| format!("invalid JSON from {}", url))?;
+    v.get("tokens")
+        .and_then(|n| n.as_u64())
+        .map(|n| Some(n as usize))
+        .ok_or_else(|| anyhow!("{} gave no token count", url))
+}
+
+/// Exact token count of `text` from the backend's own tokenizer (the serving
+/// machine's, under `tarpi connect`).
 pub async fn count_tokens(c: &Connection, text: &str) -> Result<usize> {
+    if let Some((base, token)) = REMOTE_TOKENIZER.get() {
+        if let Some(n) = remote_count(base, token, c, text).await? {
+            return Ok(n);
+        }
+    }
     let p = c
         .provider()
         .ok_or_else(|| anyhow!("unknown connection kind '{}'", c.kind))?;
@@ -632,4 +723,30 @@ pub async fn count_tokens(c: &Connection, text: &str) -> Result<usize> {
         serde_json::from_str(&text).with_context(|| format!("invalid JSON from {}", url))?;
     p.parse_token_count(&v)
         .ok_or_else(|| anyhow!("{} gave no token count", url))
+}
+
+#[cfg(test)]
+mod remote_host_tests {
+    use super::*;
+
+    #[test]
+    fn this_machine_becomes_the_serve_host() {
+        assert_eq!(with_remote_host("http://0.0.0.0:8080", "192.168.1.20"), "http://192.168.1.20:8080");
+        assert_eq!(with_remote_host("http://127.0.0.1:8080", "192.168.1.20"), "http://192.168.1.20:8080");
+        assert_eq!(with_remote_host("http://localhost:8080/x", "pc.local"), "http://pc.local:8080/x");
+        assert_eq!(with_remote_host("http://[::1]:8080", "192.168.1.20"), "http://192.168.1.20:8080");
+        assert_eq!(with_remote_host("http://localhost", "pc.local"), "http://pc.local");
+    }
+
+    #[test]
+    fn other_hosts_are_left_alone() {
+        assert_eq!(with_remote_host("http://10.0.0.5:8080", "192.168.1.20"), "http://10.0.0.5:8080");
+        assert_eq!(with_remote_host("https://api.example.com", "192.168.1.20"), "https://api.example.com");
+    }
+
+    #[test]
+    fn host_of_the_serve_address() {
+        assert_eq!(split_host("http://192.168.1.20:7878").unwrap().0, "192.168.1.20");
+        assert_eq!(split_host("http://[fe80::1]:7878").unwrap().0, "[fe80::1]");
+    }
 }

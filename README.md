@@ -14,9 +14,11 @@ tarpi sofia -l         # list Sofia's chats
 tarpi import <source>  # add a character card to ~/.config/tarpi/characters (see below)
 tarpi import-st <url>  # copy the personas, system prompts and characters of a SillyTavern server
 tarpi delete [sofia]   # delete a character card and all its chats (asks first)
+tarpi serve            # share everything with other devices (no chat screen; see Sharing between devices)
+tarpi connect [token]  # chat with the data of the machine named by serve_url (see Sharing between devices)
 ```
 
-That is the whole command line: `[character] [chat]`, plus `-n` (new chat) and `-l` (list), and the commands `import`, `import-st` and `delete`. The server address is set with `url` in `~/.config/tarpi/config.yaml`.
+That is the whole command line: `[character] [chat]`, plus `-n` (new chat) and `-l` (list), and the commands `import`, `import-st`, `delete`, `serve` and `connect`.
 
 Everything else happens inside the chat:
 
@@ -62,6 +64,41 @@ The history keeps the last 200 different commands in `~/.config/tarpi/command_hi
 The menu lists the short names `/char` and `/chars` and the short forms `/summ`, `/nc`, `/db`, `/c`, `/u`, `/q` and `/h` (shown in brackets). The longer spellings `/character`, `/characters` and `/summarise` still work when typed in full, but are not offered. While the menu is open Up / Down move through it instead of scrolling the chat.
 
 `<character>` is matched case-insensitively against the name or card file name; a unique partial match works. New chats are numbered per character (`Sofia01`, `Sofia02`, ...). A chat can be given as a number, an exact name, or a unique partial name.
+
+## Sharing between devices (`serve` and `connect`)
+
+One machine keeps your characters, chats and settings and shares them; your other devices (a phone in Termux, a laptop) connect to it and use the same chats.
+
+On the other device, put the server's address in `~/.config/tarpi/config.yaml`:
+
+```yaml
+serve_url: 192.168.1.20:7878   # host:port; the port may be left out for 7878
+serve_trust_all: false        # on the serving machine: true = no token needed (see Security)
+```
+
+```
+tarpi serve                  # on the machine that keeps the data: share on the network, port 7878
+tarpi serve --local          # only this machine (e.g. reached through an SSH tunnel)
+tarpi serve -p 9000          # another port
+tarpi serve --new-token      # replace the token
+
+tarpi connect <token>        # on the other device, first time (the token is remembered)
+tarpi connect                # afterwards; also all that is needed when the server uses serve_trust_all: true
+tarpi connect --local-api    # keep this device's own API connection (see below)
+```
+
+**`tarpi serve`** does not open the chat screen. It prints the address and port and a **token** (none with `serve_trust_all: true`), then answers requests until you stop it with Ctrl+C. By default it listens on every network interface; `--local` limits it to `127.0.0.1`. It shares `characters/`, `chats/`, `persona/`, `system-prompt.jsonl`, `formatting.yaml` and `api.yaml` from `~/.config/tarpi/` and nothing else (`config.yaml`, `command_history`, `dictionary.txt` and the token stay on each machine). Every request needs the token, which is made the first time and kept in `~/.config/tarpi/serve-token` (not with `serve_trust_all: true`, see Security). You can keep using tarpi on the serving machine as usual.
+
+**`tarpi connect [token]`** connects to the machine named by `serve_url` and keeps a *copy* of its data in `~/.config/tarpi/remote/<host>-<port>/`. Then you pick a character as in plain `tarpi` and the normal chat screen opens on that copy, so everything works as it does locally, also when the connection drops for a while. `serve_url` is `host:port` (the port may be left out for 7878) or `http://host:port`; without it `connect` says so. The token is the one `tarpi serve` prints; give it once and it is remembered (give the new one after `--new-token`). It can also be set in the `TARPI_TOKEN` environment variable.
+
+- The copy is brought up to date before the screen opens, kept in step every 3 seconds while it is open, and synced once more when you quit. Progress is not drawn on the chat screen; the last result is in `sync.log` in the copy's folder.
+- A file only the server changed is downloaded, a file only this device changed or created is uploaded, and deletes are passed on. Downloaded files keep the server's modification time, so "latest chat" is the same on every device.
+- A file changed on **both** sides keeps the newer version; the older one is kept beside it as `<file>.conflict-<time>` (not listed by tarpi, not shared). A file that one side changed and the other deleted is never deleted. A server that suddenly lists no files at all is never mirrored as "delete everything".
+- Token counts (the status row) are asked from the server's own backend through `tarpi serve`, so the address in the shared connection does not have to be reachable from this device. For replies and the connection check, a shared address of `127.0.0.1`, `localhost` or `0.0.0.0` is read as the server's host (same port), so llama.cpp must listen on a network address there (`--host 0.0.0.0`). With `--local-api` this device's own connection counts them.
+- `--local-api` keeps `api.yaml` on this device: a phone usually cannot reach a model at the server's `127.0.0.1:8080`, so give it its own connection with `/api`. Without it, the API connections are shared like everything else.
+- Chats open on two devices at once behave like two terminals on one file: when another device has changed the open chat, saving it is refused (`save refused ... Reopen tarpi`) and nothing is lost; reopen the chat to load the other device's version.
+
+**Security.** `serve_trust_all` (in `config.yaml`, default `false`) decides whether a token is needed. With `false`, `tarpi serve` makes and requires the token, and `tarpi connect` asks for it when it has none. With `true`, `tarpi serve` lets in everyone who can reach the port without a token (it says so when it starts). `tarpi connect` does not need the setting: it first asks the server whether a token is wanted and only asks for one when it is, so `serve_trust_all` only has to be set on the serving machine. Only do that on a network you fully trust: whoever reaches the port can read and change every shared file. The token is otherwise the only protection and the connection is plain HTTP (no encryption), so use it on a network you trust, or use `--local` and an SSH tunnel (`ssh -L 7878:127.0.0.1:7878 server`, then `serve_url: 127.0.0.1:7878` and `tarpi connect`). Anyone who has the token can read and change every shared file, including any API key in `api.yaml`. `--new-token` locks everyone out until they are given the new one. If the port does not answer from another device, check the firewall of the serving machine.
 
 ## API connection (`/api`)
 
@@ -185,7 +222,7 @@ tarpi import-st http://127.0.0.1:8000
 tarpi import-st http://127.0.0.1:8000 --overwrite
 ```
 
-Copies every persona (and every system prompt and character, see System prompts and Characters) of that SillyTavern server (name, title, description, position, depth, role, lorebook) into the persona folder. The server is only read, never changed, and the personas' pictures are not copied. `<url>` may be left out to use `url` from `config.yaml`, and `host:port` works without `http://`. Personas may share a name: each gets its own file (`alex.yaml`, `alex-2.yaml`, ...; the window tells them apart by title and description preview, and a new persona made with `+ new persona` can reuse a name too). A persona identical to one already here (same name, title and description) is skipped, so running it again is safe; `--overwrite` / `-o` replaces the one with the same name and title instead of adding another. If you have not chosen a persona here yet, the one the server had active becomes yours too.
+Copies every persona (and every system prompt and character, see System prompts and Characters) of that SillyTavern server (name, title, description, position, depth, role, lorebook) into the persona folder. The server is only read, never changed, and the personas' pictures are not copied. `<url>` is required, and `host:port` works without `http://`. Personas may share a name: each gets its own file (`alex.yaml`, `alex-2.yaml`, ...; the window tells them apart by title and description preview, and a new persona made with `+ new persona` can reuse a name too). A persona identical to one already here (same name, title and description) is skipped, so running it again is safe; `--overwrite` / `-o` replaces the one with the same name and title instead of adding another. If you have not chosen a persona here yet, the one the server had active becomes yours too.
 
 The server's system prompts (its system prompt presets, plus the one it has switched on when that is not one of them) go into `system-prompt.jsonl` the same way: an identical one (same name, prompt and post-history instructions) is skipped, so running it again is safe, and `--overwrite` replaces one with the same name instead of adding `name-2`. If you have not chosen a system prompt here yet, the one the server had on becomes yours too.
 
@@ -334,10 +371,6 @@ Requires a recent stable Rust toolchain.
 Settings live in `~/.config/tarpi/config.yaml`. The first run creates it with the defaults, fully commented; every key is optional. A `config.toml` with the same keys is still read when there is no `config.yaml`.
 
 ```yaml
-# SillyTavern server: only used by `tarpi import-st` when no address is given.
-# Chatting never contacts it.
-# url: http://127.0.0.1:8000
-
 # Rough chars-per-token used to trim old history to the context window
 # chars_per_token: 3.2
 
@@ -352,6 +385,10 @@ Settings live in `~/.config/tarpi/config.yaml`. The first run creates it with th
 
 # Spell checking in the input box (off by default)
 # spellcheck: false
+
+# Sharing between devices (see "Sharing between devices")
+# serve_url: 192.168.1.20:7878
+# serve_trust_all: false
 
 mouse:
   # Phones (Termux): tapping the input box opens the on-screen keyboard
@@ -369,6 +406,7 @@ vim:
   leader: space
 ```
 
+- `serve_url` is the address `tarpi connect` uses (`host:port`). `serve_trust_all: true` (read by `tarpi serve` only) means no token is needed (default `false`: the token is required); `tarpi connect` asks the server and adapts. See *Sharing between devices*.
 - `author_note: true` (default) keeps the Author's Note. `author_note: false` turns it off: `/note` is no longer offered in the menu and says it is off when typed, no note is added to any prompt (the notes already saved in your chat files stay there, untouched, and come back if you turn it on again), and a persona whose position is *Top / Bottom of the Author's Note* is sent in the prompt like the default position instead.
 - `command_menu: true` (default) opens the `/command` menu above the input box while you type a slash (see *Command menu*). `command_menu: false` turns it off: nothing opens, Tab / Up / Down / Esc keep their old meaning (Up / Down scroll the chat), and Enter runs exactly what you typed. The command history (Up on a bare `/`) still works.
 - `spellcheck: true` turns on offline spell checking in the chat input box and in the `/char` and persona windows (default `false`; the Name fields are not checked). Misspelled words get a red underline (the red of the terminal's theme, asked from the terminal at start-up like the prose colours; the text keeps its colour); words of one or two letters are checked too (`ho` and `x` are marked, `a`, `I`, `of`, `up` are not). The word you are still typing is not marked until the cursor leaves it. The word list is English and built into the program, so no internet or system dictionary is needed. Extra words go in `~/.config/tarpi/dictionary.txt` (one per line, `#` starts a comment); the character's name and your persona's name are always accepted. Details: `src/spell.rs`.
@@ -468,7 +506,8 @@ Everything tarpi needs is its own: cards in `~/.config/tarpi/characters/`, perso
 
 ## Limitations
 
-- Only llama.cpp is supported, through a standalone connection (`/api`). No other server is contacted.
+- Only llama.cpp is supported, through a standalone connection (`/api`). No other server is contacted (apart from `tarpi serve` when you use `tarpi connect`, and a SillyTavern server for `import-st`).
+- `tarpi connect` syncs whole files: there is no merging inside a chat, no encryption (plain HTTP with a token), and an open chat is not reloaded when another device changes it.
 - No World Info/lorebooks, summaries, vector memory, group chats, or tool calling. The prompt is therefore close to, but not byte-identical to, the web UI's when you use those.
 - Token counting for trimming history to the context window is an estimate (`chars_per_token`), not a real tokenizer. The totals in the status row are exact once the connection's tokenizer has answered (see Keys).
 - Unfinished prose is closed for you while a reply streams: an open `*narration`, `**bold` or `"speech` is shown with its closing marker added, and the model's own closer simply takes its place. Nothing is added for a lone trailing `*`, `2 * 3`, bullets, a `*` inside a word, or past a blank line. When a reply ends with markers still open they are closed in the saved text too (Ctrl+K takes them off again before continuing).
