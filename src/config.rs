@@ -170,6 +170,11 @@ pub fn dictionary_path() -> Option<PathBuf> {
     dir().map(|d| d.join("dictionary.txt"))
 }
 
+/// `~/.config/st-cli/command_history`: the `/commands` typed in chats (see `history`).
+pub fn history_path() -> Option<PathBuf> {
+    dir().map(|d| d.join("command_history"))
+}
+
 /// `~/.config/st-cli/api.yaml`: the standalone API connections (see `conn`).
 pub fn api_path() -> Option<PathBuf> {
     dir().map(|d| d.join("api.yaml"))

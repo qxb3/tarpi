@@ -616,6 +616,9 @@ const HELP: &[&str] = &[
     "highlighted. Tab / Down go to the next one, Shift+Tab / Up to the",
     "previous one (filling it in), Esc puts back what you typed, a",
     "click picks one. Enter runs the highlighted one (/su -> /summarize).",
+    "With only a / in the box, Up brings back the commands you ran before",
+    "(/regen softer, ...): Up goes further back, Down forward, Down past",
+    "the newest puts the / back.",
     "/quit            exit",
 ];
 

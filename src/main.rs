@@ -11,6 +11,7 @@ mod config;
 mod conn;
 mod delete;
 mod gen;
+mod history;
 mod import;
 mod input;
 mod jv;
@@ -80,7 +81,7 @@ use crate::jv::*;
         "  /continue       continue the last reply (/c)\n",
         "  /undo [n]       delete the last message, or the last n (/u)\n",
         "  /help           all keys and commands\n",
-        "\nTyping / opens a command menu above the input box; the top entry is picked\n(Tab, Shift+Tab, Up, Down to change it, Enter to run)."
+        "\nTyping / opens a command menu above the input box; the top entry is picked\n(Tab, Shift+Tab, Up, Down to change it, Enter to run).\nWith only a / in the box, Up brings back the commands you ran before."
     )
 )]
 struct Cli {

@@ -8,6 +8,7 @@ use crate::chat::{self, ChatState};
 use crate::cmds;
 use crate::conn;
 use crate::gen::{self, GenEvent, GenMsg};
+use crate::history::History;
 use crate::input::{Input, Mode};
 use crate::picker::{Action as PickAction, Item as PickItem, Picker};
 use crate::jv::*;
@@ -231,6 +232,13 @@ pub struct App {
     pub input_area: Rect,
     pub input_first_row: usize,
     comp: Comp,
+    /// The `/commands` run so far (Up on an empty `/` walks through them).
+    cmd_hist: History,
+    /// Which history entry the box is showing (`None`: not browsing).
+    hist_pos: Option<usize>,
+    /// What the box held when browsing started (`/`), put back by Down
+    /// past the newest entry.
+    hist_draft: String,
     /// Config `command_menu`: the `/command` menu above the input box.
     pub command_menu: bool,
     /// Config `spellcheck`: the spell checker for the input box (`None` = off).
@@ -480,6 +488,9 @@ impl App {
             card_btn: Rect::default(),
             input_area: Rect::default(),
             comp: Comp::default(),
+            cmd_hist: History::load(),
+            hist_pos: None,
+            hist_draft: String::new(),
             command_menu: true,
             spell: None,
             spell_menu: None,
@@ -1149,6 +1160,10 @@ impl App {
         if self.spell_key(&k) {
             return;
         }
+        // Up / Down on a bare `/` walk through the commands run before.
+        if self.history_key(&k) {
+            return;
+        }
         // The `/command` menu above the box: Tab / arrows fill commands in.
         if self.completion_key(&k) {
             return;
@@ -1314,6 +1329,60 @@ impl App {
         }
     }
 
+    /// Command history. With nothing but a `/` in the box, Up puts the
+    /// newest command that was run before in the box; then Up goes further
+    /// back and Down forward, and Down past the newest puts the `/` back.
+    /// Typing or editing anything ends the walk (the keys then do what they
+    /// always did). Tab / Shift+Tab stay the command menu's keys.
+    /// Returns false when the key is not for the history.
+    fn history_key(&mut self, k: &KeyEvent) -> bool {
+        if self.input.mode != Mode::Insert
+            || self.editing.is_some()
+            || k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return false;
+        }
+        let up = match k.code {
+            KeyCode::Up => true,
+            KeyCode::Down => false,
+            _ => return false,
+        };
+        // A walk only goes on while the box still shows the entry it put there.
+        if let Some(p) = self.hist_pos {
+            if self.cmd_hist.get(p) != Some(&self.input.text) {
+                self.hist_pos = None;
+            }
+        }
+        // Only Up starts a walk, and only from a bare `/`.
+        if self.hist_pos.is_none() && self.input.text != "/" {
+            return false;
+        }
+        let Some(step) = crate::history::walk(self.hist_pos, up, self.cmd_hist.len()) else {
+            return false;
+        };
+        let to = match step {
+            crate::history::Walk::To(i) => i,
+            crate::history::Walk::Back => {
+                // Past the newest: back to what was there before.
+                let draft = std::mem::take(&mut self.hist_draft);
+                self.hist_pos = None;
+                self.comp = Comp::default();
+                self.set_input_text(draft);
+                return true;
+            }
+        };
+        if self.hist_pos.is_none() {
+            self.hist_draft = self.input.text.clone();
+        }
+        let Some(cmd) = self.cmd_hist.get(to).cloned() else {
+            return false;
+        };
+        self.hist_pos = Some(to);
+        self.comp = Comp::default();
+        self.set_input_text(cmd);
+        true
+    }
+
     /// The top command is highlighted from the start. Tab / Down move the
     /// highlight to the next one and Shift+Tab / Up to the previous one
     /// (wrapping), filling it into the box; the first press already leaves
@@ -1426,6 +1495,7 @@ impl App {
         }
         self.apply_top_completion();
         let text = self.input.text.trim().to_string();
+        self.hist_pos = None;
 
         if text.is_empty() {
             // Like the web UI: an empty send adds nothing to the chat, it just
@@ -1443,6 +1513,8 @@ impl App {
 
         if let Some(cmd) = text.strip_prefix('/') {
             let head = cmd.split_whitespace().next().unwrap_or("").to_lowercase();
+            // Commands that were understood go in the history (see `history_key`).
+            let mut known = true;
             match head.as_str() {
                 "help" | "h" | "?" => {
                     self.input.clear();
@@ -1508,6 +1580,7 @@ impl App {
                             self.undo(n).await;
                         }
                         None => {
+                            known = false;
                             self.set_status("usage: /undo [number of messages], e.g. /undo 3", true);
                         }
                     }
@@ -1529,8 +1602,12 @@ impl App {
                     self.summarize().await;
                 }
                 _ => {
+                    known = false;
                     self.set_status(format!("unknown command /{} (try /help)", head), true);
                 }
+            }
+            if known {
+                self.cmd_hist.add(&text);
             }
             return;
         }

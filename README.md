@@ -40,10 +40,19 @@ Typing `/` in the input box opens a menu of commands just above it, narrowing as
 | Key / click | Action |
 | --- | --- |
 | Tab or Down | move the highlight to the next command and fill it in (the top one is highlighted from the start, so the first press already goes to the second) |
-| Shift+Tab or Up | move the highlight to the previous command and fill it in; wraps around (from the top one to the last) |
+| Shift+Tab | move the highlight to the previous command and fill it in; wraps around (from the top one to the last) |
+| Up | on a bare `/` once a command has been run: the command history instead (see *Command history*). Otherwise the same as Shift+Tab |
 | Esc | put back what you had typed before Tab started filling commands in |
 | click / tap | fill in that command and close the menu |
 | Enter | run the highlighted command when what you typed is only the start of one (`/su` runs `/summarize`); a full name or short form (`/c`, `/nc`) runs as typed |
+
+### Command history
+
+Every command that st-cli understood is remembered, with what you typed after it: `/regen she hesitates, then refuses`, `/undo 3`, `/chats`. With nothing but a `/` in the box, **Up** puts the newest one there; Up again goes further back, **Down** comes forward, and Down past the newest puts the `/` back. Enter runs the command shown, and it moves to the newest place in the history. Up stops at the oldest one.
+
+Typing or editing anything while a command is shown ends the walk: the keys then do what they did before (Up / Down in the menu, or scrolling the chat). Tab and Shift+Tab always move through the command menu. Only INSERT mode and a box holding just `/` start a walk, and it works with `command_menu: false` too.
+
+The history keeps the last 200 different commands in `~/.config/st-cli/command_history` (one per line, oldest first), so it is still there after quitting and carries over when you switch chat or character; several terminals share it. Unknown commands and ordinary messages are not kept. Delete the file to clear it.
 
 The menu lists the short names `/char` and `/chars` and the short forms `/summ`, `/nc`, `/db`, `/c`, `/u`, `/q` and `/h` (shown in brackets). The longer spellings `/character`, `/characters` and `/summarise` still work when typed in full, but are not offered. While the menu is open Up / Down move through it instead of scrolling the chat.
 
@@ -243,7 +252,7 @@ vim:
   leader: space
 ```
 
-- `command_menu: true` (default) opens the `/command` menu above the input box while you type a slash (see *Command menu*). `command_menu: false` turns it off: nothing opens, Tab / Up / Down / Esc keep their old meaning (Up / Down scroll the chat), and Enter runs exactly what you typed.
+- `command_menu: true` (default) opens the `/command` menu above the input box while you type a slash (see *Command menu*). `command_menu: false` turns it off: nothing opens, Tab / Up / Down / Esc keep their old meaning (Up / Down scroll the chat), and Enter runs exactly what you typed. The command history (Up on a bare `/`) still works.
 - `spellcheck: true` turns on offline spell checking in the chat input box and in the `/char` and persona windows (default `false`; the Name fields are not checked). Misspelled words get a red underline (the red of the terminal's theme, asked from the terminal at start-up like the prose colours; the text keeps its colour); words of one or two letters are checked too (`ho` and `x` are marked, `a`, `I`, `of`, `up` are not). The word you are still typing is not marked until the cursor leaves it. The word list is English and built into the program, so no internet or system dictionary is needed. Extra words go in `~/.config/st-cli/dictionary.txt` (one per line, `#` starts a comment); the character's name and your persona's name are always accepted. Details: `src/spell.rs`.
 - With spell checking on, press **Tab** with the cursor in a marked word to open a **suggestion menu**: above the input box in the chat (like the command menu), and at the text cursor in the `/char` and persona windows. Misspelled words are only underlined (in the theme's red); the menu never opens by itself. It lists up to six spellings, best first (a swapped pair such as `teh` -> `the`, then a missing letter such as `helo` -> `hello`, then other close words), and keeps a capital first letter. It works in INSERT and NORMAL mode. Tab / Down go to the next entry, Shift+Tab / Up to the previous one, Enter puts the highlighted one in, Esc closes the menu, and a click or tap on an entry puts it in; any other key closes it. The Name fields of the windows are not checked.
 - `autopair: true` (default) closes `"`, `'`, `*` and `(` `[` `{` as you type them, in INSERT mode and in the `/char` window: `"` gives `"|"`, `'` gives `'|'`, `*` gives `*|*`, a second `*` inside an empty pair gives `**|**`. Typing the closing character steps over the one already there, and Backspace between an empty pair removes both. It stays out of the way next to words (`2*3`, `5"`, and apostrophes like `don't` or `Sofia's`), when the paragraph already has an unclosed one (so the second `"` closes), and when the next character is a letter. Apostrophes inside a word are not counted as quotes, so `'I don't know'` types out as written. An apostrophe at the start of a word (`'em`, `'til`) opens a pair like any quote: Backspace removes it while it is still empty. Pasted text is never changed. Set `autopair: false` to turn it off.
