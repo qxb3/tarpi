@@ -820,7 +820,7 @@ impl App {
                 if self.input.mode == Mode::Command {
                     self.input.command_paste(&s);
                 } else {
-                    self.input.insert_str(&s);
+                    self.input.paste_text(&s);
                 }
                 self.scroll = 0;
             }
@@ -1208,7 +1208,7 @@ impl App {
             }
             KeyCode::Char('a') if ctrl => self.input.home(),
             KeyCode::Char('e') if ctrl => self.input.end(),
-            KeyCode::Char('u') if ctrl => self.input.clear(),
+            KeyCode::Char('u') if ctrl => self.input.clear_undoable(),
             KeyCode::Char('w') if ctrl => self.input.delete_word_back(),
             // Plain Left / Right browse swipes while the box has no draft and no
             // message is being edited; otherwise they move the text cursor.
@@ -2722,14 +2722,8 @@ impl App {
             return;
         };
         let put = |inp: &mut crate::input::Input| {
-            let chars: Vec<char> = inp.text.chars().collect();
-            let (s, e) = (m.range.0.min(chars.len()), m.range.1.min(chars.len()));
-            let mut out: String = chars[..s].iter().collect();
-            out.push_str(new);
-            out.extend(chars[e..].iter());
-            inp.clear();
-            inp.insert_str(&out);
-            inp.cursor = s + new.chars().count();
+            // One undo step of its own: `u` puts the misspelled word back.
+            inp.replace_chars(m.range.0, m.range.1, new);
             // In NORMAL mode the cursor sits on a letter, not after the last one.
             inp.clamp_normal();
         };

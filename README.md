@@ -292,9 +292,12 @@ The box starts in INSERT mode, also when you open a message to edit. Type `qq` (
 | `Y` | yank the line (same as `yy`) |
 | `<leader>y` + motion, `<leader>yy`, `<leader>Y` | the same yanks, but the text also goes to the **system clipboard** (a count goes before the leader: `3<leader>yy`) |
 | `v` `V` | VISUAL mode (characters / whole lines) |
-| `p` `P` `u` | paste after / before, undo |
+| `p` `P` | paste after / before |
+| `u` | undo; a count goes back that many steps (`3u`) |
 
 `y` only fills vim's own register (for `p` / `P`). `<leader>y` also sends the text to the system clipboard through whatever the machine has (`wl-copy`, `xclip`, `xsel`, `pbcopy`, `termux-clipboard-set`, `clip.exe`) and falls back to the terminal's OSC 52 escape, which also works over SSH (in tmux: `set -g set-clipboard on`). The status line says what was copied and how. A linewise yank (`yy`, `V`) ends in a newline, like vim's `"+yy`.
+
+**Undo steps.** Everything typed in one INSERT session is one step (like in vim), and every NORMAL-mode change (`x`, `dd`, `p`, `:s`, ...) is one. These are steps of their own, so `u` takes back just that and nothing else: picking a spelling suggestion (Tab menu), pasting text, emptying the box with Ctrl+U, and Backspace / Delete / Ctrl+W / Ctrl+J typed in NORMAL mode. Text typed after one of them is the next step. `u` skips steps that changed nothing and does nothing once the history is used up. The history is cleared when the box is emptied by sending a message or when a different message is opened for editing; in the `/char` and persona windows every field keeps its own history while you move between fields.
 
 In VISUAL mode every motion above extends the selection (shown in reverse video). Then:
 

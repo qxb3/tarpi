@@ -535,6 +535,7 @@ impl Input {
     }
 
     pub fn insert_char(&mut self, c: char) {
+        self.guard_edit();
         let b = self.byte_idx(self.cursor);
         self.text.insert(b, c);
         self.cursor += 1;
@@ -555,6 +556,7 @@ impl Input {
         if self.cursor == 0 {
             return;
         }
+        self.guard_edit();
         // Between an auto-closed pair (`"|"`, `*|*`, `(|)`): remove both halves.
         if self.autopair && self.mode == Mode::Insert {
             let ch = self.chars();
@@ -581,6 +583,7 @@ impl Input {
         if self.cursor >= self.len_chars() {
             return;
         }
+        self.guard_edit();
         let start = self.byte_idx(self.cursor);
         let end = self.byte_idx(self.cursor + 1);
         self.text.replace_range(start..end, "");
@@ -625,6 +628,10 @@ impl Input {
         while i > 0 && !chars[i - 1].is_whitespace() {
             i -= 1;
         }
+        if i >= self.cursor.min(chars.len()) {
+            return;
+        }
+        self.guard_edit();
         let start = self.byte_idx(i);
         let end = self.byte_idx(self.cursor);
         self.text.replace_range(start..end, "");
@@ -893,17 +900,8 @@ impl Input {
         if self.vim_off {
             return;
         }
-        if self.mode == Mode::Insert {
-            // The INSERT session becomes one undo step.
-            if let Some((t, cu)) = self.insert_base.take() {
-                if t != self.text && self.undo.last().map(|(u, _)| u != &t).unwrap_or(true) {
-                    self.undo.push((t, cu));
-                    if self.undo.len() > 100 {
-                        self.undo.remove(0);
-                    }
-                }
-            }
-        }
+        // The INSERT session becomes one undo step.
+        self.flush_base();
         let ch = self.chars();
         if self.mode == Mode::Insert && self.cursor > 0 && ch.get(self.cursor - 1) != Some(&'\n') {
             self.cursor -= 1;
@@ -942,19 +940,129 @@ impl Input {
         self.count.clear();
     }
 
-    fn snapshot(&mut self) {
-        self.just_snap = true;
-        if self
-            .undo
-            .last()
-            .map(|(t, _)| t != &self.text)
-            .unwrap_or(true)
-        {
-            self.undo.push((self.text.clone(), self.cursor));
+    /// Put a state on the undo stack (unless it is the one on top already).
+    fn push_undo(&mut self, text: String, cursor: usize) {
+        if self.undo.last().map(|(t, _)| t != &text).unwrap_or(true) {
+            self.undo.push((text, cursor));
             if self.undo.len() > 100 {
                 self.undo.remove(0);
             }
         }
+    }
+
+    /// The INSERT session that is running becomes one undo step: the text it
+    /// started from goes on the stack (if anything was typed since). Does
+    /// nothing outside INSERT mode.
+    fn flush_base(&mut self) {
+        if self.mode != Mode::Insert {
+            return;
+        }
+        if let Some((t, cu)) = self.insert_base.take() {
+            if t != self.text {
+                self.push_undo(t, cu);
+            }
+        }
+    }
+
+    fn snapshot(&mut self) {
+        self.just_snap = true;
+        self.push_undo(self.text.clone(), self.cursor);
+    }
+
+    /// A key that edits the text outside of INSERT mode (Backspace, Delete,
+    /// Ctrl+W, Ctrl+J in NORMAL / VISUAL mode) is an undo step of its own.
+    /// Called by the editing methods just before they change something.
+    fn guard_edit(&mut self) {
+        if !self.vim_off && matches!(self.mode, Mode::Normal | Mode::Visual) {
+            self.push_undo(self.text.clone(), self.cursor);
+        }
+    }
+
+    /// Start a new undo step here: what was typed so far stays one step, and
+    /// the change that follows (and, in INSERT mode, what is typed after it)
+    /// becomes the next one. Used for edits made by the program, not by
+    /// vim keys (a spelling fix, a paste, Ctrl+U).
+    pub fn checkpoint(&mut self) {
+        if self.vim_off {
+            return;
+        }
+        self.flush_base();
+        self.push_undo(self.text.clone(), self.cursor);
+    }
+
+    /// Call after a `checkpoint` and the change that followed it: INSERT
+    /// mode goes on from here as a new session.
+    fn begin_step(&mut self) {
+        if !self.vim_off && self.mode == Mode::Insert {
+            self.insert_base = Some((self.text.clone(), self.cursor));
+        }
+    }
+
+    /// Replace the characters `start..end` with `new` as one undo step. The
+    /// cursor ends up right after the new text. (The spelling menu uses it.)
+    pub fn replace_chars(&mut self, start: usize, end: usize, new: &str) {
+        let len = self.len_chars();
+        let (s, e) = (start.min(len), end.min(len));
+        let (s, e) = (s.min(e), s.max(e));
+        self.checkpoint();
+        self.remove(s, e);
+        self.insert_at(s, new);
+        self.cursor = s + new.chars().count();
+        self.begin_step();
+    }
+
+    /// Insert pasted text at the cursor as one undo step.
+    pub fn paste_text(&mut self, s: &str) {
+        if s.is_empty() {
+            return;
+        }
+        self.checkpoint();
+        self.insert_str(s);
+        self.begin_step();
+    }
+
+    /// Empty the box (Ctrl+U) as one undo step, so `u` brings the text back.
+    pub fn clear_undoable(&mut self) {
+        if self.text.is_empty() {
+            return;
+        }
+        self.checkpoint();
+        self.clear();
+        self.begin_step();
+    }
+
+    /// Take the undo history out of the box (the `/char` window keeps one
+    /// per field). The INSERT session that is running is closed first.
+    pub fn take_undo(&mut self) -> Vec<(String, usize)> {
+        self.flush_base();
+        std::mem::take(&mut self.undo)
+    }
+
+    /// Put an undo history back (after `reset_vim`, which empties it).
+    pub fn set_undo(&mut self, undo: Vec<(String, usize)>) {
+        self.undo = undo;
+    }
+
+    /// `u`: go back `n` steps. Entries that would change nothing (an
+    /// operator that did not delete anything, `r` with the same letter) are
+    /// skipped, so every `u` visibly undoes something while there is
+    /// something to undo.
+    fn undo_steps(&mut self, n: usize) {
+        for _ in 0..n {
+            let mut done = false;
+            while let Some((t, cu)) = self.undo.pop() {
+                if t != self.text {
+                    self.text = t;
+                    self.cursor = cu;
+                    done = true;
+                    break;
+                }
+            }
+            if !done {
+                break;
+            }
+        }
+        self.clamp_normal();
     }
 
     fn remove(&mut self, s: usize, e: usize) -> String {
@@ -1742,12 +1850,7 @@ impl Input {
             ':' => self.enter_command(false),
             'p' => self.paste(true),
             'P' => self.paste(false),
-            'u' => {
-                if let Some((t, cu)) = self.undo.pop() {
-                    self.text = t;
-                    self.cursor = cu;
-                }
-            }
+            'u' => self.undo_steps(n),
             'd' | 'c' | 'y' | 'g' | 'r' => {
                 self.pending = Some(c);
                 self.pend_n = n;
@@ -2134,5 +2237,160 @@ mod tests {
         i.normal_key('y', 40);
         i.normal_key('y', 40);
         assert_eq!(i.take_clipboard(), None);
+    }
+
+    // ------------------------------------------------------------ undo
+
+    #[test]
+    fn undo_spelling_fix_in_insert_mode() {
+        // Type, fix a word (as the spelling menu does), keep typing, leave INSERT:
+        // every `u` takes back one thing, newest first.
+        let mut i = Input::default();
+        i.reset_vim();
+        for c in "teh cat".chars() {
+            i.type_char(c);
+        }
+        i.replace_chars(0, 3, "the");
+        assert_eq!(i.text, "the cat");
+        assert_eq!(i.cursor, 3);
+        i.cursor = i.len_chars();
+        for c in " sat".chars() {
+            i.type_char(c);
+        }
+        i.enter_normal();
+        i.normal_key('u', 40);
+        assert_eq!(i.text, "the cat");
+        i.normal_key('u', 40);
+        assert_eq!(i.text, "teh cat");
+        i.normal_key('u', 40);
+        assert_eq!(i.text, "");
+    }
+
+    #[test]
+    fn undo_spelling_fix_in_normal_mode() {
+        let mut i = vim("one teh two");
+        i.cursor = 0;
+        i.normal_key('x', 40); // an earlier change
+        assert_eq!(i.text, "ne teh two");
+        i.replace_chars(3, 6, "the");
+        i.clamp_normal();
+        assert_eq!(i.text, "ne the two");
+        i.normal_key('u', 40);
+        assert_eq!(i.text, "ne teh two");
+        i.normal_key('u', 40);
+        assert_eq!(i.text, "one teh two");
+    }
+
+    #[test]
+    fn undo_paste() {
+        let mut i = vim("abc");
+        i.paste_text("XYZ");
+        assert_eq!(i.text, "abXYZc");
+        i.normal_key('u', 40);
+        assert_eq!(i.text, "abc");
+        // In INSERT mode a paste is a step of its own too.
+        let mut i = Input::default();
+        i.reset_vim();
+        i.type_char('a');
+        i.paste_text("BC");
+        i.type_char('d');
+        i.enter_normal();
+        i.normal_key('u', 40);
+        assert_eq!(i.text, "aBC");
+        i.normal_key('u', 40);
+        assert_eq!(i.text, "a");
+        i.normal_key('u', 40);
+        assert_eq!(i.text, "");
+    }
+
+    #[test]
+    fn undo_clear_box() {
+        let mut i = Input::default();
+        i.reset_vim();
+        for c in "hello".chars() {
+            i.type_char(c);
+        }
+        i.clear_undoable();
+        assert_eq!(i.text, "");
+        i.enter_normal();
+        i.normal_key('u', 40);
+        assert_eq!(i.text, "hello");
+    }
+
+    #[test]
+    fn undo_keys_that_edit_in_normal_mode() {
+        let mut i = vim("abc def");
+        i.normal_key('$', 40);
+        i.backspace();
+        assert_eq!(i.text, "abc df");
+        i.normal_key('u', 40);
+        assert_eq!(i.text, "abc def");
+        i.cursor = 0;
+        i.delete();
+        assert_eq!(i.text, "bc def");
+        i.normal_key('u', 40);
+        assert_eq!(i.text, "abc def");
+        i.cursor = 7;
+        i.delete_word_back();
+        assert_eq!(i.text, "abc ");
+        i.normal_key('u', 40);
+        assert_eq!(i.text, "abc def");
+        // A key that changes nothing leaves nothing to undo.
+        i.cursor = 0;
+        i.backspace();
+        i.delete_word_back();
+        assert_eq!(i.text, "abc def");
+        assert!(i.undo.is_empty());
+    }
+
+    #[test]
+    fn undo_with_count_and_past_the_oldest() {
+        let mut i = vim("abcdef");
+        i.cursor = 0;
+        for _ in 0..3 {
+            i.normal_key('x', 40);
+        }
+        assert_eq!(i.text, "def");
+        i.normal_key('2', 40);
+        i.normal_key('u', 40);
+        assert_eq!(i.text, "bcdef");
+        i.normal_key('9', 40);
+        i.normal_key('u', 40);
+        assert_eq!(i.text, "abcdef");
+        // Nothing left: `u` does nothing.
+        i.normal_key('u', 40);
+        assert_eq!(i.text, "abcdef");
+    }
+
+    #[test]
+    fn undo_skips_steps_that_changed_nothing() {
+        let mut i = vim("abc");
+        i.cursor = 0;
+        i.normal_key('x', 40);
+        assert_eq!(i.text, "bc");
+        // `r` with the letter that is already there changes nothing.
+        i.normal_key('r', 40);
+        i.normal_key('b', 40);
+        assert_eq!(i.text, "bc");
+        i.normal_key('u', 40);
+        assert_eq!(i.text, "abc");
+    }
+
+    #[test]
+    fn undo_puts_the_cursor_on_a_letter() {
+        // The INSERT session after a fix started with the cursor right after
+        // the last letter; in NORMAL mode it has to sit on that letter.
+        let mut i = Input::default();
+        i.reset_vim();
+        for c in "abc".chars() {
+            i.type_char(c);
+        }
+        i.replace_chars(0, 3, "xyz");
+        assert_eq!(i.cursor, 3);
+        i.type_char('d');
+        i.enter_normal();
+        i.normal_key('u', 40);
+        assert_eq!(i.text, "xyz");
+        assert_eq!(i.cursor, 2);
     }
 }

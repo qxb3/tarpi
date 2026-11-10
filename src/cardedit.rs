@@ -39,6 +39,9 @@ pub struct CardModal {
     /// (the same box as the chat input, so every vim motion works). Its text
     /// is copied back into `fields[focus]` by `sync` after every key.
     pub input: Input,
+    /// Undo history of every field (the editor holds the one of the focused
+    /// field; moving to another field stores it here and takes that field's).
+    undo: Vec<Vec<(String, usize)>>,
     /// One-line message in the window (errors, `:s` results, discard warning).
     pub note: String,
     pub note_err: bool,
@@ -189,6 +192,7 @@ impl CardModal {
         input.enter_insert();
         CardModal {
             title: String::new(),
+            undo: vec![Vec::new(); fields.len()],
             fields,
             focus,
             input,
@@ -267,10 +271,17 @@ impl CardModal {
     /// `insert`: start in INSERT mode (otherwise the mode stays).
     fn focus_field(&mut self, i: usize, cursor: usize, insert: bool) {
         self.sync();
+        // Keep the undo history of the field that is left, and give the new
+        // field its own, so `u` never pulls in another field's text.
+        let left = self.input.take_undo();
+        if let Some(slot) = self.undo.get_mut(self.focus) {
+            *slot = left;
+        }
         self.focus = i;
         self.input.text = self.fields[i].text.clone();
         self.input.cursor = cursor.min(self.input.len_chars());
         self.input.reset_vim();
+        self.input.set_undo(self.undo.get(i).cloned().unwrap_or_default());
         if insert {
             self.input.enter_insert();
         } else {
@@ -295,7 +306,7 @@ impl CardModal {
 
     /// Pasted text goes in at the cursor.
     pub fn paste(&mut self, s: &str) {
-        self.input.insert_str(&norm(s));
+        self.input.paste_text(&norm(s));
         self.sync();
     }
 
@@ -404,5 +415,33 @@ impl CardModal {
             self.focus_field(field, idx, true);
         }
         self.follow = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn undo_history_is_kept_per_field() {
+        let mut m = CardModal::persona("Al", "Dr", "text", &Input::default());
+        assert_eq!(m.focus, 0);
+        m.input.cursor = 2;
+        m.input.type_char('x');
+        m.sync();
+        assert_eq!(m.fields[0].text, "Alx");
+        // The next field starts with a history of its own: `u` does not
+        // bring the first field's text in.
+        m.focus_field(1, 0, true);
+        assert_eq!(m.input.text, "Dr");
+        m.input.enter_normal();
+        m.input.normal_key('u', 40);
+        assert_eq!(m.input.text, "Dr");
+        // Back in the first field its history is still there.
+        m.focus_field(0, 0, true);
+        assert_eq!(m.input.text, "Alx");
+        m.input.enter_normal();
+        m.input.normal_key('u', 40);
+        assert_eq!(m.input.text, "Al");
     }
 }
