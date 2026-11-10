@@ -7,6 +7,7 @@ use crate::character::Character;
 use crate::chat::{self, ChatState};
 use crate::cmds;
 use crate::conn;
+use crate::formatting;
 use crate::gen::{self, GenEvent, GenMsg};
 use crate::history::History;
 use crate::input::{Input, Mode};
@@ -232,6 +233,8 @@ pub struct App {
     /// Set by `/api`: the main loop opens the API manager in this terminal and
     /// then continues with this same screen.
     pub open_api: bool,
+    /// Set by `/formatting`: the main loop then opens the formatting editor.
+    pub open_formatting: bool,
     pub show_help: bool,
     /// The `/prompt` window (the whole prompt of the next reply), if open.
     pub prompt_view: Option<PromptView>,
@@ -463,6 +466,7 @@ impl App {
     ) -> App {
         persona::normalize(&mut settings);
         sysprompt::normalize(&mut settings);
+        formatting::normalize(&mut settings);
         let (user_name, persona_title) = {
             let p = persona::current();
             (p.name, p.title)
@@ -503,6 +507,7 @@ impl App {
             mouse_back_at: None,
             exit_to: None,
             open_api: false,
+            open_formatting: false,
             show_help: false,
             prompt_view: None,
             card_modal: None,
@@ -1640,6 +1645,10 @@ impl App {
                 "api" | "connection" | "conn" => {
                     self.input.clear();
                     self.open_api = true;
+                }
+                "formatting" | "format" => {
+                    self.input.clear();
+                    self.open_formatting = true;
                 }
                 "regen" | "regenerate" | "reroll" => {
                     // Anything after the command is a nudge for this reply.
@@ -3519,6 +3528,23 @@ impl App {
         }
     }
 
+    /// The settings the formatting editor starts from when it has no file yet.
+    pub fn formatting_seed(&self) -> Value {
+        self.settings.clone()
+    }
+
+    /// The formatting editor (`/formatting`) was closed: use whatever it saved
+    /// right away (prompt token counts), not only from the next reply on.
+    pub fn formatting_closed(&mut self, res: anyhow::Result<()>, rows: u16) {
+        self.on_resize(rows);
+        formatting::normalize(&mut self.settings);
+        self.settings_ver += 1;
+        match res {
+            Err(e) => self.set_status(format!("formatting: {:#}", e), true),
+            Ok(()) => self.set_status("back in the chat, using your formatting".to_string(), false),
+        }
+    }
+
     /// Use `c` from now on (with `None` there is no way to generate).
     /// The title bar then shows the connection's backend and address.
     pub fn set_connection(&mut self, c: Option<conn::Connection>) {
@@ -3584,6 +3610,7 @@ impl App {
     fn apply_settings(&mut self, mut settings: Value) {
         persona::normalize(&mut settings);
         sysprompt::normalize(&mut settings);
+        formatting::normalize(&mut settings);
         if let Some(c) = &self.conn {
             conn::overlay(&mut settings, c);
         }

@@ -12,6 +12,8 @@ mod cmds;
 mod config;
 mod conn;
 mod delete;
+mod fmttui;
+mod formatting;
 mod gen;
 mod history;
 mod import;
@@ -81,6 +83,7 @@ use crate::jv::*;
         "  /note           edit this chat's Author's Note (/an)\n",
         "  /one-shot       lock this chat: no editing, undo, regen, swipes, branches\n",
         "  /api            API settings (address, model and sampler); back to the chat on quit\n",
+        "  /formatting     context and instruct templates (story string, prefixes, suffixes)\n",
         "  /char           view and edit this character's card\n",
         "  /char-img       show the card's picture in a square window\n",
         "  /new            new chat with this character (keeps this one)\n",
@@ -555,6 +558,21 @@ async fn open_api_manager(term: &mut Term, events: &mut EventStream, app: &mut A
     app.api_closed(res, rows);
 }
 
+/// `/formatting`: the same as `/api`, for the context and instruct templates.
+async fn open_formatting_manager(term: &mut Term, events: &mut EventStream, app: &mut App) {
+    let mouse_was_on = app.mouse;
+    if !mouse_was_on {
+        let _ = execute!(io::stdout(), EnableMouseCapture);
+    }
+    let res = fmttui::manage(term, events, &app.formatting_seed()).await;
+    if !mouse_was_on {
+        let _ = execute!(io::stdout(), DisableMouseCapture);
+    }
+    let _ = term.clear();
+    let rows = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(0);
+    app.formatting_closed(res, rows);
+}
+
 async fn run_tui(
     term: &mut Term,
     app: &mut App,
@@ -618,6 +636,11 @@ async fn run_tui(
             app.open_api = false;
             open_api_manager(term, &mut events, app).await;
             // Do not fire the ticks that piled up while the manager was open.
+            tick.reset();
+        }
+        if app.open_formatting {
+            app.open_formatting = false;
+            open_formatting_manager(term, &mut events, app).await;
             tick.reset();
         }
         if app.should_quit {

@@ -180,6 +180,11 @@ pub fn api_path() -> Option<PathBuf> {
     dir().map(|d| d.join("api.yaml"))
 }
 
+/// `~/.config/st-cli/formatting.yaml`: the context and instruct templates (see `formatting`).
+pub fn formatting_path() -> Option<PathBuf> {
+    dir().map(|d| d.join("formatting.yaml"))
+}
+
 /// `~/.config/st-cli/persona/`: one `<id>.yaml` per persona, plus `active` (see `persona`).
 pub fn persona_dir() -> Option<PathBuf> {
     dir().map(|d| d.join("persona"))

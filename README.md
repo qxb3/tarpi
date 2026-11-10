@@ -30,6 +30,7 @@ Everything else happens inside the chat:
 | `/note` or `/an` | opens this chat's Author's Note in a form: the text and where, how deep and how often it is sent (see *Author's Note*) |
 | `/chars` | opens a window with every character (★ = favourite) to switch to someone else |
 | `/api` | open the API settings (llama.cpp address and every model setting) right here; when you quit them (`q` / Esc) you are back in this same chat, and the very next reply uses what you saved |
+| `/formatting` | open the formatting editor: context template (story string), instruct template and reply cleanup; when you quit it (`q` / Esc) you are back in this same chat (see *Formatting*) |
 | `/char` | open this character's card in a window: every field, editable, with **Cancel** and **Save** (see below) |
 | `/char-img` | shows the character card's picture in a square window (full resolution in terminals with the Kitty graphics protocol, iTerm2 images or Sixel (kitty, WezTerm, Ghostty, iTerm2, foot, Windows Terminal, mlterm); elsewhere, including Termux and tmux, it is drawn with coloured half-block cells, which is coarse. `ST_CLI_IMAGE=blocks|kitty|iterm|sixel` forces one (`sixel` is never auto-detected beyond the terminals listed); any key or click closes it) |
 | `/new` | new chat with this character right away (keeps the current one) |
@@ -92,6 +93,28 @@ A preset sets every sampler setting (Sampling, Repetition, DRY, XTC, Mirostat, D
 Chats re-read `api.yaml` before every reply, so saving in `/api` (even from another terminal's chat) applies to the next message. *Context size* is how much history st-cli sends; keep it at or below the server's `-c`. `stop strings`, `DRY breakers` and `Sampler order` are text fields (the first two a JSON list); a value that is not valid is refused when you press Enter.
 
 Only llama.cpp is built in, but a connection kind is one small file: implement `conn::Provider` (its settings list, request body and stream parser; see `src/conn/llamacpp.rs`) and add it to `conn::providers()`. The manager, the file format, token counting and generation pick it up without further changes.
+
+## Formatting
+
+`/formatting` opens a full-screen editor for how the prompt is laid out. The settings are st-cli's own, kept in `~/.config/st-cli/formatting.yaml` (every setting is written out; hand edits are fine), so SillyTavern's templates are no longer used once you have saved it. Until then SillyTavern's templates apply, and the editor starts from them, so pressing `s` keeps what you had.
+
+- **Context template**: the story string (`{{#if description}}...{{/if}}`, `{{description}}`, `{{personality}}`, `{{scenario}}`, `{{persona}}`, `{{system}}`, `{{char}}`, `{{user}}`), the example separator and chat start, and the stop-on-separators / stop-on-names switches.
+- **Instruct template**: instruct mode on/off, names (`none` / `force` / `always`), wrap and macros, the prefix and suffix of user, assistant and system messages, first / last assistant prefix, the stop sequence, sequences as stop strings, and the story string prefix / suffix.
+- **Reply cleanup**: trim unfinished sentences, collapse blank lines, single line.
+
+Texts are typed on one line in a small window: type `\n` for a line break and `\\` for a backslash. `p` offers presets for the part the cursor is in, as starting points. **Instruct template**: Off, ChatML, Llama 3, Llama 2, Mistral, Mistral V7, Phi-3, Phi-4, Gemma, Zephyr, Command R, DeepSeek V3, OpenChat, Granite, Vicuna, Alpaca and Metharme (roughly the chat templates llama.cpp knows); they replace the instruct template and keep the story string. **Context template**: Default, Short, Labeled, Pygmalion and No separators; they replace the story string, example separator and chat start and keep the stop switches. Reply cleanup has no presets.
+
+| Key | Action |
+| --- | --- |
+| ↑ / ↓ (`k` / `j`), PgUp / PgDn, Home / End | select a setting (click works too; a second click acts on it) |
+| Enter | edit a text (Enter accepts, Esc cancels) or flip / step the setting |
+| ← / → (`h` / `l`) | flip a switch or step through the choices |
+| `r` / `R` | reset the setting / every setting to its default |
+| `p` | presets of the template the cursor is in (↑ / ↓, Enter applies) |
+| `s` | save |
+| `q` / Esc | quit (asks to save when there are unsaved changes) |
+
+The next reply uses what you saved; nothing is sent to the server.
 
 ## Personas
 
@@ -429,7 +452,7 @@ The pattern is matched as plain text (no regular expressions yet), so `.` and `*
 
 ## How it works
 
-SillyTavern only supplies the chats and the context / instruct templates (characters, personas and system prompts are st-cli's own, in `~/.config/st-cli/characters/`, `~/.config/st-cli/persona/` and `~/.config/st-cli/system-prompt.jsonl`); the prompt is built client side and the reply comes straight from your API connection (`/api`). Before every reply st-cli re-reads both SillyTavern's settings and `api.yaml`, so a change to a template, persona, system prompt or sampler value applies to the next message.
+SillyTavern only supplies its settings (the context / instruct templates too, until you save `/formatting`; characters, personas and system prompts are st-cli's own, in `~/.config/st-cli/characters/`, `~/.config/st-cli/persona/` and `~/.config/st-cli/system-prompt.jsonl`); the prompt is built client side and the reply comes straight from your API connection (`/api`). Before every reply st-cli re-reads both SillyTavern's settings and `api.yaml`, so a change to a template, persona, system prompt or sampler value applies to the next message.
 
 1. `GET /csrf-token` (+ optional login), then `POST /api/settings/get`.
 2. Character card from `~/.config/st-cli/characters/`; chats via `/api/chats/get` and `/api/chats/save`.

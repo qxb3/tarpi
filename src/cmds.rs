@@ -35,6 +35,7 @@ pub const COMMANDS: &[Cmd] = &[
     cmd("prompt", "", "show the whole prompt of the next reply"),
     cmd("note", "an", "edit the Author's Note of this chat"),
     cmd("api", "", "API connection and sampler settings"),
+    cmd("formatting", "", "context and instruct templates"),
     cmd("new", "", "new chat with this character"),
     cmd("newchat", "nc", "delete this chat, start a new one"),
     cmd("regen", "", "regenerate the last reply [nudge]"),

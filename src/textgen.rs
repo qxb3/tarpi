@@ -3,8 +3,8 @@
 //! Mirrors SillyTavern's own pipeline for `main_api = "textgenerationwebui"`:
 //! context template (story string), instruct template, example dialogue,
 //! stop strings and the sampler parameters from the active preset. All of it
-//! is read from the live settings.json, so whatever is selected in the web UI
-//! is what gets used here.
+//! is read from the in-memory settings: SillyTavern's live settings.json, with
+//! the templates replaced by `formatting.yaml` once it exists (see `formatting`).
 
 use crate::character::Character;
 use crate::chat;

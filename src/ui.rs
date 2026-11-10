@@ -614,6 +614,8 @@ const HELP: &[&str] = &[
     "                 (before / after / chat), depth, role, interval (also /an)",
     "/api             open the API settings; quitting them (q) brings",
     "                 you back to this chat",
+    "/formatting      edit the context and instruct templates; quitting",
+    "                 them (q) brings you back to this chat",
     "/char            view and edit this character's card",
     "/char-img        show the card's picture in a square window",
     "/one-shot        lock THIS chat: no editing, undo, regen, swipes or",
