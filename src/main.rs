@@ -18,6 +18,7 @@ mod persona;
 mod picker;
 mod prompt;
 mod prose;
+mod spell;
 mod summary;
 mod termcolors;
 mod textgen;
@@ -760,6 +761,10 @@ async fn main() -> Result<()> {
         app.input.configure(cfg.vim().enabled, cfg.vim().keys());
         app.input.set_autopair(cfg.autopair.unwrap_or(true));
         app.command_menu = cfg.command_menu.unwrap_or(true);
+        // Spell checking is off unless `spellcheck: true` is in the config.
+        if cfg.spellcheck.unwrap_or(false) {
+            app.spell = Some(spell::Checker::new());
+        }
         if let Some(l) = cfg.vim().leader_char() {
             app.input.set_leader(l);
         }

@@ -19,6 +19,9 @@ pub struct FileConfig {
     /// The menu of `/commands` that opens above the input box while a command
     /// is typed (Tab / arrows / Enter pick from it). Default true.
     pub command_menu: Option<bool>,
+    /// Offline spell checking in the chat input box: misspelled words get a
+    /// red underline. Default false (off).
+    pub spellcheck: Option<bool>,
     mouse: Option<MouseConfig>,
     vim: Option<VimConfig>,
 }
@@ -125,6 +128,13 @@ const TEMPLATE: &str = "\
 # exactly what you typed.
 # command_menu: true
 
+# Spell checking in the input box: misspelled words get a red underline (the
+# red of your terminal's theme). Works offline with a built-in English word
+# list; your own words can go in ~/.config/st-cli/dictionary.txt (one per
+# line), and the character's and your persona's names are always accepted.
+# Off by default.
+# spellcheck: false
+
 mouse:
   # Phones (Termux): tapping the input box opens the on-screen keyboard.
   # (st-cli turns mouse reporting off for a moment so the tap reaches the
@@ -153,6 +163,11 @@ fn dir() -> Option<PathBuf> {
 
 pub fn config_path() -> Option<PathBuf> {
     dir().map(|d| d.join("config.yaml"))
+}
+
+/// `~/.config/st-cli/dictionary.txt`: extra words the spell checker accepts.
+pub fn dictionary_path() -> Option<PathBuf> {
+    dir().map(|d| d.join("dictionary.txt"))
 }
 
 /// `~/.config/st-cli/api.yaml`: the standalone API connections (see `conn`).

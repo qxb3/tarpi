@@ -130,6 +130,18 @@ struct Comp {
     done: bool,
 }
 
+/// The spelling menu (opened with Tab on a misspelled word).
+pub struct SpellMenu {
+    /// The misspelled word the cursor is in (char range in the box).
+    pub range: (usize, usize),
+    pub word: String,
+    pub sugg: Vec<String>,
+    pub sel: usize,
+}
+
+/// How long the cursor rests in a misspelled word before it is underlined.
+const SPELL_DELAY: Duration = Duration::from_millis(1000);
+
 pub struct App {
     api: Api,
     /// The user's full settings.json.
@@ -221,6 +233,16 @@ pub struct App {
     comp: Comp,
     /// Config `command_menu`: the `/command` menu above the input box.
     pub command_menu: bool,
+    /// Config `spellcheck`: the spell checker for the input box (`None` = off).
+    pub spell: Option<crate::spell::Checker>,
+    pub spell_menu: Option<SpellMenu>,
+    /// Where the spelling menu was drawn and the screen row of each entry.
+    pub spell_area: Rect,
+    pub spell_rows: Vec<(u16, usize)>,
+    /// Hash of (text, cursor, mode) and since when it has been the same.
+    spell_key: u64,
+    spell_since: Instant,
+
     /// Where the completion menu was drawn (with its border) and the screen
     /// row of each command in it, to hit-test clicks. Empty when it is shut.
     pub comp_area: Rect,
@@ -459,6 +481,12 @@ impl App {
             input_area: Rect::default(),
             comp: Comp::default(),
             command_menu: true,
+            spell: None,
+            spell_menu: None,
+            spell_area: Rect::default(),
+            spell_rows: Vec::new(),
+            spell_key: 0,
+            spell_since: Instant::now(),
             comp_area: Rect::default(),
             comp_rows: Vec::new(),
             input_first_row: 0,
@@ -872,6 +900,13 @@ impl App {
                     return;
                 }
                 let pos = Position::new(m.column, m.row);
+                if self.spell_menu.is_some() && self.spell_area.contains(pos) {
+                    // A click on a suggestion puts it in.
+                    if let Some(&(_, i)) = self.spell_rows.iter().find(|(y, _)| *y == m.row) {
+                        self.spell_accept(i);
+                    }
+                    return;
+                }
                 if self.comp_area.contains(pos) {
                     // A click on a command of the menu fills it in.
                     if let Some(&(_, name)) = self.comp_rows.iter().find(|(y, _)| *y == m.row) {
@@ -1110,6 +1145,10 @@ impl App {
             return;
         }
 
+        // The spelling menu above the box (Tab opens it on a misspelled word).
+        if self.spell_key(&k) {
+            return;
+        }
         // The `/command` menu above the box: Tab / arrows fill commands in.
         if self.completion_key(&k) {
             return;
@@ -2278,6 +2317,10 @@ impl App {
                 _ => {}
             }
         }
+        // Tab opens the spelling menu on a misspelled word.
+        if self.spell_key(&k) {
+            return;
+        }
         let half_dir = match k.code {
             KeyCode::Char('u') if ctrl && !alt => -1,
             KeyCode::Char('d') if ctrl && !alt => 1,
@@ -2346,8 +2389,6 @@ impl App {
                             }
                         }
                     },
-                    KeyCode::Tab => c.next_field(1),
-                    KeyCode::BackTab => c.next_field(-1),
                     KeyCode::Enter => match mode {
                         Mode::Insert => c.input.insert_char('\n'),
                         Mode::Normal => c.down(),
@@ -2430,6 +2471,16 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 let pos = Position::new(m.column, m.row);
+                if self.spell_menu.is_some() {
+                    // A click on a suggestion puts it in; anywhere else closes the menu.
+                    if self.spell_area.contains(pos) {
+                        if let Some(&(_, i)) = self.spell_rows.iter().find(|(y, _)| *y == m.row) {
+                            self.spell_accept(i);
+                        }
+                        return;
+                    }
+                    self.spell_menu = None;
+                }
                 let (cancel, save) = match self.card_modal.as_ref() {
                     Some(c) => (c.cancel_btn.contains(pos), c.save_btn.contains(pos)),
                     None => return,
@@ -2534,6 +2585,191 @@ impl App {
     /// The terminal changed size. On a phone that is the keyboard opening or
     /// closing: remember which, and as soon as it is open turn taps on
     /// messages back on.
+    /// Misspelled words (char ranges) of `text`, the text of the input box.
+    /// Empty when spell checking is off. The word the cursor is in is left
+    /// alone while typing (INSERT mode), since it is not finished yet.
+    pub fn spell_marks(&mut self, text: &str) -> Vec<(usize, usize)> {
+        self.spell_touch();
+        let typing = (self.input.mode == crate::input::Mode::Insert && !self.spell_rested())
+            .then_some(self.input.cursor);
+        self.spell_names();
+        match self.spell.as_mut() {
+            Some(sp) => sp.marks_typing(text, typing),
+            None => Vec::new(),
+        }
+    }
+
+    /// The text box being typed into: the one of the open `/char` or persona
+    /// window, otherwise the chat box.
+    fn spell_input(&self) -> &crate::input::Input {
+        match self.card_modal.as_ref() {
+            Some(c) => &c.input,
+            None => &self.input,
+        }
+    }
+
+    /// Note a change of text, cursor or mode: the menu closes and the rest
+    /// timer (the word at the cursor is underlined once it is over) starts
+    /// again.
+    pub fn spell_touch(&mut self) {
+        let mut h = DefaultHasher::new();
+        let inp = self.spell_input();
+        inp.text.hash(&mut h);
+        inp.cursor.hash(&mut h);
+        (inp.mode as u8).hash(&mut h);
+        self.card_modal.as_ref().map(|c| c.focus).hash(&mut h);
+        let key = h.finish();
+        if key != self.spell_key {
+            self.spell_key = key;
+            self.spell_since = Instant::now();
+            self.spell_menu = None;
+        }
+    }
+
+    /// The cursor has not moved and nothing was typed for a second.
+    pub fn spell_rested(&self) -> bool {
+        self.spell_since.elapsed() >= SPELL_DELAY
+    }
+
+    /// The misspelled word the cursor is in (or right behind), if any.
+    fn spell_word_at_cursor(&mut self) -> Option<((usize, usize), String)> {
+        let inp = self.spell_input();
+        if !matches!(inp.mode, Mode::Insert | Mode::Normal) {
+            return None;
+        }
+        // In the windows the Name fields are not checked.
+        if let Some(c) = self.card_modal.as_ref() {
+            let f = c.fields.get(c.focus)?;
+            if !f.editable || f.key == "name" {
+                return None;
+            }
+        }
+        let text = inp.text.clone();
+        let cur = inp.cursor;
+        let (s, e) = self
+            .spell
+            .as_mut()?
+            .marks(&text)
+            .into_iter()
+            .find(|&(s, e)| cur >= s && cur <= e)?;
+        let word: String = text.chars().skip(s).take(e - s).collect();
+        Some(((s, e), word))
+    }
+
+    /// Open the menu for the word at the cursor.
+    fn spell_open(&mut self) -> bool {
+        self.spell_names();
+        let Some((range, word)) = self.spell_word_at_cursor() else {
+            return false;
+        };
+        let sugg = self
+            .spell
+            .as_ref()
+            .map(|sp| sp.suggest(&word, 6))
+            .unwrap_or_default();
+        if sugg.is_empty() {
+            return false;
+        }
+        self.spell_menu = Some(SpellMenu {
+            range,
+            word,
+            sugg,
+            sel: 0,
+        });
+        true
+    }
+
+    /// Keys for the spelling menu: Tab opens it on a misspelled word (and,
+    /// open, moves down); Shift+Tab / Up / Down move; Enter puts the
+    /// highlighted entry in; Esc closes it. Returns false when the key is
+    /// not for the menu (and then closes it).
+    fn spell_key(&mut self, k: &KeyEvent) -> bool {
+        if self.spell.is_none()
+            || !matches!(self.spell_input().mode, Mode::Insert | Mode::Normal)
+            || k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            || (self.card_modal.is_none() && self.completion().is_some())
+        {
+            self.spell_menu = None;
+            return false;
+        }
+        if self.spell_menu.is_none() {
+            return k.code == KeyCode::Tab && self.spell_open();
+        }
+        let n = self.spell_menu.as_ref().map_or(0, |m| m.sugg.len());
+        let m = self.spell_menu.as_mut().unwrap();
+        match k.code {
+            KeyCode::Tab | KeyCode::Down => m.sel = (m.sel + 1) % n,
+            KeyCode::BackTab | KeyCode::Up => m.sel = (m.sel + n - 1) % n,
+            KeyCode::Enter => {
+                let i = m.sel;
+                self.spell_accept(i);
+            }
+            KeyCode::Esc => self.spell_menu = None,
+            _ => {
+                self.spell_menu = None;
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Replace the misspelled word with suggestion `i`.
+    pub fn spell_accept(&mut self, i: usize) {
+        let Some(m) = self.spell_menu.take() else {
+            return;
+        };
+        let Some(new) = m.sugg.get(i) else {
+            return;
+        };
+        let put = |inp: &mut crate::input::Input| {
+            let chars: Vec<char> = inp.text.chars().collect();
+            let (s, e) = (m.range.0.min(chars.len()), m.range.1.min(chars.len()));
+            let mut out: String = chars[..s].iter().collect();
+            out.push_str(new);
+            out.extend(chars[e..].iter());
+            inp.clear();
+            inp.insert_str(&out);
+            inp.cursor = s + new.chars().count();
+            // In NORMAL mode the cursor sits on a letter, not after the last one.
+            inp.clamp_normal();
+        };
+        match self.card_modal.as_mut() {
+            Some(c) => {
+                put(&mut c.input);
+                c.follow = true;
+                c.sync();
+            }
+            None => {
+                put(&mut self.input);
+                self.scroll = 0;
+            }
+        }
+    }
+
+    /// Tell the spell checker the names it must accept (character, persona).
+    pub fn spell_names(&mut self) {
+        if self.spell.is_none() {
+            return;
+        }
+        // The character (its name and card file name) and every persona
+        // (names and titles), so nothing the story is about gets marked.
+        let avatar = self.character.avatar.trim_end_matches(".png").to_string();
+        let mut names: Vec<String> = vec![
+            self.character.name.clone(),
+            avatar,
+            self.user_name.clone(),
+            self.persona_title.clone(),
+        ];
+        for p in crate::persona::list(&self.settings) {
+            names.push(p.name);
+            names.push(p.title);
+        }
+        let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        if let Some(sp) = self.spell.as_mut() {
+            sp.set_names(&refs);
+        }
+    }
+
     pub fn on_resize(&mut self, rows: u16) {
         self.max_rows = self.max_rows.max(rows);
         self.kbd_up = self.max_rows > 0 && (rows as u32) * 10 < (self.max_rows as u32) * 8;

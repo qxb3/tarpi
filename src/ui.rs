@@ -476,8 +476,9 @@ fn input_row(
     sel: Option<(usize, usize)>,
     found: &[(usize, usize)],
     replaced: bool,
+    misspelled: &[(usize, usize)],
 ) -> Line<'static> {
-    if sel.is_none() && found.is_empty() {
+    if sel.is_none() && found.is_empty() && misspelled.is_empty() {
         return Line::from(row.to_string());
     }
     // VISUAL selection: reverse video. `:s` matches: black on yellow.
@@ -485,11 +486,18 @@ fn input_row(
     let find_style = Style::default()
         .fg(Color::Black)
         .bg(if replaced { Color::Green } else { Color::Yellow });
+    // Misspelled words: underlined in the terminal theme's red.
+    let red = termcolors::palette().red_color();
+    let spell_style = Style::default()
+        .add_modifier(Modifier::UNDERLINED)
+        .underline_color(red);
     let style_at = |i: usize| -> Style {
         if sel.map_or(false, |(s, e)| i >= s && i < e) {
             sel_style
         } else if found.iter().any(|&(s, e)| i >= s && i < e) {
             find_style
+        } else if misspelled.iter().any(|&(s, e)| i >= s && i < e) {
+            spell_style
         } else {
             Style::default()
         }
@@ -555,6 +563,8 @@ const HELP: &[&str] = &[
     "Ctrl+S           editing the card's greeting: save it to the card",
     "Left/Right       previous / next swipe (or greeting), empty box",
     "Ctrl+Left/Right  previous / next summary branch (wraps)",
+    "Tab              spelling suggestions for the word under the cursor",
+    "                 (spellcheck: true; also in /char and /persona)",
     "Esc              stop generating / cancel an edit",
     "",
     "Edit any message: click it. It opens in INSERT mode.",
@@ -819,6 +829,100 @@ fn draw_completion(f: &mut Frame, app: &mut App, input_area: Rect, top: u16) {
     app.comp_area = rect;
 }
 
+/// The spelling menu: suggestions for the misspelled word the cursor is in.
+/// In the chat it is drawn like the command menu, just above the input box;
+/// in the `/char` and persona windows it sits at the text cursor.
+fn draw_spell_menu(f: &mut Frame, app: &mut App, input_area: Rect, top: u16) {
+    app.spell_area = Rect::default();
+    app.spell_rows.clear();
+    let anchor = app.card_modal.as_ref().map(|m| m.cursor_xy);
+    // The `/command` menu takes the place when it is showing.
+    if anchor.is_none() && app.completion().is_some() {
+        return;
+    }
+    if matches!(anchor, Some(None))
+        || app.show_help
+        || app.image_modal.is_some()
+        || app.picker.is_some()
+    {
+        return;
+    }
+    let Some(menu) = app.spell_menu.as_ref() else {
+        return;
+    };
+    let screen = f.area();
+    // In a window the menu may go above or below the cursor's row: the
+    // larger side is the room it has.
+    let avail = match anchor {
+        Some(Some((_, cy))) => (cy as usize).max(screen.height.saturating_sub(cy + 1) as usize),
+        Some(None) => 0,
+        None => input_area.y.saturating_sub(top) as usize,
+    };
+    if avail < 3 || screen.width < 8 {
+        return;
+    }
+    let shown = menu.sugg.len().min(8).min(avail - 2);
+    let first = if menu.sel >= shown { menu.sel + 1 - shown } else { 0 };
+    let want = menu.sugg.iter().map(|s| cols_of(s)).max().unwrap_or(0) + 2;
+    let hint = " Tab next \u{b7} Enter pick \u{b7} Esc ";
+    let title = format!(" {} ", menu.word);
+    let w = (want.max(cols_of(hint)).max(cols_of(&title)) as u16 + 2)
+        .min(screen.width)
+        .max(4);
+    let iw = (w - 2) as usize;
+    let h = shown as u16 + 2;
+    let rect = match anchor {
+        Some(Some((cx, cy))) => {
+            // Below the cursor's row when it is in the top half of the
+            // screen, above it when in the bottom half; the other side when
+            // the menu does not fit where it would go.
+            let x = cx.min(screen.width.saturating_sub(w));
+            let fits_below = cy + 1 + h <= screen.height;
+            let fits_above = cy >= h;
+            let below = if cy < screen.height / 2 { fits_below || !fits_above } else { !fits_above };
+            let y = (if below { cy + 1 } else { cy - h }).min(screen.height.saturating_sub(h));
+            Rect::new(x, y, w, h)
+        }
+        _ => Rect::new(input_area.x, input_area.y - h, w.min(input_area.width), h),
+    };
+    let iw = iw.min(rect.width.saturating_sub(2) as usize);
+    let red = termcolors::palette().red_color();
+
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    let mut hits: Vec<(u16, usize)> = Vec::new();
+    for (n, s) in menu.sugg.iter().enumerate().skip(first).take(shown) {
+        let txt = fit_cols(&format!(" {}", s), iw);
+        let used = cols_of(&txt);
+        let line = if n == menu.sel {
+            let st = Style::default().fg(Color::Black).bg(Color::Cyan);
+            let mut spans = vec![Span::styled(txt, st.add_modifier(Modifier::BOLD))];
+            if used < iw {
+                spans.push(Span::styled(" ".repeat(iw - used), st));
+            }
+            Line::from(spans)
+        } else {
+            Line::from(Span::styled(txt, Style::default().fg(Color::Cyan)))
+        };
+        rows.push(line);
+        hits.push((rect.y + 1 + (n - first) as u16, n));
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(Line::from(Span::styled(
+            title,
+            Style::default().add_modifier(Modifier::UNDERLINED).underline_color(red),
+        )))
+        .title_bottom(Line::from(Span::styled(
+            hint.to_string(),
+            Style::default().fg(Color::DarkGray),
+        )));
+    f.render_widget(Clear, rect);
+    f.render_widget(Paragraph::new(rows).block(block), rect);
+    app.spell_area = rect;
+    app.spell_rows = hits;
+}
+
 /// The choose-one window of `/characters`, `/chats` and `/persona`: the
 /// entries, with the keys on the bottom edge.
 pub fn draw_picker(f: &mut Frame, area: Rect, p: &mut Picker) {
@@ -967,7 +1071,13 @@ fn draw_image_modal(f: &mut Frame, area: Rect, m: &mut crate::charimg::ImageModa
     f.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
-fn draw_card_modal(f: &mut Frame, area: Rect, m: &mut CardModal) {
+fn draw_card_modal(
+    f: &mut Frame,
+    area: Rect,
+    m: &mut CardModal,
+    mut spell: Option<&mut crate::spell::Checker>,
+    rested: bool,
+) {
     // `area` is the space between the title bar and the input box, margin
     // included: the window fills its height, and its width on small screens.
     let w = if area.width < 60 { area.width } else { (area.width - 4).min(100) };
@@ -1003,7 +1113,7 @@ fn draw_card_modal(f: &mut Frame, area: Rect, m: &mut CardModal) {
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    bottom.push(Span::raw(" Tab next \u{b7} Ctrl+S save \u{b7} Esc cancel "));
+    bottom.push(Span::raw(" Ctrl+S save \u{b7} Esc cancel "));
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
@@ -1049,6 +1159,11 @@ fn draw_card_modal(f: &mut Frame, area: Rect, m: &mut CardModal) {
     // ever concerns the focused field: that is all the editor holds, so the
     // other fields are never touched.
     let live = m.input.command_live();
+    // The name typed into the Name field counts as spelled right elsewhere.
+    if let Some(sp) = spell.as_deref_mut() {
+        let name = m.fields.iter().find(|x| x.key == "name").map(|x| x.text.clone());
+        sp.set_extra(&[name.as_deref().unwrap_or("")]);
+    }
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut owners: Vec<(usize, Option<usize>)> = Vec::new();
     let mut cursor_line = 0usize;
@@ -1087,9 +1202,24 @@ fn draw_card_modal(f: &mut Frame, area: Rect, m: &mut CardModal) {
         };
         let cur = if focused { m.input.cursor.min(view.chars().count()) } else { 0 };
         let (rows, (crow, ccol), starts) = layout_input(view, cur, text_w);
+        // Misspelled words of editable fields (not the Name, which is free
+        // text), except while a `:s` preview is shown. The word being typed
+        // in the focused field (INSERT mode) is left alone.
+        let spell_it = fld.editable && fld.key != "name" && preview.is_none() && !(focused && live.is_some());
+        let misspelled: Vec<(usize, usize)> = match spell.as_deref_mut() {
+            Some(sp) if spell_it => {
+                let typing = (focused && m.input.mode == Mode::Insert && !rested).then_some(cur);
+                sp.marks_typing(view, typing)
+            }
+            _ => Vec::new(),
+        };
         // The focused field is drawn with the chat box's row renderer, so a
         // VISUAL selection shows in reverse video.
-        let chars: Vec<char> = if focused { view.chars().collect() } else { Vec::new() };
+        let chars: Vec<char> = if focused || !misspelled.is_empty() {
+            view.chars().collect()
+        } else {
+            Vec::new()
+        };
         let sel = if focused { m.input.selection() } else { None };
         if fld.text.is_empty() && !focused {
             lines.push(Line::from(Span::styled("(empty)".to_string(), dim)));
@@ -1106,8 +1236,16 @@ fn draw_card_modal(f: &mut Frame, area: Rect, m: &mut CardModal) {
                     cursor_col = ccol;
                     cursor_row0 = r == 0;
                 }
-                if focused {
-                    lines.push(input_row(row, starts[r], &chars, sel, found, preview.is_some()));
+                if focused || !misspelled.is_empty() {
+                    lines.push(input_row(
+                        row,
+                        starts[r],
+                        &chars,
+                        sel,
+                        found,
+                        preview.is_some(),
+                        &misspelled,
+                    ));
                 } else {
                     lines.push(Line::from(Span::styled(row.clone(), style)));
                 }
@@ -1192,13 +1330,16 @@ fn draw_card_modal(f: &mut Frame, area: Rect, m: &mut CardModal) {
         );
     }
 
+    m.cursor_xy = None;
     if let Some(pos) = cmd_cursor {
         f.set_cursor_position(pos);
     } else if cursor_line >= m.scroll && cursor_line < end {
-        f.set_cursor_position((
+        let pos = (
             m.text_x + cursor_col as u16,
             body.y + (cursor_line - m.scroll) as u16,
-        ));
+        );
+        f.set_cursor_position(pos);
+        m.cursor_xy = Some(pos);
     }
 }
 
@@ -1404,6 +1545,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let found: &[(usize, usize)] = live.as_ref().map_or(&[], |l| l.marks.as_slice());
     let replaced_view = live.as_ref().map_or(false, |l| l.text.is_some());
     let text_chars: Vec<char> = view_text.chars().collect();
+    // Spell check only the plain text, not a `:s` preview being typed.
+    let misspelled = if live.is_none() {
+        app.spell_marks(&view_text)
+    } else {
+        Vec::new()
+    };
     let shown: Vec<Line<'static>> = (first_row..first_row + visible_rows)
         .map(|r| {
             input_row(
@@ -1413,6 +1560,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 selection,
                 found,
                 replaced_view,
+                &misspelled,
             )
         })
         .collect();
@@ -1617,8 +1765,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else if let Some(m) = app.image_modal.as_mut() {
         draw_image_modal(f, modal_area, m);
     } else if app.card_modal.is_some() {
+        app.spell_names();
+        app.spell_touch();
+        let rested = app.spell_rested();
         if let Some(m) = app.card_modal.as_mut() {
-            draw_card_modal(f, modal_area, m);
+            draw_card_modal(f, modal_area, m, app.spell.as_mut(), rested);
         }
     } else if let Some((_, p)) = app.picker.as_mut() {
         draw_picker(f, modal_area, p);
@@ -1629,4 +1780,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         let y = input_area.y + 1 + (cur_row - first_row) as u16;
         f.set_cursor_position((x, y));
     }
+    // The spelling menu goes over everything else.
+    draw_spell_menu(f, app, input_area, chunks[1].y);
 }

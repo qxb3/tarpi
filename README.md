@@ -94,11 +94,11 @@ While you edit the chat's first message, Ctrl+S (or the **Card save** button) wr
 
 `/char` opens the whole card of the current character in a window, like `/help`: card file, name, description, personality, scenario, first message, example dialogue, system prompt, post-history instructions, every alternate greeting and the depth prompt. The text is the raw card text (`{{char}}` / `{{user}}` stay as they are).
 
-All fields except the card file and the depth prompt (shown read-only) can be edited, including the name: renaming writes the new name to the card (the card file and your chats keep their names). The name is one line and can't be empty. The field with the cursor has a cyan title; the window scrolls to follow it. It opens with the cursor at the very top of the first editable field (Name).
+All fields except the card file and the depth prompt (shown read-only) can be edited, including the name: renaming writes the new name to the card (the card file and your chats keep their names). The name is one line and can't be empty. The field with the cursor has a cyan title; the window scrolls to follow it. It opens with the cursor at the very top of the first editable field (Name), in NORMAL mode (with vim modes on; press `i` to type).
 
 | Key / click | Action |
 | --- | --- |
-| Tab / Shift+Tab | next / previous field |
+| Tab | with `spellcheck: true`: spelling suggestions for the misspelled word at the cursor (see *Configuration*); it no longer jumps to the next field. Move between fields with Up / Down past the first / last row, or click |
 | Up / Down | move a row; past the first / last row of a field they go on to the previous / next field |
 | Enter | new line inside the field |
 | Left, Right, Home, End, Ctrl+A / Ctrl+E, Backspace, Delete, PgUp / PgDn | as in a text box |
@@ -224,6 +224,9 @@ Settings live in `~/.config/st-cli/config.yaml`. The first run creates it with t
 # The menu of /commands above the input box (see "Command menu")
 # command_menu: true
 
+# Spell checking in the input box (off by default)
+# spellcheck: false
+
 mouse:
   # Phones (Termux): tapping the input box opens the on-screen keyboard
   open_keyboard_on_tap: true
@@ -241,6 +244,8 @@ vim:
 ```
 
 - `command_menu: true` (default) opens the `/command` menu above the input box while you type a slash (see *Command menu*). `command_menu: false` turns it off: nothing opens, Tab / Up / Down / Esc keep their old meaning (Up / Down scroll the chat), and Enter runs exactly what you typed.
+- `spellcheck: true` turns on offline spell checking in the chat input box and in the `/char` and persona windows (default `false`; the Name fields are not checked). Misspelled words get a red underline (the red of the terminal's theme, asked from the terminal at start-up like the prose colours; the text keeps its colour); words of one or two letters are checked too (`ho` and `x` are marked, `a`, `I`, `of`, `up` are not). The word you are still typing is not marked until the cursor leaves it. The word list is English and built into the program, so no internet or system dictionary is needed. Extra words go in `~/.config/st-cli/dictionary.txt` (one per line, `#` starts a comment); the character's name and your persona's name are always accepted. Details: `src/spell.rs`.
+- With spell checking on, press **Tab** with the cursor in a marked word to open a **suggestion menu**: above the input box in the chat (like the command menu), and at the text cursor in the `/char` and persona windows. Misspelled words are only underlined (in the theme's red); the menu never opens by itself. It lists up to six spellings, best first (a swapped pair such as `teh` -> `the`, then a missing letter such as `helo` -> `hello`, then other close words), and keeps a capital first letter. It works in INSERT and NORMAL mode. Tab / Down go to the next entry, Shift+Tab / Up to the previous one, Enter puts the highlighted one in, Esc closes the menu, and a click or tap on an entry puts it in; any other key closes it. The Name fields of the windows are not checked.
 - `autopair: true` (default) closes `"`, `'`, `*` and `(` `[` `{` as you type them, in INSERT mode and in the `/char` window: `"` gives `"|"`, `'` gives `'|'`, `*` gives `*|*`, a second `*` inside an empty pair gives `**|**`. Typing the closing character steps over the one already there, and Backspace between an empty pair removes both. It stays out of the way next to words (`2*3`, `5"`, and apostrophes like `don't` or `Sofia's`), when the paragraph already has an unclosed one (so the second `"` closes), and when the next character is a letter. Apostrophes inside a word are not counted as quotes, so `'I don't know'` types out as written. An apostrophe at the start of a word (`'em`, `'til`) opens a pair like any quote: Backspace removes it while it is still empty. Pasted text is never changed. Set `autopair: false` to turn it off.
 - `vim.enabled: false` removes the modes and the mode tag under the box; the box is plain text editing. Left/Right arrows move the cursor once the box has a draft (on an empty box they switch swipes), and Home/End and Alt+Left/Right (word jump) move the cursor, and Up/Down move through a multi-line draft (with a one-line draft they scroll the chat as before).
 - `vim.normal_mode_keys` can be any sequence of two or more characters, for example `jk`. It is typed quickly in INSERT mode (within about 0.6 s) and the keys are removed again.

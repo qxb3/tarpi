@@ -2,7 +2,8 @@
 //!
 //! At start-up (in raw mode, before the event loop reads the keyboard) st-cli
 //! asks the terminal for its default foreground (`OSC 10`), background
-//! (`OSC 11`) and its palette yellow (`OSC 4;3`), then a `DA1` query as the
+//! (`OSC 11`), its palette yellow (`OSC 4;3`) and red (`OSC 4;1`, for the
+//! spell checker's underline), then a `DA1` query as the
 //! last one: every terminal answers that, so once its reply is in we know no
 //! more answers are coming and there is no fixed wait. A terminal that does
 //! not answer (or a non-Unix system) costs at most 300 ms once, and the
@@ -41,6 +42,10 @@ pub struct Palette {
     /// uses the terminal's indexed yellow (so the theme still applies) and
     /// `yellow` is only used to work out blends.
     pub yellow_real: bool,
+    /// The theme's red (`OSC 4;1`), used for the spell checker's underline.
+    pub red: Rgb,
+    /// `red` was reported by the terminal (otherwise the indexed red is used).
+    pub red_real: bool,
 }
 
 pub fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
@@ -90,6 +95,17 @@ impl Palette {
     }
 }
 
+impl Palette {
+    /// The red of the terminal's theme.
+    pub fn red_color(&self) -> Color {
+        if self.red_real {
+            rgb(self.red)
+        } else {
+            Color::Red
+        }
+    }
+}
+
 /// Guesses when the terminal does not answer.
 fn guess(light: bool) -> Palette {
     if light {
@@ -98,6 +114,8 @@ fn guess(light: bool) -> Palette {
             bg: (255, 255, 255),
             yellow: (153, 153, 0),
             yellow_real: false,
+            red: (205, 49, 49),
+            red_real: false,
         }
     } else {
         Palette {
@@ -105,6 +123,8 @@ fn guess(light: bool) -> Palette {
             bg: (0, 0, 0),
             yellow: (205, 205, 0),
             yellow_real: false,
+            red: (205, 49, 49),
+            red_real: false,
         }
     }
 }
@@ -147,6 +167,7 @@ fn from_reply(reply: &str) -> Palette {
     let fg = find_color(reply, "\x1b]10;");
     let bg = find_color(reply, "\x1b]11;");
     let yellow = find_color(reply, "\x1b]4;3;");
+    let red = find_color(reply, "\x1b]4;1;");
     let light = match bg {
         Some(b) => luminance(b) > 128.0,
         None => colorfgbg_is_light(),
@@ -157,6 +178,8 @@ fn from_reply(reply: &str) -> Palette {
         bg: bg.unwrap_or(base.bg),
         yellow: yellow.unwrap_or(base.yellow),
         yellow_real: yellow.is_some(),
+        red: red.unwrap_or(base.red),
+        red_real: red.is_some(),
     };
     // A theme that reports the same colour for both would make narration
     // vanish: fall back to the guess for the pair.
@@ -186,7 +209,7 @@ fn ask_terminal() -> Option<String> {
         return None;
     }
     let mut out = std::io::stdout();
-    out.write_all(b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]4;3;?\x1b\\\x1b[c")
+    out.write_all(b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]4;3;?\x1b\\\x1b]4;1;?\x1b\\\x1b[c")
         .ok()?;
     out.flush().ok()?;
 
@@ -258,6 +281,15 @@ mod tests {
         assert_eq!(find_color(r, "\x1b]10;"), Some((255, 255, 255)));
         assert_eq!(find_color(r, "\x1b]11;"), Some((0, 0, 0)));
         assert_eq!(find_color(r, "\x1b]4;3;"), Some((204, 170, 0)));
+    }
+
+    #[test]
+    fn reply_gives_theme_red() {
+        let p = from_reply("\x1b]4;1;rgb:e0e0/6c6c/7575\x07");
+        assert_eq!(p.red, (224, 108, 117));
+        assert!(p.red_real);
+        assert_eq!(p.red_color(), Color::Rgb(224, 108, 117));
+        assert_eq!(guess(false).red_color(), Color::Red);
     }
 
     #[test]

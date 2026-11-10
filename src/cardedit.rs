@@ -52,6 +52,8 @@ pub struct CardModal {
     pub text_w: usize,
     pub view_h: usize,
     pub text_x: u16,
+    /// Where the text cursor was drawn (screen column, row), for the spelling menu.
+    pub cursor_xy: Option<(u16, u16)>,
     pub cancel_btn: Rect,
     pub save_btn: Rect,
     pub hits: Vec<Hit>,
@@ -139,6 +141,9 @@ impl CardModal {
 
         let mut m = CardModal::from_fields(fields, cfg);
         m.title = "character card".to_string();
+        // `/char` opens for reading and moving around: NORMAL mode (does
+        // nothing when vim modes are off).
+        m.input.enter_normal();
         m
     }
 
@@ -195,6 +200,7 @@ impl CardModal {
             text_w: 60,
             view_h: 10,
             text_x: 0,
+            cursor_xy: None,
             cancel_btn: Rect::default(),
             save_btn: Rect::default(),
             hits: Vec::new(),
@@ -285,20 +291,6 @@ impl CardModal {
             i += dir;
         }
         None
-    }
-
-    /// Tab / Shift+Tab: next or previous editable field (wraps around).
-    pub fn next_field(&mut self, dir: i32) {
-        let n = self.fields.len();
-        let mut i = self.focus;
-        for _ in 0..n {
-            i = if dir >= 0 { (i + 1) % n } else { (i + n - 1) % n };
-            if self.fields[i].editable {
-                let end = self.fields[i].text.chars().count();
-                self.focus_field(i, end, true);
-                return;
-            }
-        }
     }
 
     /// Pasted text goes in at the cursor.
