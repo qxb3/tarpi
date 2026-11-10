@@ -748,12 +748,22 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
         .iter()
         .filter(|m| !chat::is_system(m) && chat::is_user(m))
         .count();
-    let note_text = if a.note.due(user_msgs) {
+    // Turned off in the config (`author_note: false`): no note, and a persona
+    // meant for the note goes into the prompt instead.
+    let note_on = jbool(a.settings, "author_note", true);
+    let persona_position = if !note_on
+        && matches!(a.persona_position, crate::posedit::TOP_NOTE | crate::posedit::BOTTOM_NOTE)
+    {
+        0
+    } else {
+        a.persona_position
+    };
+    let note_text = if note_on && a.note.due(user_msgs) {
         subst(&a.note.text, &ctx).trim().to_string()
     } else {
         String::new()
     };
-    let note_full = note::compose(&note_text, &ctx.persona, a.persona_position);
+    let note_full = note::compose(&note_text, &ctx.persona, persona_position);
     let mut anchor_before = String::new();
     let mut anchor_after = String::new();
     match a.note.position {
@@ -763,7 +773,7 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
     }
 
     // ---- story string
-    let persona_in_prompt = a.persona_position == 0;
+    let persona_in_prompt = persona_position == 0;
     let mut vars: HashMap<&str, String> = HashMap::new();
     vars.insert("description", ctx.description.clone());
     vars.insert("personality", ctx.personality.clone());
@@ -842,7 +852,7 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
             });
         }
     }
-    if a.persona_position == 4 && !ctx.persona.is_empty() {
+    if persona_position == 4 && !ctx.persona.is_empty() {
         injects.push(Inject {
             depth: ji64(pu, "persona_description_depth", 2).max(0) as usize,
             role: ji64(pu, "persona_description_role", 0).clamp(0, 2) as u8,

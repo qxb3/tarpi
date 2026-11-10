@@ -31,7 +31,7 @@ use crossterm::event::{
 };
 use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
@@ -282,6 +282,8 @@ pub struct App {
     hist_draft: String,
     /// Config `command_menu`: the `/command` menu above the input box.
     pub command_menu: bool,
+    /// Config `author_note`: the Author's Note is on (default) or off.
+    author_note: bool,
     /// Config `spellcheck`: the spell checker for the input box (`None` = off).
     pub spell: Option<crate::spell::Checker>,
     pub spell_menu: Option<SpellMenu>,
@@ -540,6 +542,7 @@ impl App {
             hist_pos: None,
             hist_draft: String::new(),
             command_menu: true,
+            author_note: true,
             spell: None,
             spell_menu: None,
             spell_area: Rect::default(),
@@ -1390,6 +1393,22 @@ impl App {
     /// and holds one `/word` and nothing else. The entries are the commands
     /// that word starts; then the highlighted entry (the top one until Tab /
     /// the arrows move it) and whether it has been filled into the box yet.
+    /// The commands the menu offers for `word` (`/note` only with the Author's
+    /// Note on).
+    fn menu_commands(&self, word: &str) -> Vec<&'static cmds::Cmd> {
+        let mut list = cmds::matches(word);
+        if !self.author_note {
+            list.retain(|c| c.name != "note");
+        }
+        list
+    }
+
+    /// Turn the Author's Note on or off (config `author_note`).
+    pub fn set_author_note(&mut self, on: bool) {
+        self.author_note = on;
+        self.apply_settings(config::base_settings());
+    }
+
     pub fn completion(&self) -> Option<(Vec<&'static cmds::Cmd>, usize, bool)> {
         if !self.command_menu
             || self.editing.is_some()
@@ -1401,14 +1420,14 @@ impl App {
         // While cycling, the list stays that of the word typed at the start,
         // even though the box now holds the full command name.
         if let Some(base) = &self.comp.base {
-            let list = cmds::matches(base);
+            let list = self.menu_commands(base);
             if let Some(c) = list.get(self.comp.sel) {
                 if cmds::typed_word(&self.input.text) == Some(c.name) {
                     return Some((list, self.comp.sel, true));
                 }
             }
         }
-        let list = cmds::matches(cmds::typed_word(&self.input.text)?);
+        let list = self.menu_commands(cmds::typed_word(&self.input.text)?);
         if list.is_empty() {
             None
         } else {
@@ -1641,7 +1660,15 @@ impl App {
                 }
                 "note" | "an" | "authors-note" | "author" => {
                     self.input.clear();
-                    self.open_note().await;
+                    if self.author_note {
+                        self.open_note().await;
+                    } else {
+                        self.set_status(
+                            "the Author's Note is turned off (author_note: false in config.yaml)"
+                                .to_string(),
+                            true,
+                        );
+                    }
                 }
                 "one-shot" | "oneshot" => {
                     self.input.clear();
@@ -3608,6 +3635,7 @@ impl App {
         persona::normalize(&mut settings);
         sysprompt::normalize(&mut settings);
         formatting::normalize(&mut settings);
+        settings["author_note"] = json!(self.author_note);
         if let Some(c) = &self.conn {
             conn::overlay(&mut settings, c);
         }

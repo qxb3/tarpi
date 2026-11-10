@@ -320,7 +320,7 @@ Enter sends; for a new line use the Termux extra-keys row: ALT then Enter, or CT
 
 ## Build
 
-(`tarpi` was called `st-cli` before. On first start it moves an existing `~/.config/st-cli/` folder to `~/.config/tarpi/`, so your characters, chats and settings carry over. The `st_cli_*` keys inside chat files keep their names, so old chats still open.)
+(tarpi reads only `~/.config/tarpi/`. A folder left over from the old name, `~/.config/st-cli/`, is ignored; copy it to `~/.config/tarpi/` yourself to keep its characters, chats and settings.)
 
 ```
 cargo build --release
@@ -347,6 +347,9 @@ Settings live in `~/.config/tarpi/config.yaml`. The first run creates it with th
 # The menu of /commands above the input box (see "Command menu")
 # command_menu: true
 
+# The Author's Note (see "Author's Note"); false turns it off
+# author_note: true
+
 # Spell checking in the input box (off by default)
 # spellcheck: false
 
@@ -366,6 +369,7 @@ vim:
   leader: space
 ```
 
+- `author_note: true` (default) keeps the Author's Note. `author_note: false` turns it off: `/note` is no longer offered in the menu and says it is off when typed, no note is added to any prompt (the notes already saved in your chat files stay there, untouched, and come back if you turn it on again), and a persona whose position is *Top / Bottom of the Author's Note* is sent in the prompt like the default position instead.
 - `command_menu: true` (default) opens the `/command` menu above the input box while you type a slash (see *Command menu*). `command_menu: false` turns it off: nothing opens, Tab / Up / Down / Esc keep their old meaning (Up / Down scroll the chat), and Enter runs exactly what you typed. The command history (Up on a bare `/`) still works.
 - `spellcheck: true` turns on offline spell checking in the chat input box and in the `/char` and persona windows (default `false`; the Name fields are not checked). Misspelled words get a red underline (the red of the terminal's theme, asked from the terminal at start-up like the prose colours; the text keeps its colour); words of one or two letters are checked too (`ho` and `x` are marked, `a`, `I`, `of`, `up` are not). The word you are still typing is not marked until the cursor leaves it. The word list is English and built into the program, so no internet or system dictionary is needed. Extra words go in `~/.config/tarpi/dictionary.txt` (one per line, `#` starts a comment); the character's name and your persona's name are always accepted. Details: `src/spell.rs`.
 - With spell checking on, press **Tab** with the cursor in a marked word to open a **suggestion menu**: above the input box in the chat (like the command menu), and at the text cursor in the `/char` and persona windows. Misspelled words are only underlined (in the theme's red); the menu never opens by itself. It lists up to six spellings, best first (a swapped pair such as `teh` -> `the`, then a missing letter such as `helo` -> `hello`, then other close words), and keeps a capital first letter. It works in INSERT and NORMAL mode. Tab / Down go to the next entry, Shift+Tab / Up to the previous one, Enter puts the highlighted one in, Esc closes the menu, and a click or tap on an entry puts it in; any other key closes it. The Name fields of the windows are not checked.

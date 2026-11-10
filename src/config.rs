@@ -20,6 +20,9 @@ pub struct FileConfig {
     /// The menu of `/commands` that opens above the input box while a command
     /// is typed (Tab / arrows / Enter pick from it). Default true.
     pub command_menu: Option<bool>,
+    /// The Author's Note (`/note`). `false` turns it off: nothing is sent and
+    /// the command is unavailable. Default true.
+    pub author_note: Option<bool>,
     /// Offline spell checking in the chat input box: misspelled words get a
     /// red underline. Default false (off).
     pub spellcheck: Option<bool>,
@@ -130,6 +133,12 @@ const TEMPLATE: &str = "\
 # exactly what you typed.
 # command_menu: true
 
+# The Author's Note (/note). false: turns it off. The command is not offered,
+# no note is ever added to the prompt (the notes saved in your chats stay in
+# their files, untouched), and a persona set to go in the note is sent in the
+# prompt like the default instead.
+# author_note: true
+
 # Spell checking in the input box: misspelled words get a red underline (the
 # red of your terminal's theme). Works offline with a built-in English word
 # list; your own words can go in ~/.config/tarpi/dictionary.txt (one per
@@ -160,15 +169,7 @@ vim:
 ";
 
 fn dir() -> Option<PathBuf> {
-    let base = dirs::config_dir()?;
-    let dir = base.join("tarpi");
-    // The folder of the project's earlier name: moved over once, so nothing
-    // (characters, chats, settings) is lost by the rename.
-    let old = base.join("st-cli");
-    if !dir.exists() && old.is_dir() && std::fs::rename(&old, &dir).is_err() {
-        return Some(old);
-    }
-    Some(dir)
+    dirs::config_dir().map(|d| d.join("tarpi"))
 }
 
 pub fn config_path() -> Option<PathBuf> {

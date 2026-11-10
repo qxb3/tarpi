@@ -785,6 +785,7 @@ async fn main() -> Result<()> {
         app.input.configure(cfg.vim().enabled, cfg.vim().keys());
         app.input.set_autopair(cfg.autopair.unwrap_or(true));
         app.command_menu = cfg.command_menu.unwrap_or(true);
+        app.set_author_note(cfg.author_note.unwrap_or(true));
         // Spell checking is off unless `spellcheck: true` is in the config.
         if cfg.spellcheck.unwrap_or(false) {
             app.spell = Some(spell::Checker::new());
