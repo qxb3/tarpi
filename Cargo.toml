@@ -1,6 +1,6 @@
 [package]
 name = "tarpi"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 description = "Terminal chat client that talks to a running SillyTavern server"
 license = "MIT"
