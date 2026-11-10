@@ -1,14 +1,15 @@
 //! Application state and input handling.
 
-use crate::api::Api;
 use crate::cardedit::CardModal;
 use crate::charimg::ImageModal;
 use crate::character::Character;
 use crate::chat::{self, ChatState};
 use crate::cmds;
+use crate::config;
 use crate::conn;
 use crate::formatting;
 use crate::gen::{self, GenEvent, GenMsg};
+use crate::health::Health;
 use crate::history::History;
 use crate::input::{Input, Mode};
 use crate::picker::{Action as PickAction, Item as PickItem, Picker};
@@ -175,7 +176,6 @@ pub struct SpellMenu {
 const SPELL_DELAY: Duration = Duration::from_millis(1000);
 
 pub struct App {
-    api: Api,
     /// The user's full settings.json.
     settings: Value,
     pub character: Character,
@@ -319,11 +319,13 @@ pub struct App {
     source: String,
     /// The API type the title bar shows, e.g. "llamacpp".
     label: String,
-    /// `host:port` from the config file's `url`.
+    /// `host:port` of the API connection.
     pub server: String,
     /// The standalone API connection (`/api`) replies are generated
-    /// with. `None`: the API SillyTavern has selected is used, as before.
+    /// with. `None`: nothing is generated until one is set up.
     conn: Option<conn::Connection>,
+    /// Whether that connection answers (the title bar shows it red when not).
+    health: Health,
 }
 
 /// First message for a fresh chat: `first_mes` plus alternate greetings as swipes.
@@ -425,7 +427,7 @@ pub fn host_of(url: &str) -> String {
     u.split('/').next().unwrap_or("").to_string()
 }
 
-/// `(source, model, api type for the title bar)` for whatever API the web UI has selected.
+/// `(source, model, api type for the title bar)` for the active API.
 fn backend_info(settings: &Value) -> (String, String, String) {
     match jstr(settings, "main_api").as_str() {
         "openai" => {
@@ -457,7 +459,6 @@ fn backend_info(settings: &Value) -> (String, String, String) {
 
 impl App {
     pub fn new(
-        api: Api,
         mut settings: Value,
         character: Character,
         chat: ChatState,
@@ -480,7 +481,6 @@ impl App {
         };
         let (source, model, label) = backend_info(&settings);
         let mut app = App {
-            api,
             settings,
             character,
             user_name,
@@ -563,6 +563,7 @@ impl App {
             source,
             label,
             server: String::new(),
+            health: Health::new(),
         };
         app.update_stats();
         app
@@ -576,8 +577,12 @@ impl App {
         self.editing.is_some()
     }
 
-    /// `api@host:port`: the API type SillyTavern is set to, and the server
-    /// address from st-cli's config file.
+    /// No connection is set, or the backend did not answer the last check.
+    pub fn api_down(&self) -> bool {
+        self.conn.is_none() || self.health.down()
+    }
+
+    /// `api@host:port`: the type and address of the API connection.
     pub fn model_label(&self) -> String {
         if self.server.is_empty() {
             self.label.clone()
@@ -697,7 +702,6 @@ impl App {
         }
         let backend = self.token_backend();
         let t = self.tokens.total(
-            &self.api,
             backend.as_ref(),
             &self.prompt_text,
             self.chars_per_token,
@@ -760,6 +764,7 @@ impl App {
     }
 
     pub fn on_tick(&mut self) {
+        self.health.tick(self.conn.as_ref());
         if self.stats_at.map_or(true, |t| t.elapsed() >= Duration::from_millis(400)) {
             self.update_stats();
         }
@@ -2218,7 +2223,7 @@ impl App {
         }
     }
 
-    /// Make `id` the active persona: remembered in st-cli's persona folder and
+    /// Make `id` the active persona: remembered in tarpi's persona folder and
     /// used by this chat from the next message on.
     async fn switch_persona(&mut self, id: &str) {
         if persona::current().id == id {
@@ -2334,7 +2339,7 @@ impl App {
         let mut picker = Picker::new("system prompt", items);
         if none_yet {
             picker.note = Some((
-                "none yet: make one with + new, or run st-cli import-st".to_string(),
+                "none yet: make one with + new, or run tarpi import-st".to_string(),
                 false,
             ));
         }
@@ -2421,7 +2426,7 @@ impl App {
         }
     }
 
-    /// Make `id` the system prompt in use: remembered in st-cli's
+    /// Make `id` the system prompt in use: remembered in tarpi's
     /// `system-prompt.jsonl` and used by this chat from the next message on.
     async fn switch_sysprompt(&mut self, id: &str) {
         if sysprompt::current().map(|p| p.id == id).unwrap_or(false) {
@@ -3528,11 +3533,6 @@ impl App {
         }
     }
 
-    /// The settings the formatting editor starts from when it has no file yet.
-    pub fn formatting_seed(&self) -> Value {
-        self.settings.clone()
-    }
-
     /// The formatting editor (`/formatting`) was closed: use whatever it saved
     /// right away (prompt token counts), not only from the next reply on.
     pub fn formatting_closed(&mut self, res: anyhow::Result<()>, rows: u16) {
@@ -3549,6 +3549,7 @@ impl App {
     /// The title bar then shows the connection's backend and address.
     pub fn set_connection(&mut self, c: Option<conn::Connection>) {
         self.conn = c;
+        self.health.reset();
         if let Some(c) = &self.conn {
             conn::overlay(&mut self.settings, c);
             self.server = host_of(&c.url);
@@ -3561,7 +3562,7 @@ impl App {
     }
 
     /// `(source, model, title-bar label)`: the standalone connection's, or a
-    /// reminder that there is none (SillyTavern's own API is never used).
+    /// reminder that there is none.
     fn backend_labels(&self, settings: &Value) -> (String, String, String) {
         if self.conn.is_some() {
             backend_info(settings)
@@ -3594,17 +3595,13 @@ impl App {
         }
     }
 
-    /// Re-read the user's settings from SillyTavern so changes made in the
-    /// web UI (API, model, preset, templates) and in the persona folder apply to the next reply.
+    /// Rebuild the settings the next reply is made from: the base settings
+    /// with the current persona, system prompt, formatting and API connection
+    /// written over them, so changes made in the windows (or by hand in the
+    /// files, even from another terminal) apply to the next reply.
     async fn refresh_settings(&mut self) {
         self.reload_connection();
-        match self.api.settings().await {
-            Ok(settings) => self.apply_settings(settings),
-            Err(e) => self.set_status(
-                format!("could not refresh settings, using the last ones: {:#}", e),
-                true,
-            ),
-        }
+        self.apply_settings(config::base_settings());
     }
 
     fn apply_settings(&mut self, mut settings: Value) {

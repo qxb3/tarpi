@@ -15,6 +15,7 @@ mod delete;
 mod fmttui;
 mod formatting;
 mod gen;
+mod health;
 mod history;
 mod import;
 mod import_st;
@@ -56,7 +57,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 
-use crate::api::Api;
 use crate::app::App;
 use crate::character::Character;
 use crate::chat::{file_id, ChatState};
@@ -64,15 +64,15 @@ use crate::jv::*;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "st-cli",
+    name = "tarpi",
     version,
-    about = "Terminal chat client for a running SillyTavern server",
-    long_about = "Chat with a character from the terminal. Characters and personas are kept by \
-                  st-cli itself in ~/.config/st-cli/characters/ and ~/.config/st-cli/persona/ \
-                  (add cards with `st-cli import`, copy yours from SillyTavern with `st-cli \
-                  import-st <url>`). Chats are saved in ~/.config/st-cli/chats/. SillyTavern is \
-                  still used for its settings and templates; replies come from the API \
-                  connection managed with `/api` inside a chat.",
+    about = "Standalone terminal chat client for character cards",
+    long_about = "Chat with a character from the terminal. Everything is kept by \
+                  tarpi itself in ~/.config/tarpi/ (characters, personas, system prompts, \
+                  formatting, chats). Add cards with `tarpi import`; `tarpi import-st <url>` \
+                  can copy yours over from a SillyTavern server. Nothing needs a server \
+                  except the backend: replies come from the API connection managed with \
+                  `/api` inside a chat.",
     args_conflicts_with_subcommands = true,
     disable_help_subcommand = true,
     after_help = concat!(
@@ -123,10 +123,10 @@ struct Cli {
 /// command name on (`Rest`).
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Import a character card into st-cli's characters folder (PNG or JSON file, chub.ai / pygmalion.chat URL, or JSON text)
+    /// Import a character card into tarpi's characters folder (PNG or JSON file, chub.ai / pygmalion.chat URL, or JSON text)
     #[command(disable_help_flag = true)]
     Import(Rest),
-    /// Copy the personas and characters of a SillyTavern server into st-cli's own folders
+    /// Copy the personas and characters of a SillyTavern server into tarpi's own folders
     #[command(disable_help_flag = true)]
     ImportSt(Rest),
     /// Delete a character card together with all of its chats (asks first)
@@ -186,7 +186,7 @@ fn find_character<'a>(list: &'a [Value], query: &str) -> Result<&'a Value> {
 
     match candidates.len() {
         0 => bail!(
-            "no character matches '{}'. Run `st-cli -l` to see what is available.",
+            "no character matches '{}'. Run `tarpi -l` to see what is available.",
             query
         ),
         1 => Ok(candidates[0]),
@@ -359,7 +359,7 @@ fn match_chat(char_name: &str, chats: &[Value], query: &str) -> Result<String> {
             }
         }
         bail!(
-            "{} has no chat number {}. See `st-cli {} -l`.",
+            "{} has no chat number {}. See `tarpi {} -l`.",
             char_name,
             n,
             char_name
@@ -383,7 +383,7 @@ fn match_chat(char_name: &str, chats: &[Value], query: &str) -> Result<String> {
         }
     }
     bail!(
-        "{} has no chat '{}'. See `st-cli {} -l`.",
+        "{} has no chat '{}'. See `tarpi {} -l`.",
         char_name,
         query,
         char_name
@@ -411,7 +411,7 @@ const MENU_ROWS: usize = 40;
 /// Numbered character menu. Typing part of a name narrows the list.
 fn pick_character(list: &[Value]) -> Result<&Value> {
     if list.is_empty() {
-        bail!("No characters yet. Add one with `st-cli import <card>` (or copy yours from SillyTavern with `st-cli import-st <url>`).");
+        bail!("No characters yet. Add one with `tarpi import <card>` (or copy yours from SillyTavern with `tarpi import-st <url>`).");
     }
     let mut sorted: Vec<&Value> = list.iter().collect();
     sorted.sort_by_key(|c| char_display_name(c).to_lowercase());
@@ -506,7 +506,7 @@ fn setup_terminal(mouse: bool) -> Result<Term> {
     termcolors::detect();
     let mut out = io::stdout();
     execute!(out, EnterAlternateScreen, EnableBracketedPaste)?;
-    // With mouse reporting on, taps go to st-cli as clicks. With it off the
+    // With mouse reporting on, taps go to tarpi as clicks. With it off the
     // terminal handles touch itself, so a tap opens the phone's keyboard.
     if mouse {
         execute!(out, EnableMouseCapture)?;
@@ -564,7 +564,7 @@ async fn open_formatting_manager(term: &mut Term, events: &mut EventStream, app:
     if !mouse_was_on {
         let _ = execute!(io::stdout(), EnableMouseCapture);
     }
-    let res = fmttui::manage(term, events, &app.formatting_seed()).await;
+    let res = fmttui::manage(term, events).await;
     if !mouse_was_on {
         let _ = execute!(io::stdout(), DisableMouseCapture);
     }
@@ -663,24 +663,12 @@ async fn main() -> Result<()> {
     }
     let cfg = config::load()?;
 
-    let url = cfg
-        .url
-        .clone()
-        .unwrap_or_else(|| "http://127.0.0.1:8000".to_string());
     let chars_per_token = cfg.chars_per_token.unwrap_or(3.2);
     // Mouse reporting starts on, so messages can be clicked or tapped. On a
     // phone, tapping the input box turns it off to bring up the keyboard
     // (see `App::touch`).
     let touch = on_android();
     let mut mouse_on = true;
-
-    let api = Api::connect(&url).await.with_context(|| {
-        format!(
-            "Is SillyTavern running at {}? Start it, or set `url:` in \
-             ~/.config/st-cli/config.yaml",
-            url
-        )
-    })?;
 
     let characters = charstore::list();
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
@@ -708,8 +696,8 @@ async fn main() -> Result<()> {
         Some(q) => find_character(&characters, q)?.clone(),
         None if interactive => pick_character(&characters)?.clone(),
         None => {
-            eprintln!("Usage: st-cli [character] [chat] [-n]   (st-cli --help for more)\n");
-            eprintln!("Characters on this server:");
+            eprintln!("Usage: tarpi [character] [chat] [-n]   (tarpi --help for more)\n");
+            eprintln!("Characters:");
             print_characters(&characters);
             std::process::exit(2);
         }
@@ -740,7 +728,7 @@ async fn main() -> Result<()> {
         let ids: Vec<String> = chats.iter().map(file_id).collect();
         let next_name = chat::next_chat_name(&character.name, &ids);
 
-        let mut settings = api.settings().await?;
+        let mut settings = config::base_settings();
         persona::normalize(&mut settings);
         let user_name = persona::current().name;
         let persona_text = jstr(settings.get("power_user").unwrap_or(&Value::Null), "persona_description");
@@ -765,7 +753,7 @@ async fn main() -> Result<()> {
             let lines = chatstore::load(&avatar, &file)?;
             if lines.is_empty() && explicit {
                 bail!(
-                    "chat '{}' not found for {}. Run `st-cli {} -l`.",
+                    "chat '{}' not found for {}. Run `tarpi {} -l`.",
                     file,
                     character.name,
                     character.name
@@ -779,7 +767,6 @@ async fn main() -> Result<()> {
 
         let (gen_tx, mut gen_rx) = unbounded_channel();
         let mut app = App::new(
-            api.clone(),
             settings,
             character,
             chat_state,
@@ -790,7 +777,6 @@ async fn main() -> Result<()> {
             app.save().await;
         }
 
-        app.server = app::host_of(&url);
         // The standalone API connection (`/api`), if one is set up.
         app.set_connection(conn::Store::load()?.active_connection());
         app.hint_if_no_connection();

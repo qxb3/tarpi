@@ -1,5 +1,5 @@
 [package]
-name = "st-cli"
+name = "tarpi"
 version = "0.5.0"
 edition = "2021"
 description = "Terminal chat client that talks to a running SillyTavern server"

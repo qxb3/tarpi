@@ -635,18 +635,16 @@ fn draw(f: &mut Frame, t: &mut Tui) {
 // ------------------------------------------------------------------- entry
 
 /// Open the editor in the chat's own terminal and run it until it is quit.
-/// With no `formatting.yaml` yet it starts from the templates in `seed` (the
-/// chat's current settings, i.e. SillyTavern's), so saving keeps what the chat
-/// was using. Whatever was saved is in `formatting.yaml` when this returns.
-pub async fn manage(term: &mut crate::Term, events: &mut EventStream, seed: &Value) -> Result<()> {
+/// With no `formatting.yaml` yet it starts from the built-in defaults.
+/// Whatever was saved is in `formatting.yaml` when this returns.
+pub async fn manage(term: &mut crate::Term, events: &mut EventStream) -> Result<()> {
     let (fmt, fresh) = match Formatting::load()? {
         Some(f) => (f, false),
-        None => (Formatting::from_settings(seed), true),
+        None => (Formatting::default(), true),
     };
     let mut t = Tui::new(fmt);
     if fresh {
-        t.dirty = true;
-        t.say("no formatting.yaml yet: these are SillyTavern's templates, press s to keep them", false);
+        t.say("no formatting.yaml yet: these are the defaults, press s to save them", false);
     }
     loop {
         term.draw(|f| draw(f, &mut t))?;

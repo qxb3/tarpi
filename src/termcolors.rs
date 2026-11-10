@@ -1,6 +1,6 @@
 //! Colours for the prose styling, taken from the terminal's own theme.
 //!
-//! At start-up (in raw mode, before the event loop reads the keyboard) st-cli
+//! At start-up (in raw mode, before the event loop reads the keyboard) tarpi
 //! asks the terminal for its default foreground (`OSC 10`), background
 //! (`OSC 11`), its palette yellow (`OSC 4;3`) and red (`OSC 4;1`, for the
 //! spell checker's underline), then a `DA1` query as the

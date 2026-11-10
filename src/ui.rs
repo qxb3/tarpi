@@ -577,7 +577,7 @@ const HELP: &[&str] = &[
     "Ctrl+A/E/W/U     line start / end / delete word / clear",
     "",
     "Vim: qq (INSERT -> NORMAL), i a I A o O (-> INSERT)",
-    "     (keys and on/off: ~/.config/st-cli/config.yaml)",
+    "     (keys and on/off: ~/.config/tarpi/config.yaml)",
     "  h j k l w W b B e E 0 ^ $ gg G, x X r dd D cc C yy p P u",
     "  <leader>y{motion}, <leader>yy, <leader>Y, VISUAL <leader>y:",
     "  yank to the system clipboard (leader: config vim.leader)",
@@ -1583,8 +1583,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // ---- title bar
     // Drops the least important parts until it fits the width: first the
     // API, then the persona, then the version.
-    let badge_full: &'static str = concat!(" st-cli ", env!("CARGO_PKG_VERSION"), " ");
-    let badge_short: &'static str = " st-cli ";
+    let badge_full: &'static str = concat!(" tarpi ", env!("CARGO_PKG_VERSION"), " ");
+    let badge_short: &'static str = " tarpi ";
     let who = format!(" {}/{}", app.character.name, app.chat.file);
     let opts = [
         format!(
@@ -1610,16 +1610,22 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
     }
     let (badge, rest) = pick.unwrap_or(("", who.clone()));
-    let title_spans = vec![
-        Span::styled(
-            badge,
-            Style::default()
-                .fg(Color::Black)
-                .bg(NAME_WHITE)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(rest, Style::default().fg(Color::Gray)),
-    ];
+    let mut title_spans = vec![Span::styled(
+        badge,
+        Style::default()
+            .fg(Color::Black)
+            .bg(NAME_WHITE)
+            .add_modifier(Modifier::BOLD),
+    )];
+    // The connection string (the last part) is red while the API is not alive.
+    let label = app.model_label();
+    match rest.strip_suffix(label.as_str()) {
+        Some(head) if app.api_down() && !label.is_empty() => {
+            title_spans.push(Span::styled(head.to_string(), Style::default().fg(Color::Gray)));
+            title_spans.push(Span::styled(label, Style::default().fg(Color::Red)));
+        }
+        _ => title_spans.push(Span::styled(rest, Style::default().fg(Color::Gray))),
+    }
     let title = Line::from(title_spans);
     f.render_widget(Paragraph::new(title), chunks[0]);
 

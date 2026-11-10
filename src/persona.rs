@@ -1,9 +1,9 @@
 //! Personas: who "you" are in the chat.
 //!
-//! Personas belong to st-cli, not to SillyTavern. Each one is a small YAML file
-//! in `~/.config/st-cli/persona/` (`<id>.yaml`: name, title, description,
+//! Personas belong to tarpi, not to SillyTavern. Each one is a small YAML file
+//! in `~/.config/tarpi/persona/` (`<id>.yaml`: name, title, description,
 //! position, depth, role, lorebook), and the file `persona/active` holds the id
-//! of the one in use. `/persona` in a chat edits that folder; `st-cli import-st`
+//! of the one in use. `/persona` in a chat edits that folder; `tarpi import-st`
 //! copies the personas out of a SillyTavern server into it. Nothing here talks
 //! to the server. SillyTavern's `settings.json` is only read by the import and
 //! written to in memory by [`normalize`], so the prompt builders keep reading
@@ -415,7 +415,7 @@ fn write_fields(settings: &mut Value, p: &Persona) {
 }
 
 /// Make `power_user.persona_description*` and `username` agree with the active
-/// persona, so the rest of st-cli can read them. In memory only: the settings
+/// persona, so the rest of tarpi can read them. In memory only: the settings
 /// are SillyTavern's and are never written back.
 pub fn normalize(settings: &mut Value) {
     let p = current();

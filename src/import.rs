@@ -1,14 +1,11 @@
-//! `st-cli import <file | url | json>`: add a character card to st-cli's own
-//! characters folder (`~/.config/st-cli/characters/`, see `charstore`).
+//! `tarpi import <file | url | json>`: add a character card to tarpi's own
+//! characters folder (`~/.config/tarpi/characters/`, see `charstore`).
 //!
 //! The card is stored as it came: a PNG with an embedded card stays a PNG, a
-//! JSON card (V1, V2, V3, Pygmalion) stays JSON. Only chub.ai / characterhub.org
-//! / pygmalion.chat links need SillyTavern, because its server does the
-//! download (`POST /api/content/importURL`); the card is still saved here, not
-//! there. This module checks the input first so that a wrong file fails with a
-//! clear message.
+//! JSON card (V1, V2, V3, Pygmalion) stays JSON. chub.ai / characterhub.org and
+//! pygmalion.chat links are downloaded directly from those sites. This module
+//! checks the input first so that a wrong file fails with a clear message.
 
-use crate::api::Api;
 use crate::charstore;
 use crate::config;
 use anyhow::{anyhow, bail, Context, Result};
@@ -18,21 +15,21 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "st-cli import",
-    about = "Import a character card into st-cli",
-    long_about = "Import a character card into st-cli's own characters folder, \
-                  ~/.config/st-cli/characters/. PNG cards keep their picture, JSON-only \
+    name = "tarpi import",
+    about = "Import a character card into tarpi",
+    long_about = "Import a character card into tarpi's own characters folder, \
+                  ~/.config/tarpi/characters/. PNG cards keep their picture, JSON-only \
                   cards are stored as JSON. chub.ai and pygmalion.chat links are \
-                  downloaded through SillyTavern, so it must be running for those.",
+                  downloaded directly from those sites.",
     after_help = concat!(
         "EXAMPLES:\n",
-        "  st-cli import sofia.png                        V2/V3 card PNG\n",
-        "  st-cli import sofia.json                       card JSON (V1, V2, V3, Pygmalion)\n",
-        "  st-cli import '{\"name\":\"Sofia\", ...}'          JSON given directly\n",
-        "  st-cli import https://chub.ai/characters/user/sofia-1a2b3c\n",
-        "  st-cli import chub.ai/characters/user/sofia-1a2b3c\n",
-        "  st-cli import https://pygmalion.chat/character/<id>\n",
-        "  st-cli import https://example.com/cards/sofia.png    direct link to a .png / .json card"
+        "  tarpi import sofia.png                        V2/V3 card PNG\n",
+        "  tarpi import sofia.json                       card JSON (V1, V2, V3, Pygmalion)\n",
+        "  tarpi import '{\"name\":\"Sofia\", ...}'          JSON given directly\n",
+        "  tarpi import https://chub.ai/characters/user/sofia-1a2b3c\n",
+        "  tarpi import chub.ai/characters/user/sofia-1a2b3c\n",
+        "  tarpi import https://pygmalion.chat/character/<id>\n",
+        "  tarpi import https://example.com/cards/sofia.png    direct link to a .png / .json card"
     )
 )]
 struct ImportCli {
@@ -73,7 +70,7 @@ impl Kind {
 }
 
 pub async fn run() -> Result<()> {
-    // argv is `st-cli import ...`; drop the program name so that "import"
+    // argv is `tarpi import ...`; drop the program name so that "import"
     // plays the part of the binary name in clap's messages.
     let cli = ImportCli::parse_from(std::env::args().skip(1));
 
@@ -109,25 +106,13 @@ pub async fn run() -> Result<()> {
         (None, Some((u, site))) => {
             eprintln!("Downloading...");
             let (bytes, name, content) = match site {
-                Site::Chub | Site::Pygmalion => {
-                    // These sites are fetched by the SillyTavern server; the
-                    // card is saved here, not there.
-                    let cfg = config::load()?;
-                    let server = cfg
-                        .url
-                        .clone()
-                        .unwrap_or_else(|| "http://127.0.0.1:8000".to_string());
-                    let api = Api::connect(&server).await.with_context(|| {
-                        format!(
-                            "chub.ai and pygmalion.chat links are downloaded through \
-                             SillyTavern. Is it running at {}? Start it, or set `url:` in \
-                             ~/.config/st-cli/config.yaml, or download the card file yourself \
-                             and import that",
-                            server
-                        )
-                    })?;
-                    let d = api.import_url(&u).await?;
-                    (d.bytes, d.file_name, d.kind)
+                Site::Chub => {
+                    let (bytes, name) = download_chub(&u).await?;
+                    (bytes, name, String::new())
+                }
+                Site::Pygmalion => {
+                    let (bytes, name) = download_pygmalion(&u).await?;
+                    (bytes, name, String::new())
                 }
                 Site::Direct => {
                     let (bytes, name) = download_direct(&u).await?;
@@ -136,7 +121,7 @@ pub async fn run() -> Result<()> {
             };
             if content == "lorebook" {
                 bail!(
-                    "that URL is a lorebook. st-cli imports characters only \
+                    "that URL is a lorebook. tarpi imports characters only \
                      (it has no World Info support)."
                 );
             }
@@ -165,7 +150,7 @@ pub async fn run() -> Result<()> {
             .map(|d| d.display().to_string())
             .unwrap_or_else(|| "the characters folder".to_string())
     );
-    println!("Chat with it:  st-cli \"{}\"", name);
+    println!("Chat with it:  tarpi \"{}\"", name);
     Ok(())
 }
 
@@ -195,7 +180,7 @@ fn classify(arg: &str) -> Result<Source> {
     }
     bail!(
         "'{}' is not an existing file, a card URL or JSON text. \
-         See `st-cli import --help`.",
+         See `tarpi import --help`.",
         t
     )
 }
@@ -243,7 +228,7 @@ fn check_url(url: &str) -> Result<Site> {
         .unwrap_or("");
     let seg: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     if seg.first() == Some(&"lorebooks") {
-        bail!("that is a lorebook URL. st-cli imports characters only.");
+        bail!("that is a lorebook URL. tarpi imports characters only.");
     }
     let n = if seg.first() == Some(&"characters") {
         seg.len().saturating_sub(1)
@@ -259,17 +244,108 @@ fn check_url(url: &str) -> Result<Site> {
     Ok(Site::Chub)
 }
 
+/// The HTTP client of the downloads.
+fn http_client() -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        // Some hosts refuse clients without a browser-like User-Agent.
+        .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+        .build()?)
+}
+
+/// The path segments of a URL (everything after the host, without the query).
+fn url_segments(url: &str) -> Vec<String> {
+    url.split_once("://")
+        .map(|x| x.1)
+        .unwrap_or(url)
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .split_once('/')
+        .map(|x| x.1)
+        .unwrap_or("")
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// `creator/name` of a chub.ai character URL (`/characters/<creator>/<name>`
+/// or just `/<creator>/<name>`).
+fn chub_full_path(url: &str) -> Result<String> {
+    let seg = url_segments(url);
+    let seg: &[String] = if seg.first().map(|s| s.as_str()) == Some("characters") {
+        &seg[1..]
+    } else {
+        &seg[..]
+    };
+    if seg.len() < 2 {
+        bail!("expected a character URL like https://chub.ai/characters/<creator>/<name>");
+    }
+    Ok(format!("{}/{}", seg[0], seg[1]))
+}
+
+/// Download a character from chub.ai (also characterhub.org): its own
+/// download endpoint returns the card as a PNG.
+async fn download_chub(url: &str) -> Result<(Vec<u8>, String)> {
+    let full = chub_full_path(url)?;
+    let resp = http_client()?
+        .post("https://api.chub.ai/api/characters/download")
+        .json(&serde_json::json!({ "format": "tavern", "fullPath": full, "version": "main" }))
+        .send()
+        .await
+        .context("downloading from chub.ai")?;
+    let status = resp.status();
+    if !status.is_success() {
+        if status.as_u16() == 404 {
+            bail!("chub.ai has no character '{}' (or it is private)", full);
+        }
+        bail!("chub.ai download failed ({})", status);
+    }
+    let bytes = resp.bytes().await.context("reading download")?.to_vec();
+    if bytes.len() > MAX_DIRECT {
+        bail!("the download is too large for a character card");
+    }
+    let name = full.rsplit('/').next().unwrap_or("card");
+    Ok((bytes, format!("{}.png", name)))
+}
+
+/// Download a character from pygmalion.chat: its export endpoint returns the
+/// card as JSON (`{"character": {...}}`).
+async fn download_pygmalion(url: &str) -> Result<(Vec<u8>, String)> {
+    let seg = url_segments(url);
+    let id = match seg.as_slice() {
+        [a, id] if a == "character" => id.clone(),
+        _ => bail!("expected a character URL like https://pygmalion.chat/character/<id>"),
+    };
+    let resp = http_client()?
+        .get(format!(
+            "https://server.pygmalion.chat/api/export/character/{}/v2",
+            id
+        ))
+        .send()
+        .await
+        .context("downloading from pygmalion.chat")?;
+    let status = resp.status();
+    if !status.is_success() {
+        bail!("pygmalion.chat download failed ({})", status);
+    }
+    let body: Value = resp
+        .json()
+        .await
+        .context("pygmalion.chat did not return JSON")?;
+    let card = body.get("character").cloned().unwrap_or(body);
+    let bytes = serde_json::to_vec(&card)?;
+    Ok((bytes, "card.json".to_string()))
+}
+
 /// Largest card file taken from a direct link.
 const MAX_DIRECT: usize = 50 * 1024 * 1024;
 
 /// Download a card `.json` / `.png` from a plain link. Returns the bytes and a
 /// file name taken from the URL path (`card.json` / `card.png` when it has none).
 async fn download_direct(url: &str) -> Result<(Vec<u8>, String)> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        // Some hosts refuse clients without a browser-like User-Agent.
-        .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
-        .build()?;
+    let client = http_client()?;
     let resp = client
         .get(url)
         .header("Accept", "application/json, image/png, */*")
@@ -341,7 +417,7 @@ fn sniff(b: &[u8]) -> &'static str {
 }
 
 /// A pygmalion.chat character page: `https://pygmalion.chat/character/<id>`
-/// (the id is a UUID; SillyTavern's server fetches the card by it).
+/// (the id is a UUID; the card is fetched from pygmalion's server by it).
 fn check_pygmalion_url(url: &str) -> Result<Site> {
     let path = url
         .split_once("://")
@@ -363,7 +439,7 @@ fn check_pygmalion_url(url: &str) -> Result<Site> {
     )
 }
 
-/// Detect and sanity-check a card, mirroring what SillyTavern accepts:
+/// Detect and sanity-check a card:
 /// a PNG with an embedded `chara` / `ccv3` text chunk, or JSON that is a V2/V3
 /// card (`spec`), a V1 card (`name`) or a Pygmalion card (`char_name`).
 fn validate(bytes: &[u8]) -> Result<Kind> {
@@ -436,17 +512,6 @@ fn png_has_card(bytes: &[u8]) -> bool {
     false
 }
 
-/// Pull the file name out of a `Content-Disposition` header (the server sends
-/// it percent-encoded).
-pub fn filename_from_disposition(h: &str) -> String {
-    let Some(i) = h.find("filename=") else {
-        return String::new();
-    };
-    let rest = h[i + "filename=".len()..].trim_start_matches('"');
-    let raw = rest.split('"').next().unwrap_or("").split(';').next().unwrap_or("");
-    percent_decode(raw.trim())
-}
-
 fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -469,6 +534,18 @@ fn percent_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chub_urls_give_creator_and_name() {
+        for u in [
+            "https://chub.ai/characters/user/sofia-1a2b3c",
+            "https://www.chub.ai/characters/user/sofia-1a2b3c?tab=x",
+            "https://chub.ai/user/sofia-1a2b3c",
+        ] {
+            assert_eq!(chub_full_path(u).unwrap(), "user/sofia-1a2b3c", "{}", u);
+        }
+        assert!(chub_full_path("https://chub.ai/characters/user").is_err());
+    }
 
     #[test]
     fn pygmalion_urls() {

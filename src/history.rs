@@ -1,7 +1,7 @@
 //! History of the `/commands` typed in a chat (Up on an empty `/` walks
 //! through it, see `App::history_key`).
 //!
-//! It is kept in `~/.config/st-cli/command_history`, one command per line
+//! It is kept in `~/.config/tarpi/command_history`, one command per line
 //! (a backslash is written `\\` and a line break `\n`, so a command with a
 //! line break in it still takes one line), oldest first. Every chat screen
 //! starts from that file, so the history survives quitting and carries over
@@ -150,7 +150,7 @@ mod tests {
     use super::*;
 
     fn temp_file() -> PathBuf {
-        std::env::temp_dir().join(format!("st-cli-hist-{}", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!("tarpi-hist-{}", uuid::Uuid::new_v4()))
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Chats: st-cli's own folder, `~/.config/st-cli/chats/`.
+//! Chats: tarpi's own folder, `~/.config/tarpi/chats/`.
 //!
 //! One folder per character (named like the card's avatar without `.png`, e.g.
 //! `chats/Sofia/`), one `<chat>.jsonl` per chat. The files are the same
@@ -60,7 +60,7 @@ fn integrity(first: Option<&Value>) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// The chat files of a character, in the shape st-cli always used: each entry
+/// The chat files of a character, in the shape tarpi always used: each entry
 /// has `file_name` (`x.jsonl`), `file_id`, `last_mes` (file mtime, ms),
 /// `chat_items` (messages) and `file_size`. No folder yet means no chats.
 pub fn list(avatar: &str) -> Result<Vec<Value>> {
@@ -139,7 +139,7 @@ pub fn save(avatar: &str, file: &str, lines: &[Value]) -> Result<()> {
             if a != b {
                 bail!(
                     "save refused: the chat file changed elsewhere (another terminal?). \
-                     Reopen st-cli to reload it."
+                     Reopen tarpi to reload it."
                 );
             }
         }

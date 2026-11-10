@@ -10,7 +10,7 @@
 //! the box is cached and only worked out again when the text changes.
 //!
 //! Extra words that are never marked: the ones in
-//! `~/.config/st-cli/dictionary.txt` (one per line, `#` starts a comment), and
+//! `~/.config/tarpi/dictionary.txt` (one per line, `#` starts a comment), and
 //! the names of the character and of your persona.
 //!
 //! Short words are held to the same standard: only real one- and two-letter
@@ -270,7 +270,7 @@ impl Checker {
     }
 
     /// A checker with the user's own dictionary
-    /// (`~/.config/st-cli/dictionary.txt`) loaded, if there is one.
+    /// (`~/.config/tarpi/dictionary.txt`) loaded, if there is one.
     pub fn new() -> Checker {
         let mut c = Checker::empty();
         if let Some(text) = crate::config::dictionary_path()

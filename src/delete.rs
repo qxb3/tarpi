@@ -1,7 +1,7 @@
-//! `st-cli delete [character]`: delete a character card and all of its chats.
+//! `tarpi delete [character]`: delete a character card and all of its chats.
 //!
-//! The card file leaves `~/.config/st-cli/characters/` and the character's
-//! folder in `~/.config/st-cli/chats/` goes with it. Nothing on the
+//! The card file leaves `~/.config/tarpi/characters/` and the character's
+//! folder in `~/.config/tarpi/chats/` goes with it. Nothing on the
 //! SillyTavern server is touched.
 
 use crate::charstore;
@@ -14,16 +14,16 @@ use std::io::{self, IsTerminal};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "st-cli delete",
+    name = "tarpi delete",
     about = "Delete a character card together with all of its chats",
-    long_about = "Delete a character card from ~/.config/st-cli/characters/ and every chat \
-                  it has in ~/.config/st-cli/chats/. This cannot be undone. You are asked to \
+    long_about = "Delete a character card from ~/.config/tarpi/characters/ and every chat \
+                  it has in ~/.config/tarpi/chats/. This cannot be undone. You are asked to \
                   confirm first.",
     after_help = concat!(
         "EXAMPLES:\n",
-        "  st-cli delete          pick a character from a list, then confirm\n",
-        "  st-cli delete sofia    delete Sofia (a partial name works), then confirm\n",
-        "  st-cli delete sofia -y delete Sofia without asking"
+        "  tarpi delete          pick a character from a list, then confirm\n",
+        "  tarpi delete sofia    delete Sofia (a partial name works), then confirm\n",
+        "  tarpi delete sofia -y delete Sofia without asking"
     )
 )]
 struct DeleteCli {
@@ -38,7 +38,7 @@ struct DeleteCli {
 }
 
 pub async fn run() -> Result<()> {
-    // argv is `st-cli delete ...`; drop the program name so "delete" plays
+    // argv is `tarpi delete ...`; drop the program name so "delete" plays
     // the part of the binary name in clap's messages.
     let cli = DeleteCli::parse_from(std::env::args().skip(1));
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
@@ -47,7 +47,7 @@ pub async fn run() -> Result<()> {
     let entry = match cli.character.as_deref() {
         Some(q) => find_character(&characters, q)?,
         None if interactive => pick_character(&characters)?,
-        None => bail!("say which character to delete: st-cli delete <character>"),
+        None => bail!("say which character to delete: tarpi delete <character>"),
     };
     let avatar = jstr(entry, "avatar");
     let name = char_display_name(entry);

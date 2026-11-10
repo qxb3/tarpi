@@ -1,28 +1,28 @@
-# st-cli
+# tarpi
 
-A chat-only terminal client that uses a running [SillyTavern](https://github.com/SillyTavern/SillyTavern) server for its settings and templates. Characters, personas and chats are st-cli's own.
+A standalone, chat-only terminal client for character cards. Characters, personas, system prompts, formatting, API connections and chats are all tarpi's own, so nothing needs a SillyTavern server (or any server except your model backend).
 
-Characters, personas and system prompts are st-cli's own, kept in `~/.config/st-cli/characters/`, `~/.config/st-cli/persona/` and `~/.config/st-cli/system-prompt.jsonl` (see Importing characters, Personas and System prompts). Chats are st-cli's too (`~/.config/st-cli/chats/`). SillyTavern only supplies its settings and the context / instruct templates. `st-cli` only chats. Chats are saved as SillyTavern-format `.jsonl` files in `~/.config/st-cli/chats/`.
+Characters, personas and system prompts are tarpi's own, kept in `~/.config/tarpi/characters/`, `~/.config/tarpi/persona/` and `~/.config/tarpi/system-prompt.jsonl` (see Importing characters, Personas and System prompts). Chats are tarpi's too (`~/.config/tarpi/chats/`). `tarpi` only chats. Chats are saved as SillyTavern-format `.jsonl` files in `~/.config/tarpi/chats/`.
 
 ```
-st-cli                  # pick a character, then chat
-st-cli sofia            # continue the latest chat with Sofia
-st-cli sofia 3          # open Sofia's chat number 3 (or by name: Sofia03)
-st-cli sofia -n         # start a new chat (named Sofia01, Sofia02, ...)
-st-cli -l               # list characters
-st-cli sofia -l         # list Sofia's chats
-st-cli import <source>  # add a character card to ~/.config/st-cli/characters (see below)
-st-cli import-st <url>  # copy the personas, system prompts and characters of a SillyTavern server
-st-cli delete [sofia]   # delete a character card and all its chats (asks first)
+tarpi                  # pick a character, then chat
+tarpi sofia            # continue the latest chat with Sofia
+tarpi sofia 3          # open Sofia's chat number 3 (or by name: Sofia03)
+tarpi sofia -n         # start a new chat (named Sofia01, Sofia02, ...)
+tarpi -l               # list characters
+tarpi sofia -l         # list Sofia's chats
+tarpi import <source>  # add a character card to ~/.config/tarpi/characters (see below)
+tarpi import-st <url>  # copy the personas, system prompts and characters of a SillyTavern server
+tarpi delete [sofia]   # delete a character card and all its chats (asks first)
 ```
 
-That is the whole command line: `[character] [chat]`, plus `-n` (new chat) and `-l` (list), and the commands `import`, `import-st` and `delete`. The server address is set with `url` in `~/.config/st-cli/config.yaml`.
+That is the whole command line: `[character] [chat]`, plus `-n` (new chat) and `-l` (list), and the commands `import`, `import-st` and `delete`. The server address is set with `url` in `~/.config/tarpi/config.yaml`.
 
 Everything else happens inside the chat:
 
 | Command | What it does |
 | --- | --- |
-| `/chats` | opens a window over the chat with this character's chats: pick one (↑/↓ + Enter, or click / tap), choose `+ new chat`, or press `d` on one to delete it (asks `y`). Esc closes. The `_before-summary` copies are not listed. The chat that is open can't be deleted here (use `/newchat`), except when it is the last one: then it is deleted and st-cli exits |
+| `/chats` | opens a window over the chat with this character's chats: pick one (↑/↓ + Enter, or click / tap), choose `+ new chat`, or press `d` on one to delete it (asks `y`). Esc closes. The `_before-summary` copies are not listed. The chat that is open can't be deleted here (use `/newchat`), except when it is the last one: then it is deleted and tarpi exits |
 | `/one-shot` | locks **this chat file** as it is: editing, `/undo`, regenerating, `/continue`, swipes (and greeting switching) and summary branches are turned off. The status row asks you to type `/one-shot` a second time; typing anything else cancels. A grey `ONE SHOT MODE` tag stays at the start of the status row below the input box for as long as the chat is open; other status messages follow it after a `·`. A reply that is being written can't be stopped either (no Esc, no Stop button, and `/quit`, `/chats` and `/chars` wait until it is done). Sending new messages still works, and other chats are not affected. It is stored in the chat file's metadata (`st_cli_one_shot`); there is no command to undo it |
 | `/persona` | opens a window to choose who you are in the chat; `+ new persona` creates one, `e` edits, `p` sets where its description goes into the prompt, `d` deletes (see Personas) |
 | `/system` | opens a window to choose the system prompt; `+ new system prompt` creates one, `e` edits, `d` deletes (see *System prompts*) |
@@ -32,7 +32,7 @@ Everything else happens inside the chat:
 | `/api` | open the API settings (llama.cpp address and every model setting) right here; when you quit them (`q` / Esc) you are back in this same chat, and the very next reply uses what you saved |
 | `/formatting` | open the formatting editor: context template (story string), instruct template and reply cleanup; when you quit it (`q` / Esc) you are back in this same chat (see *Formatting*) |
 | `/char` | open this character's card in a window: every field, editable, with **Cancel** and **Save** (see below) |
-| `/char-img` | shows the character card's picture in a square window (full resolution in terminals with the Kitty graphics protocol, iTerm2 images or Sixel (kitty, WezTerm, Ghostty, iTerm2, foot, Windows Terminal, mlterm); elsewhere, including Termux and tmux, it is drawn with coloured half-block cells, which is coarse. `ST_CLI_IMAGE=blocks|kitty|iterm|sixel` forces one (`sixel` is never auto-detected beyond the terminals listed); any key or click closes it) |
+| `/char-img` | shows the character card's picture in a square window (full resolution in terminals with the Kitty graphics protocol, iTerm2 images or Sixel (kitty, WezTerm, Ghostty, iTerm2, foot, Windows Terminal, mlterm); elsewhere, including Termux and tmux, it is drawn with coloured half-block cells, which is coarse. `TARPI_IMAGE=blocks|kitty|iterm|sixel` forces one (`sixel` is never auto-detected beyond the terminals listed); any key or click closes it) |
 | `/new` | new chat with this character right away (keeps the current one) |
 | `/newchat` or `/nc` | delete this chat and start a new one |
 | `/summarize` or `/summ` | write an in-depth summary of the chat as a new summary branch (see below) |
@@ -53,11 +53,11 @@ Typing `/` in the input box opens a menu of commands just above it, narrowing as
 
 ### Command history
 
-Every command that st-cli understood is remembered, with what you typed after it: `/regen she hesitates, then refuses`, `/undo 3`, `/chats`. With nothing but a `/` in the box, **Up** puts the newest one there; Up again goes further back, **Down** comes forward, and Down past the newest puts the `/` back. Enter runs the command shown, and it moves to the newest place in the history. Up stops at the oldest one.
+Every command that tarpi understood is remembered, with what you typed after it: `/regen she hesitates, then refuses`, `/undo 3`, `/chats`. With nothing but a `/` in the box, **Up** puts the newest one there; Up again goes further back, **Down** comes forward, and Down past the newest puts the `/` back. Enter runs the command shown, and it moves to the newest place in the history. Up stops at the oldest one.
 
 Typing or editing anything while a command is shown ends the walk: the keys then do what they did before (Up / Down in the menu, or scrolling the chat). Tab and Shift+Tab always move through the command menu. Only INSERT mode and a box holding just `/` start a walk, and it works with `command_menu: false` too.
 
-The history keeps the last 200 different commands in `~/.config/st-cli/command_history` (one per line, oldest first), so it is still there after quitting and carries over when you switch chat or character; several terminals share it. Unknown commands and ordinary messages are not kept. Delete the file to clear it.
+The history keeps the last 200 different commands in `~/.config/tarpi/command_history` (one per line, oldest first), so it is still there after quitting and carries over when you switch chat or character; several terminals share it. Unknown commands and ordinary messages are not kept. Delete the file to clear it.
 
 The menu lists the short names `/char` and `/chars` and the short forms `/summ`, `/nc`, `/db`, `/c`, `/u`, `/q` and `/h` (shown in brackets). The longer spellings `/character`, `/characters` and `/summarise` still work when typed in full, but are not offered. While the menu is open Up / Down move through it instead of scrolling the chat.
 
@@ -65,7 +65,7 @@ The menu lists the short names `/char` and `/chars` and the short forms `/summ`,
 
 ## API connection (`/api`)
 
-The API connection belongs to st-cli, not to SillyTavern. `/api` inside a chat opens a full-screen manager; connections are stored in `~/.config/st-cli/api.yaml`. Replies go **straight to the backend** (llama.cpp's `/completion`), SillyTavern's API selection and sampler presets are ignored, and the token count in the status row comes from the backend's own `/tokenize`. SillyTavern is still used for characters, chats, personas and the context / instruct templates. There is no fallback to SillyTavern's API: if `api.yaml` has no active connection, sending a message shows `no API connection` and nothing is generated.
+The API connection belongs to tarpi, not to SillyTavern. `/api` inside a chat opens a full-screen manager; connections are stored in `~/.config/tarpi/api.yaml`. Replies go **straight to the backend** (llama.cpp's `/completion`), SillyTavern's API selection and sampler presets are ignored, and the token count in the status row comes from the backend's own `/tokenize`. SillyTavern is still used for some settings. There is no fallback to SillyTavern's API: if `api.yaml` has no active connection, sending a message shows `no API connection` and nothing is generated.
 
 There is no separate command for it: type `/api` in any chat. The manager takes over the same terminal window and the chat is not closed, so when you quit it (`q` / Esc) you are back exactly where you were: same chat, same scroll position, unsent draft and swipes untouched. Whatever you saved applies at once (title bar and token count update) and to the next reply. If there is no connection yet, the chat starts with a hint to type `/api`, and the first time you open it a connection named `local` is created for you to fill in. On a phone, mouse reporting is switched on while the manager is open (so sliders can be tapped) and goes back to what the chat had when you leave it.
 
@@ -90,13 +90,13 @@ The first time it opens it creates a connection named `local` (llama.cpp at `htt
 
 A preset sets every sampler setting (Sampling, Repetition, DRY, XTC, Mirostat, Dynamic temperature) in one go, so anything it does not name goes back to its default; Generation and Advanced settings (reply length, context size, stop strings, sampler order, grammar) and the address are left alone. Applying one only changes the settings in the window: press `s` to save. You can fine-tune afterwards with the sliders. **Normal** is balanced (temperature 0.8, min-p 0.05), **Creative** raises temperature to 1.15 and turns DRY on, and **Crazy** goes to temperature 1.8 with XTC, DRY and dynamic temperature. A new kind of connection supplies its own through `Provider::presets`.
 
-Chats re-read `api.yaml` before every reply, so saving in `/api` (even from another terminal's chat) applies to the next message. *Context size* is how much history st-cli sends; keep it at or below the server's `-c`. `stop strings`, `DRY breakers` and `Sampler order` are text fields (the first two a JSON list); a value that is not valid is refused when you press Enter.
+Chats re-read `api.yaml` before every reply, so saving in `/api` (even from another terminal's chat) applies to the next message. *Context size* is how much history tarpi sends; keep it at or below the server's `-c`. `stop strings`, `DRY breakers` and `Sampler order` are text fields (the first two a JSON list); a value that is not valid is refused when you press Enter.
 
 Only llama.cpp is built in, but a connection kind is one small file: implement `conn::Provider` (its settings list, request body and stream parser; see `src/conn/llamacpp.rs`) and add it to `conn::providers()`. The manager, the file format, token counting and generation pick it up without further changes.
 
 ## Formatting
 
-`/formatting` opens a full-screen editor for how the prompt is laid out. The settings are st-cli's own, kept in `~/.config/st-cli/formatting.yaml` (every setting is written out; hand edits are fine), so SillyTavern's templates are no longer used once you have saved it. Until then SillyTavern's templates apply, and the editor starts from them, so pressing `s` keeps what you had.
+`/formatting` opens a full-screen editor for how the prompt is laid out. The settings are tarpi's own, kept in `~/.config/tarpi/formatting.yaml` (every setting is written out; hand edits are fine). Until you have saved it, the built-in defaults apply, and the editor starts from them. Nothing here is read from a SillyTavern server.
 
 - **Context template**: the story string (`{{#if description}}...{{/if}}`, `{{description}}`, `{{personality}}`, `{{scenario}}`, `{{persona}}`, `{{system}}`, `{{char}}`, `{{user}}`), the example separator and chat start, and the stop-on-separators / stop-on-names switches.
 - **Instruct template**: instruct mode on/off, names (`none` / `force` / `always`), wrap and macros, the prefix and suffix of user, assistant and system messages, first / last assistant prefix, the stop sequence, sequences as stop strings, and the story string prefix / suffix.
@@ -118,7 +118,7 @@ The next reply uses what you saved; nothing is sent to the server.
 
 ## Personas
 
-Personas belong to st-cli, not to SillyTavern. Each one is a small YAML file in `~/.config/st-cli/persona/` (`<id>.yaml` with `name`, `title`, `description`, `position`, `depth`, `role`, `lorebook`; hand edits are fine), and the file `persona/active` holds the id of the one in use. SillyTavern's own persona settings are never read for chatting and never written.
+Personas belong to tarpi, not to SillyTavern. Each one is a small YAML file in `~/.config/tarpi/persona/` (`<id>.yaml` with `name`, `title`, `description`, `position`, `depth`, `role`, `lorebook`; hand edits are fine), and the file `persona/active` holds the id of the one in use. SillyTavern's own persona settings are never read for chatting and never written.
 
 `/persona` inside a chat opens a window with every persona as `Name (Title)` with a short preview of its description; the active one is marked `(current)`. Pick one with ↑/↓ + Enter (or click / tap); Esc closes it. The choice applies to the chat from the next message on (and to chats open in other terminals, which re-read the folder before every reply). The first row, `+ new persona`, opens a form (name, title, description; Ctrl+S saves, Esc cancels). `e` on a persona opens the same form for it; `d` deletes it (asks `y`; the persona in use can't be deleted).
 
@@ -134,7 +134,7 @@ Personas belong to st-cli, not to SillyTavern. Each one is a small YAML file in 
 
 ## Prompt window
 
-`/prompt` shows the prompt exactly as st-cli would send it for the next reply, built right then from the current settings, persona, system prompt, character card and chat: the system prompt and character card (the context template's story string), the example dialogue, the instruct formatting, and the messages that fit into the *Context size* (older ones that would be cut are not shown, like in the real request). It is not changed or sent by opening it, and nothing is saved. The title shows its size in characters and an estimated token count (`~`). On a summary branch it is the prompt of the branch that is showing.
+`/prompt` shows the prompt exactly as tarpi would send it for the next reply, built right then from the current settings, persona, system prompt, character card and chat: the system prompt and character card (the context template's story string), the example dialogue, the instruct formatting, and the messages that fit into the *Context size* (older ones that would be cut are not shown, like in the real request). It is not changed or sent by opening it, and nothing is saved. The title shows its size in characters and an estimated token count (`~`). On a summary branch it is the prompt of the branch that is showing.
 
 | Key / click | Action |
 | --- | --- |
@@ -166,7 +166,7 @@ A persona whose position is **Top** or **Bottom of the Author's Note** (see *Per
 
 ## System prompts
 
-System prompts belong to st-cli, not to SillyTavern. They are kept in one file, `~/.config/st-cli/system-prompt.jsonl`, one JSON object per line (hand edits are fine):
+System prompts belong to tarpi, not to SillyTavern. They are kept in one file, `~/.config/tarpi/system-prompt.jsonl`, one JSON object per line (hand edits are fine):
 
 ```
 {"id":"roleplay-simple","name":"Roleplay - Simple","content":"You are {{char}}. ...","post_history":"","active":true}
@@ -181,19 +181,19 @@ System prompts belong to st-cli, not to SillyTavern. They are kept in one file, 
 ### Importing from SillyTavern
 
 ```
-st-cli import-st http://127.0.0.1:8000
-st-cli import-st http://127.0.0.1:8000 --overwrite
+tarpi import-st http://127.0.0.1:8000
+tarpi import-st http://127.0.0.1:8000 --overwrite
 ```
 
 Copies every persona (and every system prompt and character, see System prompts and Characters) of that SillyTavern server (name, title, description, position, depth, role, lorebook) into the persona folder. The server is only read, never changed, and the personas' pictures are not copied. `<url>` may be left out to use `url` from `config.yaml`, and `host:port` works without `http://`. Personas may share a name: each gets its own file (`alex.yaml`, `alex-2.yaml`, ...; the window tells them apart by title and description preview, and a new persona made with `+ new persona` can reuse a name too). A persona identical to one already here (same name, title and description) is skipped, so running it again is safe; `--overwrite` / `-o` replaces the one with the same name and title instead of adding another. If you have not chosen a persona here yet, the one the server had active becomes yours too.
 
 The server's system prompts (its system prompt presets, plus the one it has switched on when that is not one of them) go into `system-prompt.jsonl` the same way: an identical one (same name, prompt and post-history instructions) is skipped, so running it again is safe, and `--overwrite` replaces one with the same name instead of adding `name-2`. If you have not chosen a system prompt here yet, the one the server had on becomes yours too.
 
-The chat's top bar reads ` st-cli <version> ` (white badge) `<character>/<chat file> • <persona> (<title>) • <api>@host:port`, e.g. `Mirei/Mire01`. The API type is what SillyTavern is set to; `host:port` is the `url` from `config.yaml`. Message names are black on white, with a grey rule between messages (none under the last one).
+The chat's top bar reads ` tarpi <version> ` (white badge) `<character>/<chat file> • <persona> (<title>) • <api>@host:port`, e.g. `Mirei/Mire01`. The API type and `host:port` are those of the active connection (`/api`). The connection turns red when the backend does not answer (checked in the background every 5 seconds) or when no connection is set. Message names are black on white, with a grey rule between messages (none under the last one).
 
 ## Card save
 
-While you edit the chat's first message, Ctrl+S (or the **Card save** button) writes the edit into the character card itself. st-cli works out which greeting you are looking at by matching its text against the card's first message and alternate greetings, so it updates the right one (`first_mes` or the matching alternate greeting) even when the swipes are in a different order. The status line says which one was saved. `{{char}}` / `{{user}}` (or `<BOT>` / `<USER>`) are put back in the card text if the original greeting used them.
+While you edit the chat's first message, Ctrl+S (or the **Card save** button) writes the edit into the character card itself. tarpi works out which greeting you are looking at by matching its text against the card's first message and alternate greetings, so it updates the right one (`first_mes` or the matching alternate greeting) even when the swipes are in a different order. The status line says which one was saved. `{{char}}` / `{{user}}` (or `<BOT>` / `<USER>`) are put back in the card text if the original greeting used them.
 
 ## Character window
 
@@ -210,7 +210,7 @@ All fields except the card file and the depth prompt (shown read-only) can be ed
 | Ctrl+U / Ctrl+D (NORMAL / VISUAL mode) | half a window up / down; on reaching the edge of a field, move into the previous / next field |
 | click | put the cursor in that field |
 | mouse wheel | scroll the window |
-| Ctrl+S, `:w` (NORMAL mode, vim modes on), or the **Save** button | write the changed fields to the character card file in `~/.config/st-cli/characters/` (as Card save does) and close |
+| Ctrl+S, `:w` (NORMAL mode, vim modes on), or the **Save** button | write the changed fields to the character card file in `~/.config/tarpi/characters/` (as Card save does) and close |
 | Esc (see above), or the **Cancel** button | close without saving |
 
 The focused field is edited with the same editor as the chat box, so the vim modes work there too (unless `vim.enabled: false`): `qq` typed quickly or Esc goes to NORMAL mode, `i a I A o O` back to INSERT, then all the motions and operators from the tables above, VISUAL mode, and the `:%s/find/new/` command line (find / replace only ever touches the field you are in, never the rest of the card; while you type it the matches are highlighted and, once you type the replacement, the field shows the result with the new text in green, with the field name and match count on the row above the buttons; the mode shows on the bottom edge). In NORMAL mode `j` / `k` on the last / first row of a field carry on to the next / previous field. With vim modes on, Esc in INSERT mode goes to NORMAL mode; Esc in NORMAL mode closes the window, and when there are unsaved changes it asks for a second Esc first.
@@ -232,7 +232,7 @@ The layout adapts to the terminal size, down to about 10 columns by 6 rows (belo
 
 ## Prose colours
 
-At start-up st-cli asks the terminal for its foreground, background and yellow (`OSC 10`, `OSC 11`, `OSC 4;3`), so the colours follow whatever theme the terminal uses. Plain text keeps the terminal's default colour; `*narration*` is a bold neutral grey between the theme's foreground and background brightness (readable on light and dark themes); `"speech"` is the theme's yellow. Prose inside the other kind (`*he said "hi"*`, `"well *sigh* ok"`) is blended: the inner colour is pulled 40% of the way towards the outer one, so it fits in but is still a visible step away from both. Terminals that don't answer cost at most 300 ms once; then `COLORFGBG` (light / dark) and xterm-like colours are used.
+At start-up tarpi asks the terminal for its foreground, background and yellow (`OSC 10`, `OSC 11`, `OSC 4;3`), so the colours follow whatever theme the terminal uses. Plain text keeps the terminal's default colour; `*narration*` is a bold neutral grey between the theme's foreground and background brightness (readable on light and dark themes); `"speech"` is the theme's yellow. Prose inside the other kind (`*he said "hi"*`, `"well *sigh* ok"`) is blended: the inner colour is pulled 40% of the way towards the outer one, so it fits in but is still a visible step away from both. Terminals that don't answer cost at most 300 ms once; then `COLORFGBG` (light / dark) and xterm-like colours are used.
 
 ## Summarizing a long chat
 
@@ -269,11 +269,11 @@ Details:
 
 ## Chats
 
-Chats belong to st-cli too: `~/.config/st-cli/chats/<Name>/<chat>.jsonl`, one folder per character (named like the card file without `.png`). The files are the same SillyTavern `.jsonl` format as before (header line, then one message per line, unknown fields kept), so a chat folder copied from SillyTavern's `data/<user>/chats/` works as it is. Saving refuses to overwrite a file that another terminal changed in the meantime (`chat_metadata.integrity`), as SillyTavern did; reopen st-cli to reload it. `st-cli import-st <url>` copies the chats of every character of a server here (a chat that already exists here is kept; `--overwrite` replaces it). SillyTavern is still contacted for its settings and context / instruct templates, so it needs to be running.
+Chats belong to tarpi too: `~/.config/tarpi/chats/<Name>/<chat>.jsonl`, one folder per character (named like the card file without `.png`). The files are the same SillyTavern `.jsonl` format as before (header line, then one message per line, unknown fields kept), so a chat folder copied from SillyTavern's `data/<user>/chats/` works as it is. Saving refuses to overwrite a file that another terminal changed in the meantime (`chat_metadata.integrity`), as SillyTavern did; reopen tarpi to reload it. `tarpi import-st <url>` copies the chats of every character of a server here (a chat that already exists here is kept; `--overwrite` replaces it). 
 
 ## Characters
 
-Characters belong to st-cli, not to SillyTavern. Each card is a file in `~/.config/st-cli/characters/`:
+Characters belong to tarpi, not to SillyTavern. Each card is a file in `~/.config/tarpi/characters/`:
 
 - `Name.png`: a card PNG with the card embedded (the `chara` / `ccv3` text chunks SillyTavern, chub.ai and others use). The picture is what `/char-img` shows.
 - `Name.json`: a card that is only JSON (V1, V2, V3 or Pygmalion). It has no picture. V1 and Pygmalion cards are read as V2; if you edit one with `/char` or Card save it is saved back as V2.
@@ -283,56 +283,59 @@ A character is identified by `Name.png` whichever of the two it is stored as; th
 ## Importing characters
 
 ```
-st-cli import sofia.png                                    # V2/V3 card PNG
-st-cli import sofia.json                                   # card JSON (V1, V2, V3, Pygmalion)
-st-cli import '{"name": "Sofia", ...}'                     # JSON given directly
-st-cli import https://chub.ai/characters/<creator>/<name>  # chub.ai (also characterhub.org)
-st-cli import https://pygmalion.chat/character/<id>        # pygmalion.chat
-st-cli import https://example.com/cards/sofia.png         # direct link to a card .png or .json
+tarpi import sofia.png                                    # V2/V3 card PNG
+tarpi import sofia.json                                   # card JSON (V1, V2, V3, Pygmalion)
+tarpi import '{"name": "Sofia", ...}'                     # JSON given directly
+tarpi import https://chub.ai/characters/<creator>/<name>  # chub.ai (also characterhub.org)
+tarpi import https://pygmalion.chat/character/<id>        # pygmalion.chat
+tarpi import https://example.com/cards/sofia.png         # direct link to a card .png or .json
 ```
 
-The card is saved as it came into `~/.config/st-cli/characters/`, named after the character (`Sofia.png`, or `Sofia-2.png` when that name is taken; a PNG stays a PNG, JSON stays JSON). Before saving, st-cli checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and gives a clear error if not. Any other http(s) link is treated as a direct link to a card file: st-cli downloads it itself (up to 50 MB; the file type is detected from its content, not the URL) and runs the same check. chub.ai (also characterhub.org) and pygmalion.chat links (`/character/<id>`) are downloaded by the SillyTavern server (`/api/content/importURL`), so it must be running for those (`url` in `config.yaml`); the card is still saved here, not there. Lorebook links are refused.
+The card is saved as it came into `~/.config/tarpi/characters/`, named after the character (`Sofia.png`, or `Sofia-2.png` when that name is taken; a PNG stays a PNG, JSON stays JSON). Before saving, tarpi checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and gives a clear error if not. Any other http(s) link is treated as a direct link to a card file: tarpi downloads it itself (up to 50 MB; the file type is detected from its content, not the URL) and runs the same check. chub.ai (also characterhub.org) and pygmalion.chat links (`/character/<id>`) are downloaded by tarpi straight from those sites (chub.ai's download endpoint, pygmalion.chat's export endpoint); no other program is needed. Lorebook links are refused.
 
 ### Copying everything from SillyTavern
 
-`st-cli import-st <url>` (see Personas) also copies every character of that server into the characters folder, as its card PNG with the same file name, and copies its chats into the chats folder (see Chats). A character that is already here is skipped (`--overwrite` replaces it).
+`tarpi import-st <url>` (see Personas) also copies every character of that server into the characters folder, as its card PNG with the same file name, and copies its chats into the chats folder (see Chats). A character that is already here is skipped (`--overwrite` replaces it).
 
 ## Deleting characters
 
 ```
-st-cli delete           # pick a character from a list
-st-cli delete sofia     # a partial name works
-st-cli delete sofia -y  # no confirmation question (needed when not in a terminal)
+tarpi delete           # pick a character from a list
+tarpi delete sofia     # a partial name works
+tarpi delete sofia -y  # no confirmation question (needed when not in a terminal)
 ```
 
 It shows how many chats the character has and asks `Really delete? [y/N]`. Then the card file is deleted from the characters folder and the character's folder in `chats/` goes with it. This cannot be undone. Nothing on a SillyTavern server is touched.
 
 ## Phone / Termux (touch)
 
-No setup needed. st-cli notices it runs on Android:
+No setup needed. tarpi notices it runs on Android:
 
 - **Tap a message** to edit it, like a click on desktop. Swipes scroll the chat.
 - **Swipe gesture on Termux:** swipe sideways across the chat with a slight slant (a thumb's natural arc is enough; a perfectly flat swipe sends nothing at all). Left = next swipe, right = previous. One drag flips exactly one swipe. Only in touch mode and only when the last reply can be swiped. This works because Termux's scroll events carry the finger's column, so a sideways drag is recognised from them.
 - **Tap the `‹2/3›` counter** in the last reply's header to change swipes: the left half goes to the previous one, the right half to the next (past the last generates a new one, like →). A horizontal drag on the chat does the same where the terminal reports drags (swipe left = next, right = previous), also with a mouse on desktop. ←/→ still work.
-- **Tap the text box** to open the keyboard. For that moment st-cli stops asking the terminal for mouse events (like `vim.opt.mouse = ""` in Neovim), and it turns them back on by itself as soon as the keyboard is up. If the keyboard doesn't show on the first tap, tap the box once more.
+- **Tap the text box** to open the keyboard. For that moment tarpi stops asking the terminal for mouse events (like `vim.opt.mouse = ""` in Neovim), and it turns them back on by itself as soon as the keyboard is up. If the keyboard doesn't show on the first tap, tap the box once more.
 
 Enter sends; for a new line use the Termux extra-keys row: ALT then Enter, or CTRL then J. ESC on that row leaves INSERT mode, as does typing the NORMAL-mode keys (`qq` by default) quickly.
 
 ## Build
 
+(`tarpi` was called `st-cli` before. On first start it moves an existing `~/.config/st-cli/` folder to `~/.config/tarpi/`, so your characters, chats and settings carry over. The `st_cli_*` keys inside chat files keep their names, so old chats still open.)
+
 ```
 cargo build --release
-cp target/release/st-cli ~/.local/bin/
+cp target/release/tarpi ~/.local/bin/
 ```
 
 Requires a recent stable Rust toolchain.
 
 ## Configuration
 
-Settings live in `~/.config/st-cli/config.yaml`. The first run creates it with the defaults, fully commented; every key is optional. A `config.toml` with the same keys is still read when there is no `config.yaml`.
+Settings live in `~/.config/tarpi/config.yaml`. The first run creates it with the defaults, fully commented; every key is optional. A `config.toml` with the same keys is still read when there is no `config.yaml`.
 
 ```yaml
-# SillyTavern server (default http://127.0.0.1:8000)
+# SillyTavern server: only used by `tarpi import-st` when no address is given.
+# Chatting never contacts it.
 # url: http://127.0.0.1:8000
 
 # Rough chars-per-token used to trim old history to the context window
@@ -364,15 +367,15 @@ vim:
 ```
 
 - `command_menu: true` (default) opens the `/command` menu above the input box while you type a slash (see *Command menu*). `command_menu: false` turns it off: nothing opens, Tab / Up / Down / Esc keep their old meaning (Up / Down scroll the chat), and Enter runs exactly what you typed. The command history (Up on a bare `/`) still works.
-- `spellcheck: true` turns on offline spell checking in the chat input box and in the `/char` and persona windows (default `false`; the Name fields are not checked). Misspelled words get a red underline (the red of the terminal's theme, asked from the terminal at start-up like the prose colours; the text keeps its colour); words of one or two letters are checked too (`ho` and `x` are marked, `a`, `I`, `of`, `up` are not). The word you are still typing is not marked until the cursor leaves it. The word list is English and built into the program, so no internet or system dictionary is needed. Extra words go in `~/.config/st-cli/dictionary.txt` (one per line, `#` starts a comment); the character's name and your persona's name are always accepted. Details: `src/spell.rs`.
+- `spellcheck: true` turns on offline spell checking in the chat input box and in the `/char` and persona windows (default `false`; the Name fields are not checked). Misspelled words get a red underline (the red of the terminal's theme, asked from the terminal at start-up like the prose colours; the text keeps its colour); words of one or two letters are checked too (`ho` and `x` are marked, `a`, `I`, `of`, `up` are not). The word you are still typing is not marked until the cursor leaves it. The word list is English and built into the program, so no internet or system dictionary is needed. Extra words go in `~/.config/tarpi/dictionary.txt` (one per line, `#` starts a comment); the character's name and your persona's name are always accepted. Details: `src/spell.rs`.
 - With spell checking on, press **Tab** with the cursor in a marked word to open a **suggestion menu**: above the input box in the chat (like the command menu), and at the text cursor in the `/char` and persona windows. Misspelled words are only underlined (in the theme's red); the menu never opens by itself. It lists up to six spellings, best first (a swapped pair such as `teh` -> `the`, then a missing letter such as `helo` -> `hello`, then other close words), and keeps a capital first letter. It works in INSERT and NORMAL mode. Tab / Down go to the next entry, Shift+Tab / Up to the previous one, Enter puts the highlighted one in, Esc closes the menu, and a click or tap on an entry puts it in; any other key closes it. The Name fields of the windows are not checked.
 - `autopair: true` (default) closes `"`, `'`, `*` and `(` `[` `{` as you type them, in INSERT mode and in the `/char` window: `"` gives `"|"`, `'` gives `'|'`, `*` gives `*|*`, a second `*` inside an empty pair gives `**|**`. Typing the closing character steps over the one already there, and Backspace between an empty pair removes both. It stays out of the way next to words (`2*3`, `5"`, and apostrophes like `don't` or `Sofia's`), when the paragraph already has an unclosed one (so the second `"` closes), and when the next character is a letter. Apostrophes inside a word are not counted as quotes, so `'I don't know'` types out as written. An apostrophe at the start of a word (`'em`, `'til`) opens a pair like any quote: Backspace removes it while it is still empty. Pasted text is never changed. Set `autopair: false` to turn it off.
 - `vim.enabled: false` removes the modes and the mode tag under the box; the box is plain text editing. Left/Right arrows move the cursor once the box has a draft (on an empty box they switch swipes), and Home/End and Alt+Left/Right (word jump) move the cursor, and Up/Down move through a multi-line draft (with a one-line draft they scroll the chat as before).
 - `vim.normal_mode_keys` can be any sequence of two or more characters, for example `jk`. It is typed quickly in INSERT mode (within about 0.6 s) and the keys are removed again.
 - `vim.leader` is the `<leader>` key (default `space`; one character that is not a letter or digit, such as `,` or `\`, or the word `space`). See `<leader>y` below.
-- `mouse.open_keyboard_on_tap: false` stops st-cli from switching mouse reporting off when you tap the box, so the keyboard does not open by itself on a phone. `mouse.tap_to_move_cursor: false` keeps taps from moving the cursor. The two are independent.
+- `mouse.open_keyboard_on_tap: false` stops tarpi from switching mouse reporting off when you tap the box, so the keyboard does not open by itself on a phone. `mouse.tap_to_move_cursor: false` keeps taps from moving the cursor. The two are independent.
 
-st-cli talks to a SillyTavern server that needs no login (the default single-user setup). Accounts and basic auth are not supported.
+`tarpi import-st` talks to a SillyTavern server that needs no login (the default single-user setup); accounts and basic auth are not supported. It is the only command that contacts one.
 
 ## Keys
 
@@ -452,16 +455,16 @@ The pattern is matched as plain text (no regular expressions yet), so `.` and `*
 
 ## How it works
 
-SillyTavern only supplies its settings (the context / instruct templates too, until you save `/formatting`; characters, personas and system prompts are st-cli's own, in `~/.config/st-cli/characters/`, `~/.config/st-cli/persona/` and `~/.config/st-cli/system-prompt.jsonl`); the prompt is built client side and the reply comes straight from your API connection (`/api`). Before every reply st-cli re-reads both SillyTavern's settings and `api.yaml`, so a change to a template, persona, system prompt or sampler value applies to the next message.
+Everything tarpi needs is its own: cards in `~/.config/tarpi/characters/`, personas in `persona/`, system prompts in `system-prompt.jsonl`, formatting in `formatting.yaml`, connections in `api.yaml` and chats in `chats/`. Before every reply tarpi re-reads those files, so a change to a template, persona, system prompt or sampler value applies to the next message. The prompt is built client side and the reply comes straight from your API connection (`/api`).
 
-1. `GET /csrf-token` (+ optional login), then `POST /api/settings/get`.
-2. Character card from `~/.config/st-cli/characters/`; chats via `/api/chats/get` and `/api/chats/save`.
+1. Settings are built in memory from the files above; no server is asked.
+2. Character card and chat are read from, and saved to, tarpi's own folders.
 3. `src/textgen.rs` renders your context template (story string), instruct template, example dialogue and stop strings. `src/conn/` sends that prompt with the connection's own sampler values to the backend (llama.cpp's `/completion`).
 4. The stream is rendered live and the chat is saved back to the same `.jsonl` file.
 
 ## Limitations
 
-- Only llama.cpp is supported, through a standalone connection (`/api`). SillyTavern's own API selection is never used for replies or token counts.
+- Only llama.cpp is supported, through a standalone connection (`/api`). No other server is contacted.
 - No World Info/lorebooks, summaries, vector memory, group chats, or tool calling. The prompt is therefore close to, but not byte-identical to, the web UI's when you use those.
 - Token counting for trimming history to the context window is an estimate (`chars_per_token`), not a real tokenizer. The totals in the status row are exact once the connection's tokenizer has answered (see Keys).
 - Unfinished prose is closed for you while a reply streams: an open `*narration`, `**bold` or `"speech` is shown with its closing marker added, and the model's own closer simply takes its place. Nothing is added for a lone trailing `*`, `2 * 3`, bullets, a `*` inside a word, or past a blank line. When a reply ends with markers still open they are closed in the saved text too (Ctrl+K takes them off again before continuing).

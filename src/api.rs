@@ -3,7 +3,8 @@ use reqwest::{Client, RequestBuilder};
 use serde_json::{json, Value};
 use std::time::Duration;
 
-/// Thin client for the SillyTavern HTTP API.
+/// Thin client for the SillyTavern HTTP API. Only `tarpi import-st` uses it
+/// (copying things over from a SillyTavern server); chatting never does.
 ///
 /// SillyTavern protects its API with a session cookie plus a CSRF token
 /// (`GET /csrf-token`, sent back as the `x-csrf-token` header).
@@ -158,49 +159,6 @@ impl Api {
             _ => Ok(Vec::new()), // `{}` when the file does not exist
         }
     }
-
-    /// Ask the server to download a card from a URL (chub.ai, ...), like the
-    /// web UI's "Import content from URL".
-    pub async fn import_url(&self, url: &str) -> Result<Download> {
-        let resp = self
-            .post("/api/content/importURL")
-            .timeout(Duration::from_secs(90))
-            .json(&json!({ "url": url }))
-            .send()
-            .await
-            .context("POST /api/content/importURL")?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            if status.as_u16() == 404 {
-                bail!("SillyTavern could not fetch {} (not found or not supported)", url);
-            }
-            bail!("download failed ({}): {}", status, short(&text, 200));
-        }
-        let header = |name: &str| -> String {
-            resp.headers()
-                .get(name)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_string()
-        };
-        let kind = header("x-custom-content-type");
-        let file_name = crate::import::filename_from_disposition(&header("content-disposition"));
-        let bytes = resp.bytes().await.context("reading download")?.to_vec();
-        Ok(Download {
-            bytes,
-            file_name,
-            kind,
-        })
-    }
-}
-
-/// A file the server downloaded for us (`/api/content/importURL`).
-pub struct Download {
-    pub bytes: Vec<u8>,
-    pub file_name: String,
-    /// `character` or `lorebook` (the `X-Custom-Content-Type` header).
-    pub kind: String,
 }
 
 pub fn short(s: &str, max: usize) -> String {

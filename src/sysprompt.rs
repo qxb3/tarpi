@@ -1,11 +1,11 @@
 //! System prompts: the instructions that open every prompt.
 //!
-//! System prompts belong to st-cli, not to SillyTavern. They are kept in one
-//! file, `~/.config/st-cli/system-prompt.jsonl`, one JSON object per line:
+//! System prompts belong to tarpi, not to SillyTavern. They are kept in one
+//! file, `~/.config/tarpi/system-prompt.jsonl`, one JSON object per line:
 //! `id`, `name`, `content` (the system prompt), `post_history` (the
 //! post-history instructions) and, on the one line in use, `"active": true`
 //! (hand edits are fine). `/system` in a chat edits that file;
-//! `st-cli import-st` copies the system prompts out of a SillyTavern server
+//! `tarpi import-st` copies the system prompts out of a SillyTavern server
 //! into it. Nothing here talks to the server while chatting: SillyTavern's
 //! `power_user.sysprompt` is overwritten in memory by [`normalize`] with the
 //! active prompt of this file, so the prompt builders keep reading the place

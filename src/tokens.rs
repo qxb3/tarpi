@@ -7,7 +7,6 @@
 //! nothing can count, e.g. there is no connection), the characters /
 //! `chars_per_token` estimate stands in.
 
-use crate::api::Api;
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -85,7 +84,7 @@ impl Counter {
     /// Token count of `text`: exact when the backend has already counted it,
     /// otherwise an estimate (and the text is queued to be counted when
     /// there is a `backend` to ask). Never waits for the network.
-    pub fn total(&self, api: &Api, backend: Option<&Backend>, text: &str, cpt: f32) -> Totals {
+    pub fn total(&self, backend: Option<&Backend>, text: &str, cpt: f32) -> Totals {
         let cpt = if cpt < 1.0 { 3.2 } else { cpt };
         let estimate = (text.chars().count() as f32 / cpt).ceil() as usize;
         if text.is_empty() {
@@ -126,7 +125,7 @@ impl Counter {
         }
         drop(st);
         if start {
-            self.spawn_worker(api.clone());
+            self.spawn_worker();
         }
         Totals {
             tokens: estimate,
@@ -140,7 +139,7 @@ impl Counter {
     }
 
     /// One task counts the waiting text, then any newer one, then stops.
-    fn spawn_worker(&self, _api: Api) {
+    fn spawn_worker(&self) {
         let state = self.state.clone();
         tokio::spawn(async move {
             loop {

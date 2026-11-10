@@ -1,24 +1,24 @@
 //! Formatting: the context template (story string), the instruct template and
 //! a few reply-cleanup switches.
 //!
-//! These belong to st-cli, not to SillyTavern. They are kept in
-//! `~/.config/st-cli/formatting.yaml` (all settings are written out, hand
-//! edits are fine) and edited with `/formatting` in a chat. As with system
-//! prompts, [`normalize`] overwrites the matching keys of the in-memory
-//! SillyTavern settings (`power_user.context`, `power_user.instruct`,
-//! `power_user.trim_sentences`, ...), so the prompt builders keep reading the
-//! place they always did while the values come from here.
+//! These are tarpi's own. They are kept in
+//! `~/.config/tarpi/formatting.yaml` (all settings are written out, hand
+//! edits are fine) and edited with `/formatting` in a chat. [`normalize`]
+//! writes them into the in-memory settings the prompt builders read
+//! (`power_user.context`, `power_user.instruct`, `power_user.trim_sentences`,
+//! ...), so those keep reading the place they always did while the values
+//! come from here.
 //!
-//! Until the file exists, SillyTavern's own templates are used unchanged;
-//! `/formatting` then starts from them, so saving keeps what you had.
+//! Until the file exists, the built-in defaults of each setting are used, and
+//! `/formatting` starts from them.
 
 use crate::config;
-use crate::jv::*;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-/// Where a setting lives in SillyTavern's `power_user`.
+/// Which section of the formatting a setting belongs to (and where it sits
+/// in the in-memory settings, under `power_user`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Sec {
     /// `power_user.context`
@@ -471,7 +471,7 @@ impl Formatting {
         out
     }
 
-    /// Write every setting into the SillyTavern-style `settings` (in memory).
+    /// Write every setting into the in-memory `settings` the prompt builders read.
     pub fn apply(&self, settings: &mut Value) {
         if !settings.get("power_user").map(|v| v.is_object()).unwrap_or(false) {
             settings["power_user"] = json!({});
@@ -482,29 +482,13 @@ impl Formatting {
         for (k, v) in self.section(Sec::Reply) {
             pu[k] = v;
         }
-    }
-
-    /// The templates currently in SillyTavern-style `settings`.
-    pub fn from_settings(settings: &Value) -> Formatting {
-        let null = Value::Null;
-        let pu = settings.get("power_user").unwrap_or(&null);
-        let mut out = Formatting::default();
-        for fd in FIELDS {
-            let src = match fd.sec {
-                Sec::Context => pu.get("context").unwrap_or(&null),
-                Sec::Instruct => pu.get("instruct").unwrap_or(&null),
-                Sec::Reply => pu,
-            };
-            let v = match fd.kind {
-                Kind::Toggle => json!(jbool(src, fd.key, fd.default == "true")),
-                _ => match src.get(fd.key) {
-                    Some(x) => fd.coerce(x),
-                    None => fd.default_value(),
-                },
-            };
-            out.set(fd, v);
-        }
-        out
+        // Other keys the prompt builders read: fixed here, so nothing a
+        // server might have set for them ever applies.
+        pu["always_force_name2"] = json!(true);
+        pu["pin_examples"] = json!(false);
+        pu["strip_examples"] = json!(false);
+        pu["custom_stopping_strings"] = json!("");
+        pu["custom_stopping_strings_macro"] = json!(true);
     }
 
     // ---- the file
@@ -541,7 +525,7 @@ impl Formatting {
             reply: self.section(Sec::Reply),
         };
         let mut text = String::from(
-            "# st-cli formatting. Edited with /formatting in a chat; hand edits are fine too.\n",
+            "# tarpi formatting. Edited with /formatting in a chat; hand edits are fine too.\n",
         );
         text.push_str(&serde_yaml::to_string(&full).context("writing formatting.yaml")?);
         let tmp = path.with_extension("yaml.tmp");
@@ -551,13 +535,12 @@ impl Formatting {
     }
 }
 
-/// Use `formatting.yaml` in place of SillyTavern's templates, when it exists.
-/// In memory only: the server's settings are never written back. A file that
-/// cannot be read leaves SillyTavern's templates as they are.
+/// Put the formatting into the in-memory settings: `formatting.yaml` when it
+/// exists, otherwise the built-in defaults (also when the file cannot be
+/// read). Nothing is written to disk.
 pub fn normalize(settings: &mut Value) {
-    if let Ok(Some(f)) = Formatting::load() {
-        f.apply(settings);
-    }
+    let f = Formatting::load().ok().flatten().unwrap_or_default();
+    f.apply(settings);
 }
 
 // ---- one-line editing --------------------------------------------------------
@@ -651,20 +634,6 @@ mod tests {
         assert_eq!(s["power_user"]["instruct"]["names_behavior"], "force");
         assert_eq!(s["power_user"]["trim_sentences"], true);
         assert_eq!(s["power_user"]["other"], 5);
-    }
-
-    #[test]
-    fn settings_come_back_out_unchanged() {
-        let mut f = Formatting::default();
-        f.set(field("chat_start"), json!("---"));
-        f.set(field("output_suffix"), json!("</s>"));
-        f.set(field("names_behavior"), json!("always"));
-        let mut s = json!({});
-        f.apply(&mut s);
-        let back = Formatting::from_settings(&s);
-        for fd in FIELDS {
-            assert_eq!(back.get(fd), f.get(fd), "{}", fd.key);
-        }
     }
 
     #[test]

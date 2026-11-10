@@ -1,4 +1,4 @@
-//! Character cards: st-cli's own folder, `~/.config/st-cli/characters/`.
+//! Character cards: tarpi's own folder, `~/.config/tarpi/characters/`.
 //!
 //! A card is a file there, either
 //! - `<name>.png`: a card PNG with the card embedded (a base64 `chara` and/or
@@ -8,10 +8,10 @@
 //! A character is addressed by its *avatar*, `<name>.png`, whichever of the two
 //! it is stored as. That is also the key SillyTavern files the character's
 //! chats under (chats stay on the server), so a card imported with
-//! `st-cli import-st` keeps the avatar name it had there and its old chats are
+//! `tarpi import-st` keeps the avatar name it had there and its old chats are
 //! still found.
 //!
-//! Everything read from a card is turned into the V2 shape the rest of st-cli
+//! Everything read from a card is turned into the V2 shape the rest of tarpi
 //! expects (`name`, `data.*`, `avatar`, `fav`); see [`normalize`]. Cards are
 //! only rewritten when a field is edited (`/char`, Card save).
 
@@ -383,7 +383,7 @@ fn read_card(path: &Path, png: bool) -> Result<(Value, bool, Vec<u8>)> {
     Ok((raw, v3, bytes))
 }
 
-/// One card in the shape the rest of st-cli reads (`avatar`, `name`, `fav`,
+/// One card in the shape the rest of tarpi reads (`avatar`, `name`, `fav`,
 /// `data.*`).
 pub fn get(avatar: &str) -> Result<Value> {
     let (path, png) = path_for(avatar)?;

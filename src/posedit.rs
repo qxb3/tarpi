@@ -6,7 +6,7 @@
 //! Note, in the chat at a depth, or not sent), and, only for the chat position,
 //! *Depth* (messages from the end, 0 is after the last one) and *Role* (system,
 //! user or assistant). A persona put into the Author's Note goes where the
-//! note itself goes (`/note`). The one position st-cli cannot use (SillyTavern's
+//! note itself goes (`/note`). The one position tarpi cannot use (SillyTavern's
 //! old *After the character*) is shown as it is when a persona has it, but
 //! cannot be chosen.
 

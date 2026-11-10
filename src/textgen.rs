@@ -3,8 +3,9 @@
 //! Mirrors SillyTavern's own pipeline for `main_api = "textgenerationwebui"`:
 //! context template (story string), instruct template, example dialogue,
 //! stop strings and the sampler parameters from the active preset. All of it
-//! is read from the in-memory settings: SillyTavern's live settings.json, with
-//! the templates replaced by `formatting.yaml` once it exists (see `formatting`).
+//! is read from the in-memory settings (`config::base_settings`) with tarpi's
+//! own persona, system prompt, `formatting.yaml` and API connection written
+//! over them.
 
 use crate::character::Character;
 use crate::chat;

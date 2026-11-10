@@ -277,7 +277,7 @@ impl Provider for LlamaCpp {
         for d in self.params() {
             let v = value_of(params, &d);
             match d.key {
-                // Used by st-cli itself, not a request field.
+                // Used by tarpi itself, not a request field.
                 "max_context" => {}
                 "stop_strings" => {
                     for s in json_strings(&text_of(&v)) {

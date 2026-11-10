@@ -1,7 +1,7 @@
 //! `/char-img`: the character card's picture in a square window.
 //!
-//! The picture is fetched from SillyTavern (`GET /characters/<avatar>`, the
-//! card PNG itself), decoded here and drawn with half-block cells (`▀`, the
+//! The picture is the card PNG itself, read from the characters folder,
+//! decoded here and drawn with half-block cells (`▀`, the
 //! top pixel as foreground and the bottom pixel as background), so it works in
 //! any truecolor terminal, over SSH and in Termux, with no image protocol.
 //! A terminal cell is about twice as tall as wide, so `w` columns by `w / 2`
@@ -27,11 +27,11 @@ pub enum Proto {
     Iterm,
 }
 
-/// Pick the best way to show a picture in this terminal. `ST_CLI_IMAGE`
+/// Pick the best way to show a picture in this terminal. `TARPI_IMAGE`
 /// (`blocks`, `kitty`, `iterm` or `sixel`) overrides the detection.
 pub fn detect() -> Proto {
     let env = |k: &str| std::env::var(k).unwrap_or_default();
-    match env("ST_CLI_IMAGE").to_lowercase().as_str() {
+    match env("TARPI_IMAGE").to_lowercase().as_str() {
         "blocks" | "block" | "off" => return Proto::Blocks,
         "sixel" => return Proto::Sixel,
         "kitty" => return Proto::Kitty,

@@ -1,7 +1,7 @@
-//! `st-cli import-st <url>`: copy the personas, the system prompts and the
-//! characters of a SillyTavern server into st-cli's own folders and files
-//! (`~/.config/st-cli/persona/`, `~/.config/st-cli/system-prompt.jsonl` and
-//! `~/.config/st-cli/characters/`, see `persona`, `sysprompt` and `charstore`).
+//! `tarpi import-st <url>`: copy the personas, the system prompts and the
+//! characters of a SillyTavern server into tarpi's own folders and files
+//! (`~/.config/tarpi/persona/`, `~/.config/tarpi/system-prompt.jsonl` and
+//! `~/.config/tarpi/characters/`, see `persona`, `sysprompt` and `charstore`).
 //!
 //! The system prompts are the server's system prompt presets, plus the one it
 //! has switched on when that is not one of them. An identical one (name, prompt
@@ -11,7 +11,7 @@
 //!
 //! Only reads from the server; nothing there is changed. A persona's picture is
 //! not copied. A character is copied as its card PNG with the file name it has
-//! on the server. Its chats are copied too (`~/.config/st-cli/chats/`); a chat
+//! on the server. Its chats are copied too (`~/.config/tarpi/chats/`); a chat
 //! that already exists here is kept unless `--overwrite` is given.
 //! Personas may share a name: an identical one (name, title and description) is
 //! skipped, so the command can be run again safely; with `--overwrite` one with
@@ -30,23 +30,23 @@ use clap::Parser;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "st-cli import-st",
-    about = "Import the personas, system prompts and characters of a SillyTavern server into st-cli",
+    name = "tarpi import-st",
+    about = "Import the personas, system prompts and characters of a SillyTavern server into tarpi",
     long_about = "Copy every persona (name, title, description, position, depth, role and \
                   lorebook), every system prompt (name, prompt and post-history \
                   instructions) and every character card of a running SillyTavern server \
-                  into st-cli's own folders and files, ~/.config/st-cli/persona/, \
-                  ~/.config/st-cli/system-prompt.jsonl and \
-                  ~/.config/st-cli/characters/. Nothing is changed on the server. Every character's chats \
-                  are copied to ~/.config/st-cli/chats/ too (chats that already exist here \
+                  into tarpi's own folders and files, ~/.config/tarpi/persona/, \
+                  ~/.config/tarpi/system-prompt.jsonl and \
+                  ~/.config/tarpi/characters/. Nothing is changed on the server. Every character's chats \
+                  are copied to ~/.config/tarpi/chats/ too (chats that already exist here \
                   are kept). A character that is already here is skipped. \
                   Personas with the same name are kept side by side; an identical one \
                   is skipped, and --overwrite replaces one with the same name and title.",
     after_help = concat!(
         "EXAMPLES:\n",
-        "  st-cli import-st http://127.0.0.1:8000\n",
-        "  st-cli import-st 192.168.1.20:8000\n",
-        "  st-cli import-st http://127.0.0.1:8000 --overwrite"
+        "  tarpi import-st http://127.0.0.1:8000\n",
+        "  tarpi import-st 192.168.1.20:8000\n",
+        "  tarpi import-st http://127.0.0.1:8000 --overwrite"
     )
 )]
 struct ImportStCli {
@@ -72,7 +72,7 @@ fn with_scheme(url: &str) -> String {
 }
 
 pub async fn run() -> Result<()> {
-    // argv is `st-cli import-st ...`; drop the program name so "import-st"
+    // argv is `tarpi import-st ...`; drop the program name so "import-st"
     // plays the part of the binary name in clap's messages.
     let cli = ImportStCli::parse_from(std::env::args().skip(1));
     let cfg = config::load()?;

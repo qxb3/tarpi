@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Builds dict/en.txt, the word list behind st-cli's spell checker.
+"""Builds dict/en.txt, the word list behind tarpi's spell checker.
 
 Source: the Hunspell en_US dictionary (the .dic word list and the .aff affix
 rules), expanded into plain words. Output: lowercase words (letters and

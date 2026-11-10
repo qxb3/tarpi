@@ -2,13 +2,14 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
 
-/// Settings read from `~/.config/st-cli/config.yaml`.
+/// Settings read from `~/.config/tarpi/config.yaml`.
 ///
 /// Every key is optional: whatever is missing keeps its default. An older
 /// `config.toml` (same keys) is still read when there is no `config.yaml`.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct FileConfig {
-    /// Base URL of the SillyTavern server, e.g. "http://127.0.0.1:8000".
+    /// Base URL of a SillyTavern server, e.g. "http://127.0.0.1:8000". Only
+    /// `tarpi import-st` uses it (as its default); chatting never contacts it.
     pub url: Option<String>,
     /// Rough characters-per-token ratio used when trimming old history to fit
     /// the context window. Lower = more conservative. Default 3.2.
@@ -104,12 +105,13 @@ impl FileConfig {
     }
 }
 
-/// A commented starting point, written the first time st-cli runs without
+/// A commented starting point, written the first time tarpi runs without
 /// any config file.
 const TEMPLATE: &str = "\
-# st-cli configuration. Every option is optional; the values below are the defaults.
+# tarpi configuration. Every option is optional; the values below are the defaults.
 
-# SillyTavern server (this is the only place to set it).
+# SillyTavern server, used only by `tarpi import-st` when no address is given.
+# Chatting never contacts it.
 # url: http://127.0.0.1:8000
 
 # Characters per token, used to trim old chat history to fit the context window.
@@ -130,14 +132,14 @@ const TEMPLATE: &str = "\
 
 # Spell checking in the input box: misspelled words get a red underline (the
 # red of your terminal's theme). Works offline with a built-in English word
-# list; your own words can go in ~/.config/st-cli/dictionary.txt (one per
+# list; your own words can go in ~/.config/tarpi/dictionary.txt (one per
 # line), and the character's and your persona's names are always accepted.
 # Off by default.
 # spellcheck: false
 
 mouse:
   # Phones (Termux): tapping the input box opens the on-screen keyboard.
-  # (st-cli turns mouse reporting off for a moment so the tap reaches the
+  # (tarpi turns mouse reporting off for a moment so the tap reaches the
   # terminal.) Does nothing on desktop terminals.
   open_keyboard_on_tap: true
   # Clicking / tapping in the input box moves the text cursor to that spot.
@@ -158,49 +160,57 @@ vim:
 ";
 
 fn dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("st-cli"))
+    let base = dirs::config_dir()?;
+    let dir = base.join("tarpi");
+    // The folder of the project's earlier name: moved over once, so nothing
+    // (characters, chats, settings) is lost by the rename.
+    let old = base.join("st-cli");
+    if !dir.exists() && old.is_dir() && std::fs::rename(&old, &dir).is_err() {
+        return Some(old);
+    }
+    Some(dir)
 }
 
 pub fn config_path() -> Option<PathBuf> {
     dir().map(|d| d.join("config.yaml"))
 }
 
-/// `~/.config/st-cli/dictionary.txt`: extra words the spell checker accepts.
+/// `~/.config/tarpi/dictionary.txt`: extra words the spell checker accepts.
 pub fn dictionary_path() -> Option<PathBuf> {
     dir().map(|d| d.join("dictionary.txt"))
 }
 
-/// `~/.config/st-cli/command_history`: the `/commands` typed in chats (see `history`).
+/// `~/.config/tarpi/command_history`: the `/commands` typed in chats (see `history`).
 pub fn history_path() -> Option<PathBuf> {
     dir().map(|d| d.join("command_history"))
 }
 
-/// `~/.config/st-cli/api.yaml`: the standalone API connections (see `conn`).
+/// `~/.config/tarpi/api.yaml`: the standalone API connections (see `conn`).
 pub fn api_path() -> Option<PathBuf> {
     dir().map(|d| d.join("api.yaml"))
 }
 
-/// `~/.config/st-cli/formatting.yaml`: the context and instruct templates (see `formatting`).
+/// `~/.config/tarpi/formatting.yaml`: the context and instruct templates (see `formatting`).
 pub fn formatting_path() -> Option<PathBuf> {
     dir().map(|d| d.join("formatting.yaml"))
 }
 
-/// `~/.config/st-cli/persona/`: one `<id>.yaml` per persona, plus `active` (see `persona`).
+/// `~/.config/tarpi/persona/`: one `<id>.yaml` per persona, plus `active` (see `persona`).
 pub fn persona_dir() -> Option<PathBuf> {
     dir().map(|d| d.join("persona"))
 }
 
-/// `~/.config/st-cli/system-prompt.jsonl`: the system prompts, one JSON object per line (see `sysprompt`).
+/// `~/.config/tarpi/system-prompt.jsonl`: the system prompts, one JSON object per line (see `sysprompt`).
 pub fn sysprompt_path() -> Option<PathBuf> {
     dir().map(|d| d.join("system-prompt.jsonl"))
 }
 
-/// `~/.config/st-cli/characters/`: the character cards, `.png` (card embedded) or `.json` (see `charstore`).
+/// `~/.config/tarpi/characters/`: the character cards, `.png` (card embedded) or `.json` (see `charstore`).
 pub fn characters_dir() -> Option<PathBuf> {
     dir().map(|d| d.join("characters"))
 }
 
-/// `~/.config/st-cli/chats/`: one folder per character, one `.jsonl` per chat (see `chatstore`).
+/// `~/.config/tarpi/chats/`: one folder per character, one `.jsonl` per chat (see `chatstore`).
 pub fn chats_dir() -> Option<PathBuf> {
     dir().map(|d| d.join("chats"))
 }
@@ -254,4 +264,16 @@ pub fn load() -> Result<FileConfig> {
         );
     }
     Ok(cfg)
+}
+
+/// The settings the prompt builders start from, before tarpi's own persona,
+/// system prompt, formatting and API connection are written over them. They
+/// live in memory only; nothing is read from or sent to any server.
+pub fn base_settings() -> serde_json::Value {
+    serde_json::json!({
+        "main_api": "textgenerationwebui",
+        "max_context": 8192,
+        "amount_gen": 350,
+        "power_user": {},
+    })
 }
