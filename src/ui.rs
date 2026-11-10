@@ -1018,13 +1018,19 @@ fn draw_prompt_modal(f: &mut Frame, area: Rect, v: &mut crate::app::PromptView) 
 
 /// The choose-one window of `/characters`, `/chats` and `/persona`: the
 /// entries, with the keys on the bottom edge.
-pub fn draw_picker(f: &mut Frame, area: Rect, p: &mut Picker) {
+/// `full`: the window fills `area` (the start-up character window) instead of
+/// being a centred box, and Esc quits instead of cancelling.
+pub fn draw_picker(f: &mut Frame, area: Rect, p: &mut Picker, full: bool) {
     let vis = p.visible();
-    let w = area.width.min(76);
-    // Borders (2) + one row per entry, but never the whole screen.
-    let want = vis.len().max(1) as u16 + 2;
-    let h = want.min(area.height.saturating_sub(2)).max(3).min(area.height);
-    let rect = centered(area, w, h);
+    let rect = if full {
+        area
+    } else {
+        let w = area.width.min(76);
+        // Borders (2) + one row per entry, but never the whole screen.
+        let want = vis.len().max(1) as u16 + 2;
+        let h = want.min(area.height.saturating_sub(2)).max(3).min(area.height);
+        centered(area, w, h)
+    };
     f.render_widget(Clear, rect);
 
     let bottom: Line<'static> = if let Some(key) = &p.confirm {
@@ -1070,8 +1076,11 @@ pub fn draw_picker(f: &mut Frame, area: Rect, p: &mut Picker) {
             ""
         };
         Line::from(format!(
-            " \u{2191}/\u{2193} move \u{b7} Enter choose{}{}{} \u{b7} Esc cancel ",
-            edit, pos, del
+            " \u{2191}/\u{2193} move \u{b7} Enter choose{}{}{} \u{b7} Esc {} ",
+            edit,
+            pos,
+            del,
+            if full { "quit" } else { "cancel" }
         ))
     };
     let block = Block::default()
@@ -1538,6 +1547,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         f.render_widget(Paragraph::new("too small"), area);
         return;
     }
+    // Start-up (see `App::startup_pick`): the character window is the whole
+    // screen; no title bar, chat or input box around it.
+    if app.startup_pick {
+        if let Some((_, p)) = app.picker.as_mut() {
+            draw_picker(f, area, p, true);
+            return;
+        }
+    }
     // Small screens: narrow ones get shorter buttons and a shorter title bar,
     // short ones a flat "Card save" button and a smaller input box.
     let narrow = area.width < 44;
@@ -1598,17 +1615,26 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // API, then the persona, then the version.
     let badge_full: &'static str = concat!(" tarpi ", env!("CARGO_PKG_VERSION"), " ");
     let badge_short: &'static str = " tarpi ";
-    let who = format!(" {}/{}", app.character.name, app.chat.file);
-    let opts = [
-        format!(
-            "{} \u{2022} {} \u{2022} {}",
-            who,
-            app.persona_label(),
-            app.model_label()
-        ),
-        format!("{} \u{2022} {}", who, app.persona_label()),
-        who.clone(),
-    ];
+    // Start-up (see `App::startup_pick`): no chat is open yet, so no name.
+    let who = if app.startup_pick {
+        String::new()
+    } else {
+        format!(" {}/{}", app.character.name, app.chat.file)
+    };
+    let opts = if app.startup_pick {
+        [who.clone(), who.clone(), who.clone()]
+    } else {
+        [
+            format!(
+                "{} \u{2022} {} \u{2022} {}",
+                who,
+                app.persona_label(),
+                app.model_label()
+            ),
+            format!("{} \u{2022} {}", who, app.persona_label()),
+            who.clone(),
+        ]
+    };
     let tw = area.width as usize;
     let mut pick: Option<(&'static str, String)> = None;
     for b in [badge_full, badge_short] {
@@ -1652,7 +1678,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         chunks[1].width.saturating_sub(2),
         chunks[1].height.saturating_sub(2 * pad),
     );
-    let lines = app.build_lines(msg_area.width as usize);
+    // Start-up: the character window is all there is; no chat shows behind it.
+    let lines = if app.startup_pick {
+        Vec::new()
+    } else {
+        app.build_lines(msg_area.width as usize)
+    };
     let h = msg_area.height as usize;
     app.viewport_h = h;
     let total = lines.len();
@@ -1970,7 +2001,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else if let Some(e) = app.pos_edit.as_mut() {
         draw_pos_edit(f, modal_area, e);
     } else if let Some((_, p)) = app.picker.as_mut() {
-        draw_picker(f, modal_area, p);
+        draw_picker(f, modal_area, p, false);
     } else if let Some(x) = cmd_cursor_x {
         f.set_cursor_position((x, chunks[3].y));
     } else if cur_row >= first_row && cur_row < first_row + visible_rows {

@@ -80,8 +80,8 @@ enum Arrival {
     about = "Standalone terminal chat client for character cards",
     long_about = "Chat with a character from the terminal. Everything is kept by \
                   tarpi itself in ~/.config/tarpi/ (characters, personas, system prompts, \
-                  formatting, chats). Add cards with `/import` (in a chat or in the character \
-                  menu); `tarpi import-st <url>` can copy yours over from a \
+                  formatting, chats). Add cards with `/import` (inside a chat); \
+                  `tarpi import-st <url>` can copy yours over from a \
                   SillyTavern server. Nothing needs a server \
                   except the backend: replies come from the API connection managed with \
                   `/api` inside a chat.",
@@ -118,7 +118,7 @@ struct Cli {
     command: Option<Commands>,
 
     /// Character name or card file name (a partial match works).
-    /// Leave it out to pick from a list.
+    /// Leave it out to choose in the character window that opens.
     character: Option<String>,
 
     /// Chat to open: its number (3) or name (Sofia03). Default: the latest.
@@ -406,138 +406,7 @@ fn match_chat(char_name: &str, chats: &[Value], query: &str) -> Result<String> {
     )
 }
 
-// ------------------------------------------------------- interactive menus
-
-fn ask(prompt: &str) -> Option<String> {
-    print!("{}", prompt);
-    let _ = io::stdout().flush();
-    let mut s = String::new();
-    match io::stdin().read_line(&mut s) {
-        Ok(0) | Err(_) => None,
-        Ok(_) => Some(s.trim().to_string()),
-    }
-}
-
-fn is_quit(s: &str) -> bool {
-    matches!(s.to_lowercase().as_str(), "q" | "quit" | "exit")
-}
-
-const MENU_ROWS: usize = 40;
-
-/// The cards in the characters folder, sorted by name.
-fn sorted_characters() -> Vec<Value> {
-    let mut v = charstore::list();
-    v.sort_by_key(|c| char_display_name(c).to_lowercase());
-    v
-}
-
-/// `/import <card>` typed in the character menu: what comes after it.
-fn import_arg(ans: &str) -> Option<&str> {
-    let head = ans.get(..7)?;
-    if !head.eq_ignore_ascii_case("/import") {
-        return None;
-    }
-    let rest = &ans[7..];
-    if rest.is_empty() || rest.starts_with(char::is_whitespace) {
-        Some(rest.trim())
-    } else {
-        None
-    }
-}
-
-/// Numbered character menu. Typing part of a name narrows the list;
-/// `/import <card>` adds a character first (the only way in when there are
-/// none yet), as inside a chat.
-async fn pick_character() -> Result<Value> {
-    let mut sorted = sorted_characters();
-    let mut shown: Vec<Value> = sorted.clone();
-    let mut reprint = true;
-    loop {
-        if reprint {
-            println!();
-            if sorted.is_empty() {
-                println!("No characters yet.");
-            }
-            let w = format!("[{}]", shown.len().min(MENU_ROWS)).len();
-            for (i, c) in shown.iter().enumerate().take(MENU_ROWS) {
-                println!(
-                    "{:<w$} {}{}",
-                    format!("[{}]", i + 1),
-                    if is_fav(c) { "\u{2605} " } else { "" },
-                    char_display_name(c),
-                    w = w
-                );
-            }
-            if shown.len() > MENU_ROWS {
-                println!(
-                    "\u{2026} and {} more: type part of a name to narrow it down",
-                    shown.len() - MENU_ROWS
-                );
-            }
-            println!("[/import <card file or chub.ai / pygmalion.chat link>] add a character");
-            println!("[q] quit");
-            reprint = false;
-        }
-        let Some(ans) = ask("\nSelect > ") else {
-            std::process::exit(0);
-        };
-        if let Some(arg) = import_arg(&ans) {
-            if arg.is_empty() {
-                println!("{}", import::USAGE);
-                continue;
-            }
-            println!("Importing...");
-            match import::import(arg).await {
-                Ok(saved) => {
-                    let name = if saved.name.is_empty() {
-                        saved.avatar.clone()
-                    } else {
-                        saved.name.clone()
-                    };
-                    println!("Imported \"{}\" ({})", name, saved.avatar);
-                    connect::report(format!("imported character {}", name));
-                    sorted = sorted_characters();
-                    shown = sorted.clone();
-                    reprint = true;
-                }
-                Err(e) => println!("{:#}", e),
-            }
-            continue;
-        }
-        if ans.is_empty() {
-            shown = sorted.clone();
-            reprint = true;
-            continue;
-        }
-        if is_quit(&ans) {
-            std::process::exit(0);
-        }
-        if let Ok(n) = ans.parse::<usize>() {
-            if n >= 1 && n <= shown.len() {
-                return Ok(shown[n - 1].clone());
-            }
-            println!("there is no number {}", n);
-            continue;
-        }
-        let q = ans.to_lowercase();
-        let hits: Vec<Value> = sorted
-            .iter()
-            .filter(|c| jstr(c, "name").to_lowercase().contains(&q) || avatar_stem(c).contains(&q))
-            .cloned()
-            .collect();
-        if let Some(e) = hits.iter().find(|c| jstr(c, "name").to_lowercase() == q) {
-            return Ok(e.clone());
-        }
-        match hits.len() {
-            0 => println!("nothing matches '{}'", ans),
-            1 => return Ok(hits[0].clone()),
-            _ => {
-                shown = hits;
-                reprint = true;
-            }
-        }
-    }
-}
+// ------------------------------------------------------- start-up helpers
 
 enum Want {
     Latest,
@@ -755,10 +624,35 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // ---- no characters at all: make a basic one, so there is always something to pick
+    let characters = if characters.is_empty() {
+        charstore::ensure_default().context("could not create the default character")?;
+        let fresh = charstore::list();
+        if fresh.is_empty() {
+            bail!("no characters, and the default one could not be created");
+        }
+        fresh
+    } else {
+        characters
+    };
+
     // ---- who to chat with, and which chat
+    // Without a name on the command line the chat screen opens with the
+    // `/chars` window over it (the character is chosen there, see
+    // `App::startup_pick`). The screen needs some character to be built
+    // around: the first one, as a chat in memory only that is never saved.
+    let mut startup_pick = false;
+    // `tarpi -n` with no name: the new chat is for whoever gets chosen.
+    let mut pending_new = false;
     let mut entry: Value = match cli.character.as_deref() {
         Some(q) => find_character(&characters, q)?.clone(),
-        None if interactive => pick_character().await?,
+        None if interactive => {
+            startup_pick = true;
+            pending_new = cli.new;
+            let mut sorted = characters.clone();
+            sorted.sort_by_key(|c| char_display_name(c).to_lowercase());
+            sorted[0].clone()
+        }
         None => {
             eprintln!("Usage: tarpi [character] [chat] [-n]   (tarpi --help for more)\n");
             eprintln!("Characters:");
@@ -783,6 +677,12 @@ async fn main() -> Result<()> {
     // `/characters` window leaves the screen and comes back here for the next round.
     let mut arrival = Arrival::Start;
     loop {
+        // The first round without a character on the command line is only the
+        // setting for the character window: nothing is opened or saved.
+        let startup = std::mem::take(&mut startup_pick);
+        if startup {
+            want = Want::New;
+        }
         let avatar = jstr(&entry, "avatar");
         // The list may be "shallow" (lazyLoadCharacters), so always fetch the full card.
         let full = charstore::get(&avatar)?;
@@ -831,14 +731,16 @@ async fn main() -> Result<()> {
         };
 
         let char_name = character.name.clone();
-        connect::report(match (created_new, arrival) {
-            (true, _) => format!("started a new chat {} with {}", file, char_name),
-            (false, Arrival::Start) => format!("opened chat {} with {}", file, char_name),
-            (false, Arrival::Chat) => format!("switched to chat {} with {}", file, char_name),
-            (false, Arrival::Character) => {
-                format!("switched to {}: opened chat {}", char_name, file)
-            }
-        });
+        if !startup {
+            connect::report(match (created_new, arrival) {
+                (true, _) => format!("started a new chat {} with {}", file, char_name),
+                (false, Arrival::Start) => format!("opened chat {} with {}", file, char_name),
+                (false, Arrival::Chat) => format!("switched to chat {} with {}", file, char_name),
+                (false, Arrival::Character) => {
+                    format!("switched to {}: opened chat {}", char_name, file)
+                }
+            });
+        }
         let (gen_tx, mut gen_rx) = unbounded_channel();
         let mut app = App::new(
             settings,
@@ -847,7 +749,7 @@ async fn main() -> Result<()> {
             gen_tx,
             chars_per_token,
         );
-        if created_new || synced {
+        if (created_new && !startup) || synced {
             app.save().await;
         }
 
@@ -871,6 +773,9 @@ async fn main() -> Result<()> {
         app.tap_open_keyboard = cfg.mouse().open_keyboard_on_tap;
         app.max_rows = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(0);
         app.mouse = mouse_on;
+        if startup {
+            app.open_startup_picker().await;
+        }
         let mut term = setup_terminal(mouse_on)?;
         let result = run_tui(&mut term, &mut app, &mut gen_rx).await;
         restore_terminal();
@@ -887,7 +792,9 @@ async fn main() -> Result<()> {
 
         match app.exit_to.take() {
             None => {
-                connect::report(format!("left chat {} with {}", file, char_name));
+                if !startup {
+                    connect::report(format!("left chat {} with {}", file, char_name));
+                }
                 break;
             }
             Some(app::Exit::NewChat) => want = Want::New,
@@ -904,7 +811,11 @@ async fn main() -> Result<()> {
                     .find(|c| jstr(c, "avatar") == avatar)
                     .cloned()
                     .ok_or_else(|| anyhow!("character '{}' not found", avatar))?;
-                want = Want::Latest;
+                want = if std::mem::take(&mut pending_new) {
+                    Want::New
+                } else {
+                    Want::Latest
+                };
             }
         }
     }

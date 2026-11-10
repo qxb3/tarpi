@@ -5,7 +5,7 @@ A standalone, chat-only terminal client for character cards. Characters, persona
 Characters, personas and system prompts are tarpi's own, kept in `~/.config/tarpi/characters/`, `~/.config/tarpi/persona/` and `~/.config/tarpi/system-prompt.jsonl` (see Importing characters, Deleting characters, Personas and System prompts). Chats are tarpi's too (`~/.config/tarpi/chats/`). `tarpi` only chats. Chats are saved as SillyTavern-format `.jsonl` files in `~/.config/tarpi/chats/`.
 
 ```
-tarpi                  # pick a character, then chat
+tarpi                  # open the character window, pick one, then chat
 tarpi sofia            # continue the latest chat with Sofia
 tarpi sofia 3          # open Sofia's chat number 3 (or by name: Sofia03)
 tarpi sofia -n         # start a new chat (named Sofia01, Sofia02, ...)
@@ -38,6 +38,12 @@ Everything else happens inside the chat:
 | `/newchat` or `/nc` | delete this chat and start a new one |
 | `/summarize` or `/summ` | write an in-depth summary of the chat as a new summary branch (see below) |
 | `/deletebranch` or `/db` | delete the summary branch that is showing (see *Summarizing a long chat*) |
+
+### Choosing a character at start-up
+
+`tarpi` with no character name opens the chat screen straight away with the `/chars` window over an empty screen, titled `choose a character` (↑/↓ + Enter, or click / tap; `d` deletes one and asks `y`, as in `/chars`). Enter opens that character's latest chat (a new one with `tarpi -n`). Esc, or a click outside the window, quits tarpi: nothing is opened or saved until a character is chosen, and no character is marked as current. There is no text menu any more.
+
+With no character cards at all, tarpi first writes a default one, `Tarpi` (`~/.config/tarpi/characters/Tarpi.json`: an unhinged, funny and blunt assistant who is secretly helpful), so the window is never empty; edit it with `/char` or add more with `/import` from inside a chat. It is only made when the characters folder is empty (deleting every character makes it come back on the next start). `tarpi -l` does not make it.
 
 ### Command menu
 
@@ -105,7 +111,7 @@ tarpi connect --local-api    # keep this device's own API connection (see below)
 
 What the server sees by itself is the live connection (`connected` / `disconnected after ...`), every upload (`added` for a file that did not exist yet, such as a new chat or an imported character, `updated` for one that did), every delete, uploads it refused because the file had changed here meanwhile, and wrong tokens. What only the device knows (a chat opened, switched or left, a new chat or a switch to another character, and the result of each sync, including a failed one, told once) it tells the server in a short note (`POST /v1/event`), which the server prints; an older `tarpi serve` just ignores those notes. Nothing is printed on the device's own screen. The server only prints; nothing is written to a file.
 
-**`tarpi connect [token]`** connects to the machine named by `serve_url` and keeps a *copy* of its data in `~/.config/tarpi/remote/<host>-<port>/`. Then you pick a character as in plain `tarpi` and the normal chat screen opens on that copy, so everything works as it does locally, also when the connection drops for a while. `serve_url` is `host:port` (the port may be left out for 7878) or `http://host:port`; without it `connect` says so. The token is the one `tarpi serve` prints; give it once and it is remembered (give the new one after `--new-token`). It can also be set in the `TARPI_TOKEN` environment variable.
+**`tarpi connect [token]`** connects to the machine named by `serve_url` and keeps a *copy* of its data in `~/.config/tarpi/remote/<host>-<port>/`. Then you pick a character as in plain `tarpi` (in the character window) and the normal chat screen opens on that copy, so everything works as it does locally, also when the connection drops for a while. `serve_url` is `host:port` (the port may be left out for 7878) or `http://host:port`; without it `connect` says so. The token is the one `tarpi serve` prints; give it once and it is remembered (give the new one after `--new-token`). It can also be set in the `TARPI_TOKEN` environment variable.
 
 - The copy is brought up to date before the screen opens, and synced once more when you quit. While it is open, a change here (looked for every 0.2 seconds) or on the server (the server pushes a note over the open connection) is synced at once; a slow check every 30 seconds is only a safety net (every 3 seconds against an older `tarpi serve`). Progress is not drawn on the chat screen; the last result is in `sync.log` in the copy's folder.
 - A file only the server changed is downloaded, a file only this device changed or created is uploaded, and deletes are passed on. Downloaded files keep the server's modification time, so "latest chat" is the same on every device.
@@ -270,7 +276,7 @@ All fields except the card file and the depth prompt (shown read-only) can be ed
 
 The focused field is edited with the same editor as the chat box, so the vim modes work there too (unless `vim.enabled: false`): `qq` typed quickly or Esc goes to NORMAL mode, `i a I A o O` back to INSERT, then all the motions and operators from the tables above, VISUAL mode, and the `:%s/find/new/` command line (find / replace only ever touches the field you are in, never the rest of the card; while you type it the matches are highlighted and, once you type the replacement, the field shows the result with the new text in green, with the field name and match count on the row above the buttons; the mode shows on the bottom edge). In NORMAL mode `j` / `k` on the last / first row of a field carry on to the next / previous field. With vim modes on, Esc in INSERT mode goes to NORMAL mode; Esc in NORMAL mode closes the window, and when there are unsaved changes it asks for a second Esc first.
 
-Only fields that changed are sent. The alternate greetings are saved as one list (a greeting you empty is dropped). If a save fails, the window stays open with the error in the status line. Chats already started keep their own messages; new chats use the saved card. `/char` is short for `/char`, and `/chars` for `/chars` (`/switch` also opens the character menu).
+Only fields that changed are sent. The alternate greetings are saved as one list (a greeting you empty is dropped). If a save fails, the window stays open with the error in the status line. Chats already started keep their own messages; new chats use the saved card. `/char` is short for `/char`, and `/chars` for `/chars` (`/switch` also opens the character window).
 
 ## Small screens
 
@@ -279,7 +285,7 @@ The layout adapts to the terminal size, down to about 10 columns by 6 rows (belo
 - Under 44 columns the buttons shrink to `Send` / `Stop` / `Save` / `Card`, and the top bar drops the API, then the persona, then the version number, to fit.
 - Under 16 rows the two stacked buttons while editing a greeting become two one-row buttons, and the input box never grows so tall that fewer than two message rows are left.
 - The help window, the `/char` window, the `/chars`, `/chats` and persona windows and `/char-img` are drawn between the top bar and the input box, with a margin of one column on each side (and one row above and below when there is room), so both stay visible. When the terminal is small they take that whole area; help lines wrap. Only on a terminal under 6 rows by 12 columns of such space do they take the whole screen.
-- The character menu printed before the chat fits one terminal row per entry; the `/chars`, `/chats` and persona windows take the full width (less the margin) on small screens and cut long lines with `…` (narrow terminals show `msgs`).
+- The `/chars`, `/chats` and persona windows (and the character window `tarpi` opens at start-up) take the full width (less the margin) on small screens and cut long lines with `…` (narrow terminals show `msgs`).
 
 ## Nudging a regeneration
 
@@ -355,7 +361,7 @@ The card is saved as it came into `~/.config/tarpi/characters/`, named after the
 
 The import runs in the background: the status row shows `importing… 5s` while a download is going and you can keep chatting; when it is done the status row says `imported "Sofia" (Sofia.png)` (or why it failed, on one row). Then `/chars` lists the new character. One import runs at a time, and leaving the chat (another character, quitting) cancels one that is still downloading.
 
-Before a chat is open, the character menu that `tarpi` prints takes the same command: type `/import <card>` at its `Select >` prompt (the only way to add the first character, when the folder is empty), and the list is shown again with the new card.
+Before a chat is open, `/import` is not available: with no character yet, `tarpi` makes the default `Tarpi` character, so there is always a character to open `/import` from.
 
 ### Importing and deleting while connected
 

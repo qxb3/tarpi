@@ -225,6 +225,11 @@ pub struct App {
     pub exit_to: Option<Exit>,
     /// The `/characters` or `/chats` window, if open.
     pub picker: Option<(PickKind, Picker)>,
+    /// Start-up without a character on the command line: the chat screen is
+    /// only the setting for the `/chars` window. Nothing of it is saved, no
+    /// character counts as the current one, choosing always leaves the screen
+    /// (to chat with that character) and closing the window quits tarpi.
+    pub startup_pick: bool,
     /// The position window of the `/persona` window's `p` key, if open.
     pub pos_edit: Option<PosEdit>,
     /// Set while `card_modal` is the persona form, not the character card.
@@ -522,6 +527,7 @@ impl App {
             card_modal: None,
             image_modal: None,
             picker: None,
+            startup_pick: false,
             pos_edit: None,
             persona_edit: None,
             sys_edit: None,
@@ -2087,6 +2093,15 @@ impl App {
 
     // ------------------------------------------- /characters and /chats windows
 
+    /// Start-up: the character window over an empty screen (see `startup_pick`).
+    pub async fn open_startup_picker(&mut self) {
+        self.startup_pick = true;
+        self.open_characters_picker().await;
+        if let Some((_, p)) = self.picker.as_mut() {
+            p.title = "choose a character".to_string();
+        }
+    }
+
     /// `/characters`: choose another character to chat with.
     async fn open_characters_picker(&mut self) {
         let list = charstore::list();
@@ -2103,7 +2118,7 @@ impl App {
                         crate::char_display_name(c)
                     ),
                     detail: String::new(),
-                    current: avatar == self.chat.avatar,
+                    current: avatar == self.chat.avatar && !self.startup_pick,
                     deletable: true,
                     editable: false,
                     key: avatar,
@@ -2549,12 +2564,18 @@ impl App {
         };
         match act {
             PickAction::None => {}
-            PickAction::Cancel => self.picker = None,
+            PickAction::Cancel => {
+                self.picker = None;
+                // Nothing is open behind the start-up window: closing it quits.
+                if self.startup_pick && kind == PickKind::Characters {
+                    self.quit().await;
+                }
+            }
             PickAction::Choose(key) => {
                 self.picker = None;
                 match kind {
                     PickKind::Characters => {
-                        if key != self.chat.avatar {
+                        if key != self.chat.avatar || self.startup_pick {
                             self.leave(Exit::Character(key)).await;
                         }
                     }
@@ -2611,7 +2632,7 @@ impl App {
     /// Under `tarpi connect` the files go from the local copy and the sync
     /// passes the delete on (to the server and so to the other devices).
     async fn character_delete(&mut self, avatar: &str) {
-        let current = avatar == self.chat.avatar;
+        let current = avatar == self.chat.avatar && !self.startup_pick;
         // A reply that is being written in a one-shot chat can't be stopped,
         // and the chat can't be closed under it.
         if current && self.is_generating() && self.chat.is_one_shot() {
