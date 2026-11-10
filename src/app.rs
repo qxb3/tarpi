@@ -26,6 +26,7 @@ use crate::sysprompt;
 use crate::textgen;
 use crate::tokens;
 use crate::ui;
+use futures_util::FutureExt;
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -201,6 +202,10 @@ pub struct App {
     gen_handle: Option<JoinHandle<()>>,
     /// A running `/summarize` (its passes are generated one after the other).
     summary_job: Option<summary::Job>,
+    /// A running `/import` (a download can take a while) and when it started.
+    import_job: Option<(JoinHandle<anyhow::Result<charstore::Saved>>, Instant)>,
+    /// Said on the terminal once the chat screen has closed (see `main`).
+    pub exit_note: Option<String>,
     gen_tx: UnboundedSender<GenMsg>,
     pub should_quit: bool,
     /// Whether the terminal reports mouse events to us (off briefly on a
@@ -500,6 +505,8 @@ impl App {
             next_nudge: None,
             gen_handle: None,
             summary_job: None,
+            import_job: None,
+            exit_note: None,
             gen_tx,
             should_quit: false,
             mouse: true,
@@ -734,6 +741,9 @@ impl App {
             };
             return (text, false);
         }
+        if let Some((_, started)) = &self.import_job {
+            return (format!("importing\u{2026} {}s", started.elapsed().as_secs()), false);
+        }
         if let Some((text, is_err, when)) = &self.status {
             if when.elapsed() < Duration::from_secs(10) {
                 return (text.clone(), *is_err);
@@ -779,10 +789,59 @@ impl App {
                 self.set_mouse(true);
             }
         }
+        self.collect_import();
         if let Some((_, _, when)) = &self.status {
             if when.elapsed() >= Duration::from_secs(10) {
                 self.status = None;
             }
+        }
+    }
+
+    // ------------------------------------------------------------- /import
+
+    /// `/import <card>`: add a character card (file, chub.ai / pygmalion.chat
+    /// link, direct link or JSON text) to the characters folder. It runs in
+    /// the background, so the chat stays usable while a download is going.
+    /// The card lands in the data folder, which under `tarpi connect` is the
+    /// copy that the running sync uploads, so the other devices get it too.
+    async fn start_import(&mut self, arg: String) {
+        if self.import_job.is_some() {
+            self.set_status("an import is already running", false);
+            return;
+        }
+        let job = tokio::spawn(async move {
+            let saved = crate::import::import(&arg).await?;
+            let name = if saved.name.is_empty() { saved.avatar.clone() } else { saved.name.clone() };
+            crate::connect::report(format!("imported character {} ({})", name, saved.avatar));
+            Ok::<_, anyhow::Error>(saved)
+        });
+        self.status = None;
+        self.import_job = Some((job, Instant::now()));
+    }
+
+    /// Pick up the result of `/import` once it is done (called on every tick).
+    fn collect_import(&mut self) {
+        if !self.import_job.as_ref().is_some_and(|(j, _)| j.is_finished()) {
+            return;
+        }
+        let Some((job, _)) = self.import_job.take() else {
+            return;
+        };
+        match job.now_or_never() {
+            Some(Ok(Ok(saved))) => {
+                let name = if saved.name.is_empty() { saved.avatar.clone() } else { saved.name.clone() };
+                self.set_status(
+                    format!("imported \"{}\" ({}) \u{2014} switch to it with /chars", name, saved.avatar),
+                    false,
+                );
+            }
+            Some(Ok(Err(e))) => {
+                // One row: the message may have line breaks (a download that failed several ways).
+                let msg = format!("{:#}", e).split_whitespace().collect::<Vec<_>>().join(" ");
+                self.set_status(format!("import failed: {}", msg), true);
+            }
+            Some(Err(_)) => self.set_status("import failed (stopped)", true),
+            None => {}
         }
     }
 
@@ -1646,6 +1705,17 @@ impl App {
                     self.input.clear();
                     self.open_characters_picker().await;
                 }
+                "import" => {
+                    // Everything after the command is the card: a path, a link or JSON.
+                    let arg = cmd.trim_start_matches(|c: char| !c.is_whitespace()).trim().to_string();
+                    if arg.is_empty() {
+                        known = false;
+                        self.set_status(crate::import::USAGE, true);
+                    } else {
+                        self.input.clear();
+                        self.start_import(arg).await;
+                    }
+                }
                 "persona" | "personas" | "me" => {
                     self.input.clear();
                     self.open_persona_picker().await;
@@ -2034,13 +2104,15 @@ impl App {
                     ),
                     detail: String::new(),
                     current: avatar == self.chat.avatar,
-                    deletable: false,
+                    deletable: true,
                     editable: false,
                     key: avatar,
                 }
             })
             .collect();
-        self.picker = Some((PickKind::Characters, Picker::new("characters", items)));
+        let mut p = Picker::new("characters", items);
+        p.delete_what = " and its chats".to_string();
+        self.picker = Some((PickKind::Characters, p));
     }
 
     /// `/chats`: open, create or delete a chat of this character.
@@ -2512,6 +2584,7 @@ impl App {
             PickAction::Delete(key) => match kind {
                 PickKind::Personas => self.persona_delete(&key).await,
                 PickKind::SysPrompts => self.sysprompt_delete(&key).await,
+                PickKind::Characters => self.character_delete(&key).await,
                 _ => self.picker_delete(&key).await,
             },
             PickAction::Position(key) => {
@@ -2527,6 +2600,86 @@ impl App {
                 } else if kind == PickKind::SysPrompts {
                     self.picker = None;
                     self.open_sysprompt_form(Some(key)).await;
+                }
+            }
+        }
+    }
+
+    /// Delete a character chosen in the `/chars` window (the question was
+    /// asked by the window): its card and every chat it has. The window stays
+    /// open, except when it is the character of this chat: then tarpi quits.
+    /// Under `tarpi connect` the files go from the local copy and the sync
+    /// passes the delete on (to the server and so to the other devices).
+    async fn character_delete(&mut self, avatar: &str) {
+        let current = avatar == self.chat.avatar;
+        // A reply that is being written in a one-shot chat can't be stopped,
+        // and the chat can't be closed under it.
+        if current && self.is_generating() && self.chat.is_one_shot() {
+            if let Some((_, p)) = self.picker.as_mut() {
+                p.note = Some((
+                    "one-shot chat: wait for the reply to finish first".to_string(),
+                    true,
+                ));
+            }
+            return;
+        }
+        let name = charstore::get(avatar)
+            .map(|v| crate::char_display_name(&v))
+            .unwrap_or_else(|_| avatar.to_string());
+        let chats = chatstore::list(avatar)
+            .map(|l| {
+                l.iter()
+                    .filter(|c| !chat::is_summary_backup(&chat::file_id(c)))
+                    .count()
+            })
+            .unwrap_or(0);
+        if current {
+            // Stop first: finishing a generation would save the chat again.
+            self.quit().await;
+        }
+        let outcome = match charstore::delete(avatar) {
+            Err(e) => Err(format!("could not delete {}: {:#}", name, e)),
+            Ok(()) => match chatstore::delete_all(avatar) {
+                Ok(()) => Ok(()),
+                Err(e) => Err(format!(
+                    "deleted the card of {} but not all its chats: {:#}",
+                    name, e
+                )),
+            },
+        };
+        let what = match chats {
+            0 => String::new(),
+            1 => " and its 1 chat".to_string(),
+            n => format!(" and its {} chats", n),
+        };
+        let card_gone = charstore::get(avatar).is_err();
+        if card_gone {
+            crate::connect::report(format!("deleted character {}{}", name, what));
+        }
+        match (outcome, current) {
+            (Ok(()), true) => {
+                self.picker = None;
+                self.exit_note = Some(format!("Deleted \"{}\"{}.", name, what));
+            }
+            (Ok(()), false) => {
+                if let Some((_, p)) = self.picker.as_mut() {
+                    p.remove(avatar);
+                    p.note = Some((format!("deleted {}{}", name, what), false));
+                }
+            }
+            (Err(msg), _) => {
+                // Not gone: stay in the chat (the card may be half deleted).
+                if current && !card_gone {
+                    self.should_quit = false;
+                }
+                if current && card_gone {
+                    self.picker = None;
+                    self.exit_note = Some(msg.clone());
+                } else if let Some((_, p)) = self.picker.as_mut() {
+                    if card_gone {
+                        p.remove(avatar);
+                    }
+                    p.note = Some((msg, true));
                 }
             }
         }
@@ -3291,6 +3444,10 @@ impl App {
         }
         if self.is_generating() {
             self.cancel_generation().await;
+        }
+        // A download that is still going has nowhere to land.
+        if let Some((job, _)) = self.import_job.take() {
+            job.abort();
         }
         self.should_quit = true;
     }

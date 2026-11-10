@@ -12,7 +12,6 @@ mod cmds;
 mod config;
 mod conn;
 mod connect;
-mod delete;
 mod fmttui;
 mod formatting;
 mod gen;
@@ -81,8 +80,9 @@ enum Arrival {
     about = "Standalone terminal chat client for character cards",
     long_about = "Chat with a character from the terminal. Everything is kept by \
                   tarpi itself in ~/.config/tarpi/ (characters, personas, system prompts, \
-                  formatting, chats). Add cards with `tarpi import`; `tarpi import-st <url>` \
-                  can copy yours over from a SillyTavern server. Nothing needs a server \
+                  formatting, chats). Add cards with `/import` (in a chat or in the character \
+                  menu); `tarpi import-st <url>` can copy yours over from a \
+                  SillyTavern server. Nothing needs a server \
                   except the backend: replies come from the API connection managed with \
                   `/api` inside a chat.",
     args_conflicts_with_subcommands = true,
@@ -90,7 +90,8 @@ enum Arrival {
     after_help = concat!(
         "INSIDE A CHAT:\n",
         "  /chats          choose, create or delete chats (a window)\n",
-        "  /chars          choose another character (a window)\n",
+        "  /chars          choose another character; d deletes one (a window)\n",
+        "  /import <card>  add a character: card .png / .json file, chub.ai or pygmalion.chat link\n",
         "  /persona        choose who you are in the chat (a window)\n",
         "  /note           edit this chat's Author's Note (/an)\n",
         "  /one-shot       lock this chat: no editing, undo, regen, swipes, branches\n",
@@ -138,15 +139,9 @@ struct Cli {
 /// command name on (`Rest`).
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Import a character card into tarpi's characters folder (PNG or JSON file, chub.ai / pygmalion.chat URL, or JSON text)
-    #[command(disable_help_flag = true)]
-    Import(Rest),
     /// Copy the personas and characters of a SillyTavern server into tarpi's own folders
     #[command(disable_help_flag = true)]
     ImportSt(Rest),
-    /// Delete a character card together with all of its chats (asks first)
-    #[command(disable_help_flag = true)]
-    Delete(Rest),
     /// Share characters, chats, personas, system prompts and API connections with other devices (no chat screen)
     #[command(disable_help_flag = true)]
     Serve(Rest),
@@ -429,18 +424,40 @@ fn is_quit(s: &str) -> bool {
 
 const MENU_ROWS: usize = 40;
 
-/// Numbered character menu. Typing part of a name narrows the list.
-fn pick_character(list: &[Value]) -> Result<&Value> {
-    if list.is_empty() {
-        bail!("No characters yet. Add one with `tarpi import <card>` (or copy yours from SillyTavern with `tarpi import-st <url>`).");
+/// The cards in the characters folder, sorted by name.
+fn sorted_characters() -> Vec<Value> {
+    let mut v = charstore::list();
+    v.sort_by_key(|c| char_display_name(c).to_lowercase());
+    v
+}
+
+/// `/import <card>` typed in the character menu: what comes after it.
+fn import_arg(ans: &str) -> Option<&str> {
+    let head = ans.get(..7)?;
+    if !head.eq_ignore_ascii_case("/import") {
+        return None;
     }
-    let mut sorted: Vec<&Value> = list.iter().collect();
-    sorted.sort_by_key(|c| char_display_name(c).to_lowercase());
-    let mut shown: Vec<&Value> = sorted.clone();
+    let rest = &ans[7..];
+    if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+        Some(rest.trim())
+    } else {
+        None
+    }
+}
+
+/// Numbered character menu. Typing part of a name narrows the list;
+/// `/import <card>` adds a character first (the only way in when there are
+/// none yet), as inside a chat.
+async fn pick_character() -> Result<Value> {
+    let mut sorted = sorted_characters();
+    let mut shown: Vec<Value> = sorted.clone();
     let mut reprint = true;
     loop {
         if reprint {
             println!();
+            if sorted.is_empty() {
+                println!("No characters yet.");
+            }
             let w = format!("[{}]", shown.len().min(MENU_ROWS)).len();
             for (i, c) in shown.iter().enumerate().take(MENU_ROWS) {
                 println!(
@@ -457,12 +474,36 @@ fn pick_character(list: &[Value]) -> Result<&Value> {
                     shown.len() - MENU_ROWS
                 );
             }
+            println!("[/import <card file or chub.ai / pygmalion.chat link>] add a character");
             println!("[q] quit");
             reprint = false;
         }
         let Some(ans) = ask("\nSelect > ") else {
             std::process::exit(0);
         };
+        if let Some(arg) = import_arg(&ans) {
+            if arg.is_empty() {
+                println!("{}", import::USAGE);
+                continue;
+            }
+            println!("Importing...");
+            match import::import(arg).await {
+                Ok(saved) => {
+                    let name = if saved.name.is_empty() {
+                        saved.avatar.clone()
+                    } else {
+                        saved.name.clone()
+                    };
+                    println!("Imported \"{}\" ({})", name, saved.avatar);
+                    connect::report(format!("imported character {}", name));
+                    sorted = sorted_characters();
+                    shown = sorted.clone();
+                    reprint = true;
+                }
+                Err(e) => println!("{:#}", e),
+            }
+            continue;
+        }
         if ans.is_empty() {
             shown = sorted.clone();
             reprint = true;
@@ -473,23 +514,23 @@ fn pick_character(list: &[Value]) -> Result<&Value> {
         }
         if let Ok(n) = ans.parse::<usize>() {
             if n >= 1 && n <= shown.len() {
-                return Ok(shown[n - 1]);
+                return Ok(shown[n - 1].clone());
             }
             println!("there is no number {}", n);
             continue;
         }
         let q = ans.to_lowercase();
-        let hits: Vec<&Value> = sorted
+        let hits: Vec<Value> = sorted
             .iter()
-            .copied()
             .filter(|c| jstr(c, "name").to_lowercase().contains(&q) || avatar_stem(c).contains(&q))
+            .cloned()
             .collect();
         if let Some(e) = hits.iter().find(|c| jstr(c, "name").to_lowercase() == q) {
-            return Ok(*e);
+            return Ok(e.clone());
         }
         match hits.len() {
             0 => println!("nothing matches '{}'", ans),
-            1 => return Ok(hits[0]),
+            1 => return Ok(hits[0].clone()),
             _ => {
                 shown = hits;
                 reprint = true;
@@ -502,13 +543,6 @@ enum Want {
     Latest,
     New,
     File(String),
-}
-
-/// Ask a yes/no question; anything but "y"/"yes" is a no.
-fn confirm(prompt: &str) -> bool {
-    ask(prompt)
-        .map(|a| matches!(a.to_lowercase().as_str(), "y" | "yes"))
-        .unwrap_or(false)
 }
 
 /// Termux or any other Android terminal.
@@ -686,9 +720,7 @@ async fn main() -> Result<()> {
     // syncs first (see `connect`), then you pick a character as usual.
     let mut sync_session: Option<connect::Session> = None;
     match cli.command.take() {
-        Some(Commands::Import(_)) => return import::run().await,
         Some(Commands::ImportSt(_)) => return import_st::run().await,
-        Some(Commands::Delete(_)) => return delete::run().await,
         Some(Commands::Serve(_)) => return serve::run().await,
         Some(Commands::Connect(_)) => sync_session = Some(connect::run().await?),
         None => {}
@@ -726,7 +758,7 @@ async fn main() -> Result<()> {
     // ---- who to chat with, and which chat
     let mut entry: Value = match cli.character.as_deref() {
         Some(q) => find_character(&characters, q)?.clone(),
-        None if interactive => pick_character(&characters)?.clone(),
+        None if interactive => pick_character().await?,
         None => {
             eprintln!("Usage: tarpi [character] [chat] [-n]   (tarpi --help for more)\n");
             eprintln!("Characters:");
@@ -844,6 +876,10 @@ async fn main() -> Result<()> {
         restore_terminal();
         let _ = term.show_cursor();
         result?;
+        // Said after the screen is gone (a character was deleted: tarpi quit).
+        if let Some(note) = app.exit_note.take() {
+            println!("{}", note);
+        }
         mouse_on = app.mouse || touch;
         if connect::server_lost() {
             break;

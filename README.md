@@ -2,7 +2,7 @@
 
 A standalone, chat-only terminal client for character cards. Characters, personas, system prompts, formatting, API connections and chats are all tarpi's own, so nothing needs a SillyTavern server (or any server except your model backend).
 
-Characters, personas and system prompts are tarpi's own, kept in `~/.config/tarpi/characters/`, `~/.config/tarpi/persona/` and `~/.config/tarpi/system-prompt.jsonl` (see Importing characters, Personas and System prompts). Chats are tarpi's too (`~/.config/tarpi/chats/`). `tarpi` only chats. Chats are saved as SillyTavern-format `.jsonl` files in `~/.config/tarpi/chats/`.
+Characters, personas and system prompts are tarpi's own, kept in `~/.config/tarpi/characters/`, `~/.config/tarpi/persona/` and `~/.config/tarpi/system-prompt.jsonl` (see Importing characters, Deleting characters, Personas and System prompts). Chats are tarpi's too (`~/.config/tarpi/chats/`). `tarpi` only chats. Chats are saved as SillyTavern-format `.jsonl` files in `~/.config/tarpi/chats/`.
 
 ```
 tarpi                  # pick a character, then chat
@@ -11,14 +11,12 @@ tarpi sofia 3          # open Sofia's chat number 3 (or by name: Sofia03)
 tarpi sofia -n         # start a new chat (named Sofia01, Sofia02, ...)
 tarpi -l               # list characters
 tarpi sofia -l         # list Sofia's chats
-tarpi import <source>  # add a character card to ~/.config/tarpi/characters (see below)
 tarpi import-st <url>  # copy the personas, system prompts and characters of a SillyTavern server
-tarpi delete [sofia]   # delete a character card and all its chats (asks first)
 tarpi serve            # share everything with other devices (no chat screen; see Sharing between devices)
 tarpi connect [token]  # chat with the data of the machine named by serve_url (see Sharing between devices)
 ```
 
-That is the whole command line: `[character] [chat]`, plus `-n` (new chat) and `-l` (list), and the commands `import`, `import-st`, `delete`, `serve` and `connect`.
+That is the whole command line: `[character] [chat]`, plus `-n` (new chat) and `-l` (list), and the commands `import-st`, `serve` and `connect`. Characters are added and deleted inside tarpi: `/import` and `d` in the `/chars` window (see *Importing characters* and *Deleting characters*).
 
 Everything else happens inside the chat:
 
@@ -30,7 +28,8 @@ Everything else happens inside the chat:
 | `/system` | opens a window to choose the system prompt; `+ new system prompt` creates one, `e` edits, `d` deletes (see *System prompts*) |
 | `/prompt` | opens a window with the whole prompt the next reply would be sent with, as plain text (see *Prompt window*) |
 | `/note` or `/an` | opens this chat's Author's Note in a form: the text and where, how deep and how often it is sent (see *Author's Note*) |
-| `/chars` | opens a window with every character (★ = favourite) to switch to someone else |
+| `/chars` | opens a window with every character (★ = favourite) to switch to someone else, or press `d` on one to delete it with all its chats (asks `y`; see *Deleting characters*) |
+| `/import <card>` | adds a character: a card `.png` / `.json` file, a chub.ai or pygmalion.chat link, a direct link to a card file, or the card's JSON text (see *Importing characters*) |
 | `/api` | open the API settings (llama.cpp address and every model setting) right here; when you quit them (`q` / Esc) you are back in this same chat, and the very next reply uses what you saved |
 | `/formatting` | open the formatting editor: context template (story string), instruct template and reply cleanup; when you quit it (`q` / Esc) you are back in this same chat (see *Formatting*) |
 | `/char` | open this character's card in a window: every field, editable, with **Cancel** and **Save** (see below) |
@@ -114,6 +113,7 @@ What the server sees by itself is the live connection (`connected` / `disconnect
 - Token counts (the status row) are asked from the server's own backend through `tarpi serve`, so the address in the shared connection does not have to be reachable from this device. For replies and the connection check, a shared address of `127.0.0.1`, `localhost` or `0.0.0.0` is read as the server's host (same port), so llama.cpp must listen on a network address there (`--host 0.0.0.0`). With `--local-api` this device's own connection counts them.
 - The connection is watched over one TCP connection that stays open (both sides send a byte every 50 ms): if `tarpi serve` is stopped or the machine goes away, or this device loses its network, `tarpi connect` quits at once; a link that just goes silent is noticed after 0.3 seconds. A busy or slow link can therefore close it by mistake; nothing is lost when that happens. Against an older `tarpi serve` it asks every 2 seconds instead (about 6 seconds). Your changes stay in the local copy and are sent the next time you connect. A server that answers with a refusal (a new token, say) is still "there".
 - `--local-api` keeps `api.yaml` on this device: a phone usually cannot reach a model at the server's `127.0.0.1:8080`, so give it its own connection with `/api`. Without it, the API connections are shared like everything else.
+- Characters are added with `/import` and deleted with `d` in `/chars` on the connected device like on a single machine; the sync carries both (see *Importing and deleting while connected*).
 - Chats open on two devices at once behave like two terminals on one file: when another device has changed the open chat, saving it is refused (`save refused ... Reopen tarpi`) and nothing is lost; reopen the chat to load the other device's version.
 
 **Security.** `serve_trust_all` (in `config.yaml`, default `false`) decides whether a token is needed. With `false`, `tarpi serve` makes and requires the token, and `tarpi connect` asks for it when it has none. With `true`, `tarpi serve` lets in everyone who can reach the port without a token (it says so when it starts). `tarpi connect` does not need the setting: it first asks the server whether a token is wanted and only asks for one when it is, so `serve_trust_all` only has to be set on the serving machine. Only do that on a network you fully trust: whoever reaches the port can read and change every shared file. The token is otherwise the only protection and the connection is plain HTTP (no encryption), so use it on a network you trust, or use `--local` and an SSH tunnel (`ssh -L 7878:127.0.0.1:7878 server`, then `serve_url: 127.0.0.1:7878` and `tarpi connect`). Anyone who has the token can read and change every shared file, including any API key in `api.yaml`. `--new-token` locks everyone out until they are given the new one. If the port does not answer from another device, check the firewall of the serving machine.
@@ -337,25 +337,29 @@ A character is identified by `Name.png` whichever of the two it is stored as; th
 
 ## Importing characters
 
-```
-tarpi import sofia.png                                    # V2/V3 card PNG
-tarpi import sofia.json                                   # card JSON (V1, V2, V3, Pygmalion)
-tarpi import '{"name": "Sofia", ...}'                     # JSON given directly
-tarpi import https://chub.ai/characters/<creator>/<name>  # chub.ai (also characterhub.org)
-tarpi import https://pygmalion.chat/character/<id>        # pygmalion.chat
-tarpi import https://example.com/cards/sofia.png         # direct link to a card .png or .json
-```
-
-The card is saved as it came into `~/.config/tarpi/characters/`, named after the character (`Sofia.png`, or `Sofia-2.png` when that name is taken; a PNG stays a PNG, JSON stays JSON). Before saving, tarpi checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and gives a clear error if not. Any other http(s) link is treated as a direct link to a card file: tarpi downloads it itself (up to 50 MB; the file type is detected from its content, not the URL) and runs the same check. chub.ai (also characterhub.org) and pygmalion.chat links (`/character/<id>`) are downloaded by tarpi straight from those sites (chub.ai: the card PNG on its image host, then its download endpoints one after the other, because chub changes them now and then; pygmalion.chat: its export endpoint). When every attempt fails, each one's reason is listed; downloading the card PNG in a browser and importing the file always works; no other program is needed. Lorebook links are refused.
-
-### Importing to the machine you `connect` to
+`/import` adds a character card. Type it in the input box of a chat, followed by what to import:
 
 ```
-tarpi import sofia.png --remote
-tarpi import https://chub.ai/characters/<creator>/<n> --remote
+/import sofia.png                                    # V2/V3 card PNG
+/import ~/Downloads/sofia.json                       # card JSON (V1, V2, V3, Pygmalion)
+/import /path with spaces/sofia.png                  # quotes or \ before spaces also work
+/import https://chub.ai/characters/<creator>/<name>  # chub.ai (also characterhub.org)
+/import https://pygmalion.chat/character/<id>        # pygmalion.chat
+/import https://example.com/cards/sofia.png          # direct link to a card .png or .json
+/import {"name": "Sofia", ...}                       # JSON given directly
 ```
 
-Without `--remote`, `tarpi import` fills this device's own `~/.config/tarpi/characters/`, which `tarpi connect` does not use (it works on a copy of the server's data). With `--remote` the card goes to the machine named by `serve_url` (see *Sharing between devices*): tarpi reaches the server, brings the local copy in `remote/` up to date (so a name that is already taken there is noticed and the card becomes `Sofia-2.png`), imports into that copy and uploads the card at once. Every other device that connects gets it at its next sync. The token is the remembered one (or `TARPI_TOKEN`, or it is asked for), and the server's log shows `added character Sofia (uploaded)`. If the upload fails the card stays in the local copy and is sent the next time you run `tarpi connect`.
+A path is read like a shell would: `~` is your home folder, a relative path starts from the folder tarpi was started in, and quotes, `\ ` (a backslash before a space, as a terminal pastes a dragged file) and `file://` links are understood. `/import` with nothing after it shows what it takes.
+
+The card is saved as it came into `~/.config/tarpi/characters/`, named after the character (`Sofia.png`, or `Sofia-2.png` when that name is taken; a PNG stays a PNG, JSON stays JSON). Before saving, tarpi checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and says so if not. Any other http(s) link is treated as a direct link to a card file: tarpi downloads it itself (up to 50 MB; the file type is detected from its content, not the URL) and runs the same check. chub.ai (also characterhub.org) and pygmalion.chat links (`/character/<id>`) are downloaded by tarpi straight from those sites (chub.ai: the card PNG on its image host, then its download endpoints one after the other, because chub changes them now and then; pygmalion.chat: its export endpoint). When every attempt fails, each one's reason is listed; downloading the card PNG in a browser and importing the file always works; no other program is needed. Lorebook links are refused.
+
+The import runs in the background: the status row shows `importing… 5s` while a download is going and you can keep chatting; when it is done the status row says `imported "Sofia" (Sofia.png)` (or why it failed, on one row). Then `/chars` lists the new character. One import runs at a time, and leaving the chat (another character, quitting) cancels one that is still downloading.
+
+Before a chat is open, the character menu that `tarpi` prints takes the same command: type `/import <card>` at its `Select >` prompt (the only way to add the first character, when the folder is empty), and the list is shown again with the new card.
+
+### Importing and deleting while connected
+
+Nothing different has to be done on a device that uses `tarpi connect`: there the characters folder *is* the local copy of the server's data (see *Sharing between devices*), so `/import` and the delete in `/chars` change that copy and the running sync passes it on at once (within a fraction of a second; a final sync also runs when you quit). The server's log shows `added character Sofia (uploaded)`, `deleted ...` lines and, from the device itself, `imported character Sofia (Sofia.png)` / `deleted character Sofia and its 3 chats`, and every other device that is connected has the change at its next sync. A card name that the server already has is noticed because the copy is brought up to date before the screen opens (`Sofia-2.png`); two devices importing the same new name at the same moment end up as a conflict, where the newer file wins and the older one is kept beside it (see *Sharing between devices*). Without `tarpi connect`, `/import` and the delete change this device's own `~/.config/tarpi/` only, as before.
 
 ### Copying everything from SillyTavern
 
@@ -363,13 +367,11 @@ Without `--remote`, `tarpi import` fills this device's own `~/.config/tarpi/char
 
 ## Deleting characters
 
-```
-tarpi delete           # pick a character from a list
-tarpi delete sofia     # a partial name works
-tarpi delete sofia -y  # no confirmation question (needed when not in a terminal)
-```
+`/chars` opens the window with every character; press `d` on one and it asks `Delete 'Sofia' and its chats? y = yes, other = no` (only `y` says yes; Enter does not). Then the card file is deleted from the characters folder and the character's folder in `chats/` goes with it, the `_before-summary` copies too. The window stays open with a note saying what was deleted (`deleted Sofia and its 3 chats`), and the list is shorter.
 
-It shows how many chats the character has and asks `Really delete? [y/N]`. Then the card file is deleted from the characters folder and the character's folder in `chats/` goes with it. This cannot be undone. Nothing on a SillyTavern server is touched.
+When the character you delete is the one you are chatting with, the question adds `(quits tarpi)` and after the `y` tarpi stops the reply that is being written, deletes everything and exits, printing `Deleted "Sofia" and its 3 chats.` In a `/one-shot` chat a reply that is being written can't be stopped, so the open character can't be deleted until it is done.
+
+This cannot be undone. Nothing on a SillyTavern server is touched. With `tarpi connect` the files go from the local copy and the sync deletes them on the server too (see *Importing and deleting while connected*): a file that was changed on the other side in the meantime is never deleted, so a chat another device wrote just before is kept in `chats/` (not shown while the card is gone; importing a card of the same name shows it again).
 
 ## Phone / Termux (touch)
 

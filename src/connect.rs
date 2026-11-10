@@ -240,16 +240,6 @@ impl Client {
         }
     }
 
-    /// Tell the server's log something (see `report`); a failure is ignored.
-    pub async fn event(&self, text: &str) {
-        let _ = self
-            .req(Method::POST, "/v1/event")
-            .timeout(Duration::from_secs(5))
-            .json(&serde_json::json!({ "text": text }))
-            .send()
-            .await;
-    }
-
     /// Ask the server, without a token, whether it wants one. A server that
     /// answers 401 wants one (older versions); a server that answers the ping
     /// says so itself (`token`, false with `serve_trust_all: true`).
@@ -772,18 +762,6 @@ async fn open(token_arg: Option<String>, local_api: bool) -> Result<Link> {
         private(&token_file);
     }
     Ok(Link { client, base, token })
-}
-
-/// `tarpi import --remote`: reach the server, bring the local copy up to date
-/// (so a card name that is taken there is noticed) and return the connection.
-/// From here on the stores read and write the copy; the caller imports, then
-/// calls `Client::cycle` to upload it.
-pub async fn open_remote() -> Result<Client> {
-    let token = std::env::var("TARPI_TOKEN").ok();
-    let Link { mut client, base, .. } = open(token, false).await?;
-    eprintln!("Syncing with {} ...", base);
-    client.cycle().await?;
-    Ok(client)
 }
 
 pub async fn run() -> Result<Session> {

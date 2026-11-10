@@ -51,6 +51,9 @@ pub struct Picker {
     /// The `p` key asks for the position settings of an editable entry (the
     /// `/persona` window).
     pub position_key: bool,
+    /// What else goes with an entry when it is deleted, said in the question
+    /// (`/chars`: " and its chats"); empty for none.
+    pub delete_what: String,
 }
 
 impl Picker {
@@ -66,6 +69,7 @@ impl Picker {
             confirm: None,
             note: None,
             position_key: false,
+            delete_what: String::new(),
         };
         p.sel = p.items.iter().position(|i| i.current).unwrap_or(0);
         p
@@ -126,7 +130,9 @@ impl Picker {
     pub fn handle_key(&mut self, k: KeyEvent) -> Action {
         if let Some(key) = self.confirm.take() {
             return match k.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => Action::Delete(key),
+                KeyCode::Char('y') | KeyCode::Char('Y') => Action::Delete(key),
+                // Where deleting takes more with it (`delete_what`), only `y` says yes.
+                KeyCode::Enter if self.delete_what.is_empty() => Action::Delete(key),
                 _ => Action::None,
             };
         }
@@ -176,5 +182,58 @@ impl Picker {
             _ => {}
         }
         Action::None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    fn item(k: &str, current: bool) -> Item {
+        Item {
+            key: k.to_string(),
+            label: k.to_string(),
+            detail: String::new(),
+            current,
+            deletable: true,
+            editable: false,
+        }
+    }
+
+    #[test]
+    fn d_asks_and_only_y_deletes_when_more_goes_with_it() {
+        let mut p = Picker::new("characters", vec![item("a.png", true), item("b.png", false)]);
+        p.delete_what = " and all its chats".to_string();
+        p.sel = 1;
+        assert!(matches!(p.handle_key(key(KeyCode::Char('d'))), Action::None));
+        assert_eq!(p.confirm.as_deref(), Some("b.png"));
+        // Enter is not a yes here; the question is over.
+        assert!(matches!(p.handle_key(key(KeyCode::Enter)), Action::None));
+        assert!(p.confirm.is_none());
+        p.handle_key(key(KeyCode::Char('d')));
+        match p.handle_key(key(KeyCode::Char('y'))) {
+            Action::Delete(k) => assert_eq!(k, "b.png"),
+            _ => panic!("y should delete"),
+        }
+    }
+
+    #[test]
+    fn enter_still_confirms_a_plain_delete() {
+        let mut p = Picker::new("chats", vec![item("a", false)]);
+        p.handle_key(key(KeyCode::Char('d')));
+        assert!(matches!(p.handle_key(key(KeyCode::Enter)), Action::Delete(_)));
+    }
+
+    #[test]
+    fn removing_an_entry_keeps_the_selection_in_range() {
+        let mut p = Picker::new("characters", vec![item("a", false), item("b", false)]);
+        p.sel = 1;
+        p.remove("b");
+        assert_eq!(p.sel, 0);
+        assert_eq!(p.items.len(), 1);
     }
 }

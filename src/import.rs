@@ -1,46 +1,24 @@
-//! `tarpi import <file | url | json>`: add a character card to tarpi's own
-//! characters folder (`~/.config/tarpi/characters/`, see `charstore`).
+//! `/import <file | link | json>`: add a character card to tarpi's own
+//! characters folder (`~/.config/tarpi/characters/`, see `charstore`) from
+//! inside the chat screen (or the character menu shown before it).
 //!
 //! The card is stored as it came: a PNG with an embedded card stays a PNG, a
 //! JSON card (V1, V2, V3, Pygmalion) stays JSON. chub.ai / characterhub.org and
 //! pygmalion.chat links are downloaded directly from those sites. This module
 //! checks the input first so that a wrong file fails with a clear message.
+//!
+//! The card is written into the folder `config::characters_dir` names, which
+//! under `tarpi connect` is the local copy of the server's data: the running
+//! sync uploads the new card from there, so nothing here knows about it.
+//! Nothing in this module prints: it runs while the chat screen is open.
 
 use crate::charstore;
-use crate::config;
 use anyhow::{anyhow, bail, Context, Result};
-use clap::Parser;
 use serde_json::Value;
 use std::path::PathBuf;
 
-#[derive(Parser, Debug)]
-#[command(
-    name = "tarpi import",
-    about = "Import a character card into tarpi",
-    long_about = "Import a character card into tarpi's own characters folder, \
-                  ~/.config/tarpi/characters/. PNG cards keep their picture, JSON-only \
-                  cards are stored as JSON. chub.ai and pygmalion.chat links are \
-                  downloaded directly from those sites.",
-    after_help = concat!(
-        "EXAMPLES:\n",
-        "  tarpi import sofia.png                        V2/V3 card PNG\n",
-        "  tarpi import sofia.json                       card JSON (V1, V2, V3, Pygmalion)\n",
-        "  tarpi import '{\"name\":\"Sofia\", ...}'          JSON given directly\n",
-        "  tarpi import https://chub.ai/characters/user/sofia-1a2b3c\n",
-        "  tarpi import chub.ai/characters/user/sofia-1a2b3c\n",
-        "  tarpi import https://pygmalion.chat/character/<id>\n",
-        "  tarpi import https://example.com/cards/sofia.png    direct link to a .png / .json card\n",
-        "  tarpi import sofia.png --remote               add it to the machine `tarpi serve` runs on"
-    )
-)]
-struct ImportCli {
-    /// Import into the data of the machine named by `serve_url` (as `tarpi connect` does) and upload the card to it, instead of into this device's own characters folder
-    #[arg(long)]
-    remote: bool,
-
-    /// A card file (.png / .json), a chub.ai / pygmalion.chat character URL, a direct link to a .png / .json card, or JSON text
-    source: String,
-}
+/// What `/import` with nothing after it says.
+pub const USAGE: &str = "usage: /import <card .png or .json file, or a chub.ai / pygmalion.chat link>";
 
 /// What the user gave us.
 #[derive(Debug, PartialEq)]
@@ -74,114 +52,73 @@ impl Kind {
     }
 }
 
-pub async fn run() -> Result<()> {
-    // argv is `tarpi import ...`; drop the program name so that "import"
-    // plays the part of the binary name in clap's messages.
-    let cli = ImportCli::parse_from(std::env::args().skip(1));
+/// Add the card `arg` names to the characters folder: a card file (`.png` /
+/// `.json`), a chub.ai / pygmalion.chat character link, a direct link to a
+/// card file, or the card's JSON text. The card is checked first and a name
+/// that is taken gets `-2`, `-3`, ... (see `charstore::save`).
+pub async fn import(arg: &str) -> Result<charstore::Saved> {
+    let (bytes, file_name) = fetch(arg).await?;
+    charstore::save(&bytes, &file_name, None, false)
+}
 
-    // Check local input before touching the network.
-    let source = classify(&cli.source)?;
-    let mut remote: Option<(String, Site)> = None;
-    let mut local: Option<(Vec<u8>, String, Kind)> = None;
-    match source {
+/// The card's bytes and a file name for it, checked to be a usable card.
+async fn fetch(arg: &str) -> Result<(Vec<u8>, String)> {
+    match classify(arg)? {
         Source::File(path) => {
             let bytes = std::fs::read(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
-            let kind = validate(&bytes)
+            validate(&bytes)
                 .with_context(|| format!("{} is not a usable character card", path.display()))?;
             let name = path
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "card".to_string());
-            local = Some((bytes, name, kind));
+            Ok((bytes, name))
         }
         Source::Inline(text) => {
             let bytes = text.into_bytes();
-            let kind = validate(&bytes).context("that JSON is not a usable character card")?;
-            local = Some((bytes, "card.json".to_string(), kind));
+            validate(&bytes).context("that JSON is not a usable character card")?;
+            Ok((bytes, "card.json".to_string()))
         }
         Source::Url(u) => {
             let site = check_url(&u)?;
-            remote = Some((u, site));
-        }
-    }
-
-    let (bytes, file_name, _kind) = match (local, remote) {
-        (Some(x), _) => x,
-        (None, Some((u, site))) => {
-            eprintln!("Downloading...");
-            let (bytes, name, content) = match site {
-                Site::Chub => {
-                    let (bytes, name) = download_chub(&u).await?;
-                    (bytes, name, String::new())
-                }
-                Site::Pygmalion => {
-                    let (bytes, name) = download_pygmalion(&u).await?;
-                    (bytes, name, String::new())
-                }
-                Site::Direct => {
-                    let (bytes, name) = download_direct(&u).await?;
-                    (bytes, name, String::new())
-                }
+            let (bytes, name) = match site {
+                Site::Chub => download_chub(&u).await?,
+                Site::Pygmalion => download_pygmalion(&u).await?,
+                Site::Direct => download_direct(&u).await?,
             };
-            if content == "lorebook" {
-                bail!(
-                    "that URL is a lorebook. tarpi imports characters only \
-                     (it has no World Info support)."
-                );
-            }
             let kind = validate(&bytes).context("the downloaded file is not a character card")?;
             let name = if name.is_empty() {
                 format!("card.{}", kind.file_type())
             } else {
                 name
             };
-            (bytes, name, kind)
+            Ok((bytes, name))
         }
-        (None, None) => unreachable!("a source is either local or a URL"),
-    };
-
-    // `--remote`: work on the copy of the server's data (brought up to date
-    // first, so a name that is taken there is noticed).
-    let mut remote_client = if cli.remote {
-        Some(crate::connect::open_remote().await?)
-    } else {
-        None
-    };
-
-    let saved = charstore::save(&bytes, &file_name, None, false)?;
-    let name = if saved.name.is_empty() {
-        saved.avatar.clone()
-    } else {
-        saved.name.clone()
-    };
-    if let Some(client) = remote_client.as_mut() {
-        let stats = client.cycle().await.context(
-            "the card is saved in the local copy but could not be uploaded; \
-             it is sent the next time you run `tarpi connect`",
-        )?;
-        if stats.pushed == 0 {
-            bail!(
-                "the card is saved in the local copy but the server did not take it; \
-                 it is sent the next time you run `tarpi connect`"
-            );
-        }
-        client
-            .event(&format!("imported character {} (tarpi import --remote)", name))
-            .await;
-        println!("Imported \"{}\" ({}) and uploaded it to the server", name, saved.avatar);
-    } else {
-        println!(
-            "Imported \"{}\" ({}) into {}",
-            name,
-            saved.avatar,
-            config::characters_dir()
-                .map(|d| d.display().to_string())
-                .unwrap_or_else(|| "the characters folder".to_string())
-        );
     }
-    println!("Chat with it:  tarpi \"{}\"", name);
-    Ok(())
+}
+
+/// A path as typed or pasted into the chat box: it may be in quotes, have
+/// `\ ` for its spaces (how terminals paste a dragged file), be a `file://`
+/// link or start with `~` (the shell does none of that here).
+fn expand_path(t: &str) -> PathBuf {
+    let mut s = t.trim().to_string();
+    let quoted = s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')));
+    if quoted {
+        s = s[1..s.len() - 1].to_string();
+    }
+    if let Some(rest) = s.strip_prefix("file://") {
+        s = percent_decode(rest);
+    } else {
+        s = s.replace("\\ ", " ");
+    }
+    if s == "~" || s.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(s[1..].trim_start_matches('/'));
+        }
+    }
+    PathBuf::from(s)
 }
 
 /// Decide what `arg` is: JSON text, a URL, or a file.
@@ -194,7 +131,7 @@ fn classify(arg: &str) -> Result<Source> {
     if lower.starts_with("http://") || lower.starts_with("https://") {
         return Ok(Source::Url(t.to_string()));
     }
-    let path = PathBuf::from(t);
+    let path = expand_path(t);
     if path.is_file() {
         return Ok(Source::File(path));
     }
@@ -209,8 +146,8 @@ fn classify(arg: &str) -> Result<Source> {
         bail!("{} is a directory; give a card file", t);
     }
     bail!(
-        "'{}' is not an existing file, a card URL or JSON text. \
-         See `tarpi import --help`.",
+        "'{}' is not an existing file, a chub.ai / pygmalion.chat link, a link to a card \
+         file or JSON text",
         t
     )
 }
@@ -647,5 +584,30 @@ mod tests {
         assert_eq!(check_url("https://chub.ai/characters/u/n").unwrap(), Site::Chub);
         assert_eq!(check_url("https://example.com/c/sofia.png").unwrap(), Site::Direct);
         assert_eq!(check_url("https://example.com/c/sofia.json?x=1").unwrap(), Site::Direct);
+    }
+
+    #[test]
+    fn typed_paths_are_understood() {
+        assert_eq!(expand_path("/tmp/a b.png"), PathBuf::from("/tmp/a b.png"));
+        assert_eq!(expand_path("'/tmp/a b.png'"), PathBuf::from("/tmp/a b.png"));
+        assert_eq!(expand_path("\"/tmp/a b.png\""), PathBuf::from("/tmp/a b.png"));
+        assert_eq!(expand_path("/tmp/a\\ b.png"), PathBuf::from("/tmp/a b.png"));
+        assert_eq!(expand_path("file:///tmp/a%20b.png"), PathBuf::from("/tmp/a b.png"));
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(expand_path("~/cards/a.png"), home.join("cards/a.png"));
+            assert_eq!(expand_path("~"), home.join(""));
+        }
+        // Not a home directory reference.
+        assert_eq!(expand_path("~x/a.png"), PathBuf::from("~x/a.png"));
+    }
+
+    #[test]
+    fn classify_tells_the_kinds_apart() {
+        assert!(matches!(classify("{\"name\":\"A\"}").unwrap(), Source::Inline(_)));
+        assert!(matches!(
+            classify("https://chub.ai/characters/u/n").unwrap(),
+            Source::Url(_)
+        ));
+        assert!(classify("/definitely/not/here.png").is_err());
     }
 }

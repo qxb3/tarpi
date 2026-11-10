@@ -30,6 +30,7 @@ pub const COMMANDS: &[Cmd] = &[
     cmd("char", "", "view and edit this character's card"),
     cmd("chars", "", "switch to another character"),
     cmd("char-img", "", "show the card's picture"),
+    cmd("import", "", "add a character: card file or chub / pygmalion link"),
     cmd("persona", "", "choose who you are in the chat"),
     cmd("system", "", "choose, create or edit the system prompt"),
     cmd("prompt", "", "show the whole prompt of the next reply"),
@@ -92,6 +93,12 @@ mod tests {
         assert_eq!(names("char"), vec!["char", "chars", "char-img"]);
         assert_eq!(names("chars"), vec!["chars"]);
         assert!(names("characters").is_empty());
+    }
+
+    #[test]
+    fn import_is_offered() {
+        assert_eq!(names("imp"), vec!["import"]);
+        assert_eq!(names("i"), vec!["import"]);
     }
 
     #[test]

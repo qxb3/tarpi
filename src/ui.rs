@@ -603,7 +603,10 @@ const HELP: &[&str] = &[
     "/deletebranch    delete the branch that is showing (also /db)",
     "/chats           window to open, create or delete (d) chats of this",
     "                 character",
-    "/chars           window to switch to another character",
+    "/chars           window to switch to another character, or delete one",
+    "                 (d, asks first; takes all its chats with it)",
+    "/import <card>   add a character: a card .png / .json file, a chub.ai",
+    "                 or pygmalion.chat link (or a link to a card file)",
     "/persona         window to choose who you are in the chat; p sets where",
     "                 its description goes into the prompt",
     "/system          window to choose, create (+), edit (e) or delete (d)",
@@ -1025,16 +1028,26 @@ pub fn draw_picker(f: &mut Frame, area: Rect, p: &mut Picker) {
     f.render_widget(Clear, rect);
 
     let bottom: Line<'static> = if let Some(key) = &p.confirm {
-        let shown = p
+        let (shown, open_now) = p
             .items
             .iter()
             .find(|i| i.key == *key)
-            .map(|i| i.label.clone())
-            .unwrap_or_else(|| key.clone());
-        Line::from(Span::styled(
-            format!(" Delete '{}'? y = yes, any other key = no ", shown),
-            Style::default().fg(Color::Red),
-        ))
+            .map(|i| (i.label.clone(), i.current))
+            .unwrap_or_else(|| (key.clone(), false));
+        // Where deleting takes more with it (a character's chats) the window
+        // says so, and that deleting the open one closes tarpi.
+        // (The window is at most 76 columns wide, so the question is kept short.)
+        let text = if p.delete_what.is_empty() {
+            format!(" Delete '{}'? y = yes, any other key = no ", shown)
+        } else {
+            format!(
+                " Delete '{}'{}{}? y = yes, other = no ",
+                fit_cols(&shown, 12),
+                p.delete_what,
+                if open_now { " (quits tarpi)" } else { "" }
+            )
+        };
+        Line::from(Span::styled(text, Style::default().fg(Color::Red)))
     } else if let Some((msg, is_err)) = &p.note {
         Line::from(Span::styled(
             format!(" {} ", msg),
