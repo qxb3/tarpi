@@ -249,64 +249,14 @@ fn sort_chats_newest_first(chats: &mut [Value]) {
 }
 
 /// When a chat was last used, in ms since the epoch (0.0 if unknown).
-/// SillyTavern has sent `last_mes` as a millisecond number (file mtime) and,
-/// in newer versions, as a date string (ISO 8601 or its own formats).
+/// `chatstore::list` fills `last_mes` with the chat file's mtime in ms.
 fn last_ms(c: &Value) -> f64 {
-    // Some servers send seconds; anything below 1e11 cannot be ms in this century.
-    let norm = |x: f64| if x > 0.0 && x < 1e11 { x * 1000.0 } else { x };
-    match c.get("last_mes") {
-        Some(Value::Number(n)) => norm(n.as_f64().unwrap_or(0.0)),
-        Some(Value::String(s)) => {
-            let t = s.trim();
-            match t.parse::<f64>() {
-                Ok(x) => norm(x),
-                Err(_) => parse_date_ms(t),
-            }
-        }
-        _ => 0.0,
-    }
+    c.get("last_mes").and_then(|v| v.as_f64()).unwrap_or(0.0)
 }
 
-fn parse_date_ms(s: &str) -> f64 {
-    use chrono::TimeZone;
-    if let Ok(d) = chrono::DateTime::parse_from_rfc3339(s) {
-        return d.timestamp_millis() as f64;
-    }
-    // SillyTavern's own formats carry no zone: they are local time.
-    const FORMATS: [&str; 9] = [
-        "%Y-%m-%d@%Hh%Mm%Ss%3fms",
-        "%Y-%m-%d @%Hh %Mm %Ss %3fms",
-        "%Y-%m-%d@%Hh%Mm%Ss",
-        "%Y-%m-%d @%Hh %Mm %Ss",
-        "%B %d, %Y %I:%M%P",
-        "%B %d, %Y %I:%M%p",
-        "%b %d, %Y %I:%M%P",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%dT%H:%M:%S%.f",
-    ];
-    for f in FORMATS {
-        if let Ok(n) = chrono::NaiveDateTime::parse_from_str(s, f) {
-            if let Some(d) = chrono::Local.from_local_datetime(&n).single() {
-                return d.timestamp_millis() as f64;
-            }
-        }
-    }
-    0.0
-}
-
-/// "5m ago" for a chat; if the server's date is in a format we cannot read,
-/// show it as it came instead of hiding it.
+/// "5m ago" for a chat ("unknown" when its time is not known).
 fn when(c: &Value) -> String {
-    let ms = last_ms(c);
-    if ms > 0.0 {
-        return ago(ms);
-    }
-    let raw = jstr(c, "last_mes");
-    if raw.trim().is_empty() {
-        "unknown".to_string()
-    } else {
-        raw
-    }
+    ago(last_ms(c))
 }
 
 /// "5m ago", "3h ago", "2d ago" from a millisecond timestamp.

@@ -1136,7 +1136,7 @@ pub fn server_url(settings: &Value) -> String {
     jstr(sub(t, "server_urls"), &jstr(t, "type"))
 }
 
-/// The model name SillyTavern has for the selected Text Completion type
+/// The model name the in-memory settings hold for the selected Text Completion type
 /// (empty for types that have none).
 pub fn current_model(settings: &Value) -> String {
     let t = sub(settings, "textgenerationwebui_settings");

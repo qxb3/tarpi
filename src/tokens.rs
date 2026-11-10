@@ -22,10 +22,10 @@ const MAX_CACHED: usize = 8;
 pub struct Backend {
     pub api_type: String,
     pub server: String,
-    /// Model name, needed by SillyTavern's tokenizer for vLLM / Aphrodite.
+    /// Model name of the selected Text Completion type (part of the cache key).
     pub model: String,
-    /// A standalone connection (`/api`): its own tokenizer is asked
-    /// directly, SillyTavern is not involved.
+    /// The standalone connection (`/api`): its own tokenizer is asked
+    /// directly.
     pub conn: Option<crate::conn::Connection>,
 }
 

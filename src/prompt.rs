@@ -3,8 +3,9 @@
 //! example dialogue, history trimming). The server only forwards what we send,
 //! so this is where the "character" actually gets applied.
 //!
-//! Not supported yet: World Info / lorebooks, Author's Note, summaries,
-//! vector memory, group chats.
+//! Not supported yet: World Info / lorebooks, vector memory, group chats.
+//! (The Author's Note is added in `textgen`, see `note`; summaries are
+//! separate chat branches, see `summary`.)
 
 use crate::character::Character;
 use crate::chat;

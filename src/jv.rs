@@ -1,4 +1,4 @@
-//! Tiny helpers for reading loosely-typed SillyTavern JSON.
+//! Tiny helpers for reading loosely-typed JSON (character cards, chat files).
 
 use serde_json::Value;
 
