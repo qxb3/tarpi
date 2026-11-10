@@ -108,8 +108,8 @@ enum Arrival {
         "  /undo [n]       delete the last message, or the last n (/u)\n",
         "  /help           all keys and commands\n",
         "\nSHARING BETWEEN DEVICES:\n",
-        "  tarpi serve             share your characters, chats and settings on the network\n",
-        "  tarpi connect [token]   use them from another device (serve_url in config.yaml)\n",
+        "  tarpi serve (s)         share your characters, chats and settings on the network\n",
+        "  tarpi connect (c) [token]   use them from another device (serve_url in config.yaml)\n",
         "\nTyping / opens a command menu above the input box; the top entry is picked\n(Tab, Shift+Tab, Up, Down to change it, Enter to run).\nWith only a / in the box, Up brings back the commands you ran before."
     )
 )]
@@ -143,10 +143,10 @@ enum Commands {
     #[command(disable_help_flag = true)]
     ImportSt(Rest),
     /// Share characters, chats, personas, system prompts and API connections with other devices (no chat screen)
-    #[command(disable_help_flag = true)]
+    #[command(disable_help_flag = true, visible_alias = "s")]
     Serve(Rest),
     /// Chat using the data of a machine that runs `tarpi serve`, keeping a copy in step
-    #[command(disable_help_flag = true)]
+    #[command(disable_help_flag = true, visible_alias = "c")]
     Connect(Rest),
 }
 

@@ -767,7 +767,14 @@ async fn open(token_arg: Option<String>, local_api: bool) -> Result<Link> {
 pub async fn run() -> Result<Session> {
     // argv is `tarpi connect ...`; drop the program name so "connect" plays
     // the part of the binary name in clap's messages.
-    let cli = ConnectCli::parse_from(std::env::args().skip(1));
+    // `tarpi c` is short for `tarpi connect`; usage texts should say the long name.
+    let mut argv: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(first) = argv.first_mut() {
+        if first == "c" {
+            *first = "connect".to_string();
+        }
+    }
+    let cli = ConnectCli::parse_from(argv);
     let Link { mut client, base, token } = open(cli.token.clone(), cli.local_api).await?;
     let root = client.root.clone();
     // The shared connection's address belongs to the server: it counts tokens,

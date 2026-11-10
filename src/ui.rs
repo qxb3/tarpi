@@ -1094,7 +1094,31 @@ pub fn draw_picker(f: &mut Frame, area: Rect, p: &mut Picker, full: bool) {
         return;
     }
 
-    let list = inner;
+    // Guide lines at the bottom, only when the list still has room above them.
+    let foot_n = p.footer.len() as u16;
+    let (list, foot) = if full && foot_n > 0 && inner.height >= foot_n + 1 + vis.len().max(1) as u16 {
+        let lh = inner.height - foot_n - 1;
+        (
+            Rect::new(inner.x, inner.y, inner.width, lh),
+            Some(Rect::new(inner.x, inner.y + lh + 1, inner.width, foot_n)),
+        )
+    } else {
+        (inner, None)
+    };
+    if let Some(fr) = foot {
+        let cols = fr.width as usize;
+        let lines: Vec<Line<'static>> = p
+            .footer
+            .iter()
+            .map(|t| {
+                Line::from(Span::styled(
+                    fit_cols(&format!(" {}", t), cols),
+                    Style::default().fg(Color::Yellow),
+                ))
+            })
+            .collect();
+        f.render_widget(Paragraph::new(lines), fr);
+    }
     let rows_n = list.height as usize;
     p.window = rect;
     p.rows = list;

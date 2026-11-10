@@ -2099,6 +2099,18 @@ impl App {
         self.open_characters_picker().await;
         if let Some((_, p)) = self.picker.as_mut() {
             p.title = "choose a character".to_string();
+            // Only the default character: a first start, or no card added since.
+            let default_avatar = format!("{}.png", charstore::DEFAULT_STEM);
+            if p.items.len() == 1 && p.items[0].key == default_avatar {
+                p.footer = vec![
+                    format!(
+                        "First time here? Press Enter on {} to start chatting.",
+                        charstore::DEFAULT_STEM
+                    ),
+                    "To add your own characters: enter Tarpi, then type /import <card file or chub.ai / pygmalion.chat link>."
+                        .to_string(),
+                ];
+            }
         }
     }
 

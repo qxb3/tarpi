@@ -12,11 +12,11 @@ tarpi sofia -n         # start a new chat (named Sofia01, Sofia02, ...)
 tarpi -l               # list characters
 tarpi sofia -l         # list Sofia's chats
 tarpi import-st <url>  # copy the personas, system prompts and characters of a SillyTavern server
-tarpi serve            # share everything with other devices (no chat screen; see Sharing between devices)
-tarpi connect [token]  # chat with the data of the machine named by serve_url (see Sharing between devices)
+tarpi serve            # share everything with other devices (no chat screen; see Sharing between devices); `tarpi s` for short
+tarpi connect [token]  # chat with the data of the machine named by serve_url (see Sharing between devices); `tarpi c` for short
 ```
 
-That is the whole command line: `[character] [chat]`, plus `-n` (new chat) and `-l` (list), and the commands `import-st`, `serve` and `connect`. Characters are added and deleted inside tarpi: `/import` and `d` in the `/chars` window (see *Importing characters* and *Deleting characters*).
+`s` and `c` are short for `serve` and `connect` (so a character named `s` or `c` can't be given by name on the command line). That is the whole command line: `[character] [chat]`, plus `-n` (new chat) and `-l` (list), and the commands `import-st`, `serve` and `connect`. Characters are added and deleted inside tarpi: `/import` and `d` in the `/chars` window (see *Importing characters* and *Deleting characters*).
 
 Everything else happens inside the chat:
 
@@ -42,6 +42,8 @@ Everything else happens inside the chat:
 ### Choosing a character at start-up
 
 `tarpi` with no character name opens the chat screen straight away with the `/chars` window over an empty screen, titled `choose a character` (↑/↓ + Enter, or click / tap; `d` deletes one and asks `y`, as in `/chars`). Enter opens that character's latest chat (a new one with `tarpi -n`). Esc, or a click outside the window, quits tarpi: nothing is opened or saved until a character is chosen, and no character is marked as current. There is no text menu any more.
+
+While the only character is the default `Tarpi`, the window shows a yellow guide at the bottom (press Enter on Tarpi, then `/import` inside the chat); it goes away once another character exists.
 
 With no character cards at all, tarpi first writes a default one, `Tarpi` (`~/.config/tarpi/characters/Tarpi.json`: an unhinged, funny and blunt assistant who is secretly helpful), so the window is never empty; edit it with `/char` or add more with `/import` from inside a chat. It is only made when the characters folder is empty (deleting every character makes it come back on the next start). `tarpi -l` does not make it.
 

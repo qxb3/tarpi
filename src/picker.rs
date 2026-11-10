@@ -54,6 +54,9 @@ pub struct Picker {
     /// What else goes with an entry when it is deleted, said in the question
     /// (`/chars`: " and its chats"); empty for none.
     pub delete_what: String,
+    /// Guide lines at the bottom of a full-screen window (drawn when there is
+    /// room; the start-up window uses it to help a first-time user).
+    pub footer: Vec<String>,
 }
 
 impl Picker {
@@ -70,6 +73,7 @@ impl Picker {
             note: None,
             position_key: false,
             delete_what: String::new(),
+            footer: Vec::new(),
         };
         p.sel = p.items.iter().position(|i| i.current).unwrap_or(0);
         p

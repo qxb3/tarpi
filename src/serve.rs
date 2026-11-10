@@ -166,7 +166,14 @@ fn lan_ip() -> Option<String> {
 pub async fn run() -> Result<()> {
     // argv is `tarpi serve ...`; drop the program name so "serve" plays the
     // part of the binary name in clap's messages.
-    let cli = ServeCli::parse_from(std::env::args().skip(1));
+    // `tarpi s` is short for `tarpi serve`; usage texts should say the long name.
+    let mut argv: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(first) = argv.first_mut() {
+        if first == "s" {
+            *first = "serve".to_string();
+        }
+    }
+    let cli = ServeCli::parse_from(argv);
     let cfg = config::load()?;
     let trust_all = cfg.serve_trust_all.unwrap_or(false);
     let root = config::data_root().ok_or_else(|| anyhow!("no config directory on this system"))?;
