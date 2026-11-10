@@ -28,6 +28,8 @@ pub enum Action {
     Choose(String),
     Delete(String),
     Edit(String),
+    /// The `p` key (only where `Picker::position_key` is set).
+    Position(String),
 }
 
 pub struct Picker {
@@ -46,6 +48,9 @@ pub struct Picker {
     pub confirm: Option<String>,
     /// One-line message for the bottom edge: (text, is_error).
     pub note: Option<(String, bool)>,
+    /// The `p` key asks for the position settings of an editable entry (the
+    /// `/persona` window).
+    pub position_key: bool,
 }
 
 impl Picker {
@@ -60,6 +65,7 @@ impl Picker {
             rows: Rect::default(),
             confirm: None,
             note: None,
+            position_key: false,
         };
         p.sel = p.items.iter().position(|i| i.current).unwrap_or(0);
         p
@@ -89,6 +95,15 @@ impl Picker {
     fn ask_edit(&self) -> Action {
         match self.visible().get(self.sel) {
             Some(&idx) if self.items[idx].editable => Action::Edit(self.items[idx].key.clone()),
+            _ => Action::None,
+        }
+    }
+
+    fn ask_position(&self) -> Action {
+        match self.visible().get(self.sel) {
+            Some(&idx) if self.position_key && self.items[idx].editable => {
+                Action::Position(self.items[idx].key.clone())
+            }
             _ => Action::None,
         }
     }
@@ -133,6 +148,7 @@ impl Picker {
             KeyCode::End => self.sel = self.visible().len().saturating_sub(1),
             KeyCode::Char('d') if !ctrl && !alt => self.ask_delete(),
             KeyCode::Char('e') if !ctrl && !alt => return self.ask_edit(),
+            KeyCode::Char('p') if !ctrl && !alt => return self.ask_position(),
             KeyCode::Char('j') if !ctrl && !alt => self.move_by(1),
             KeyCode::Char('k') if !ctrl && !alt => self.move_by(-1),
             _ => {}

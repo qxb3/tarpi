@@ -9,6 +9,7 @@
 use crate::character::Character;
 use crate::chat;
 use crate::jv::*;
+use crate::note::{self, Note};
 use crate::prompt::{subst, Ctx};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -650,6 +651,8 @@ pub struct TgArgs<'a> {
     pub user_name: &'a str,
     pub persona: &'a str,
     pub persona_position: i64,
+    /// The Author's Note of this chat (`/note`).
+    pub note: &'a Note,
     pub history: &'a [Value],
     pub chars_per_token: f32,
     /// Text of the reply being continued. `history` then excludes that reply
@@ -738,6 +741,26 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
         };
     }
 
+    // ---- author's note (plus the persona, when its position is in the note)
+    let user_msgs = a
+        .history
+        .iter()
+        .filter(|m| !chat::is_system(m) && chat::is_user(m))
+        .count();
+    let note_text = if a.note.due(user_msgs) {
+        subst(&a.note.text, &ctx).trim().to_string()
+    } else {
+        String::new()
+    };
+    let note_full = note::compose(&note_text, &ctx.persona, a.persona_position);
+    let mut anchor_before = String::new();
+    let mut anchor_after = String::new();
+    match a.note.position {
+        note::BEFORE_PROMPT => anchor_before = note_full.clone(),
+        note::IN_PROMPT => anchor_after = note_full.clone(),
+        _ => {}
+    }
+
     // ---- story string
     let persona_in_prompt = a.persona_position == 0;
     let mut vars: HashMap<&str, String> = HashMap::new();
@@ -755,16 +778,11 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
     vars.insert("system", system);
     vars.insert("char", chn.to_string());
     vars.insert("user", user.to_string());
-    for k in [
-        "wiBefore",
-        "wiAfter",
-        "loreBefore",
-        "loreAfter",
-        "anchorBefore",
-        "anchorAfter",
-    ] {
+    for k in ["wiBefore", "wiAfter", "loreBefore", "loreAfter"] {
         vars.insert(k, String::new());
     }
+    vars.insert("anchorBefore", anchor_before.clone());
+    vars.insert("anchorAfter", anchor_after.clone());
     vars.insert("mesExamples", examples.join(""));
     vars.insert("mesExamplesRaw", examples_raw.join(""));
 
@@ -772,6 +790,18 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
     let template = jstr(ctx_v, "story_string");
     let mut story = String::new();
     render_nodes(&parse_template(&template), &vars, &mut story);
+    // A template that has no {{anchorBefore}} / {{anchorAfter}} of its own
+    // still gets the note: before the story string, or after it.
+    if !anchor_before.is_empty() && !template.contains("anchorBefore") {
+        story = format!("{}\n{}", anchor_before, story);
+    }
+    if !anchor_after.is_empty() && !template.contains("anchorAfter") {
+        if !story.is_empty() && !story.ends_with('\n') {
+            story.push('\n');
+        }
+        story.push_str(&anchor_after);
+        story.push('\n');
+    }
     let mut story = subst(&story, &ctx);
     story = story.trim_start_matches('\n').to_string();
     if !story.is_empty()
@@ -816,6 +846,13 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
             depth: ji64(pu, "persona_description_depth", 2).max(0) as usize,
             role: ji64(pu, "persona_description_role", 0).clamp(0, 2) as u8,
             text: ctx.persona.clone(),
+        });
+    }
+    if a.note.position == note::IN_CHAT && !note_full.is_empty() {
+        injects.push(Inject {
+            depth: a.note.depth,
+            role: a.note.role,
+            text: note_full.clone(),
         });
     }
 
@@ -1146,5 +1183,145 @@ pub fn trim_to_end_sentence(input: &str) -> String {
             .collect::<String>()
             .trim_end()
             .to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::posedit::{BOTTOM_NOTE, TOP_NOTE};
+    use serde_json::json;
+
+    fn settings(story: &str) -> Value {
+        json!({
+            "main_api": "textgenerationwebui",
+            "max_context": 100000,
+            "amount_gen": 100,
+            "power_user": { "context": { "story_string": story } },
+        })
+    }
+
+    fn card() -> Character {
+        Character {
+            name: "Sofia".into(),
+            description: "A baker.".into(),
+            ..Character::default()
+        }
+    }
+
+    fn history() -> Vec<Value> {
+        vec![
+            chat::user_message("Bob", "Hi"),
+            chat::assistant_message("Sofia", "Hello", "m", "t", "t"),
+            chat::user_message("Bob", "Go on"),
+        ]
+    }
+
+    fn note(text: &str, position: i64, depth: usize) -> Note {
+        Note {
+            text: text.into(),
+            position,
+            depth,
+            role: 0,
+            interval: 1,
+        }
+    }
+
+    fn build(
+        story: &str,
+        note: &Note,
+        persona: &str,
+        persona_position: i64,
+        history: &[Value],
+    ) -> String {
+        let settings = settings(story);
+        let ch = card();
+        build_prompt(&TgArgs {
+            settings: &settings,
+            ch: &ch,
+            user_name: "Bob",
+            persona,
+            persona_position,
+            note,
+            history,
+            chars_per_token: 3.2,
+            continue_text: None,
+            nudge: None,
+        })
+        .prompt
+    }
+
+    #[test]
+    fn no_note_adds_nothing() {
+        let p = build("{{description}}", &Note::default(), "", 0, &history());
+        assert!(p.starts_with("A baker.\n"));
+        assert!(p.ends_with("Bob: Go on\nSofia:"));
+    }
+
+    #[test]
+    fn the_note_goes_into_the_chat_at_its_depth() {
+        let n = note("Keep it slow.", note::IN_CHAT, 1);
+        let p = build("{{description}}", &n, "", 0, &history());
+        assert!(p.contains("Sofia: Hello\nKeep it slow.\nBob: Go on\nSofia:"), "{}", p);
+        let n = note("Keep it slow.", note::IN_CHAT, 0);
+        let p = build("{{description}}", &n, "", 0, &history());
+        assert!(p.ends_with("Bob: Go on\nKeep it slow.\nSofia:"), "{}", p);
+    }
+
+    #[test]
+    fn the_note_goes_before_or_after_the_story_string() {
+        let n = note("Keep it slow.", note::BEFORE_PROMPT, 4);
+        let p = build("{{description}}", &n, "", 0, &history());
+        assert!(p.starts_with("Keep it slow.\nA baker."), "{}", p);
+        let n = note("Keep it slow.", note::IN_PROMPT, 4);
+        let p = build("{{description}}", &n, "", 0, &history());
+        assert!(p.starts_with("A baker.\nKeep it slow.\n"), "{}", p);
+    }
+
+    #[test]
+    fn a_template_with_its_own_anchor_gets_the_note_once() {
+        let n = note("Keep it slow.", note::IN_PROMPT, 4);
+        let p = build("{{description}}\n{{anchorAfter}}", &n, "", 0, &history());
+        assert_eq!(p.matches("Keep it slow.").count(), 1, "{}", p);
+        let n = note("Keep it slow.", note::BEFORE_PROMPT, 4);
+        let p = build("{{anchorBefore}}\n{{description}}", &n, "", 0, &history());
+        assert_eq!(p.matches("Keep it slow.").count(), 1, "{}", p);
+        assert!(p.starts_with("Keep it slow.\nA baker."), "{}", p);
+    }
+
+    #[test]
+    fn the_interval_counts_your_messages() {
+        let mut n = note("Keep it slow.", note::IN_CHAT, 1);
+        n.interval = 2;
+        // Two messages of yours: due.
+        let p = build("{{description}}", &n, "", 0, &history());
+        assert!(p.contains("Keep it slow."), "{}", p);
+        // One message of yours: not due.
+        let h = history();
+        let p = build("{{description}}", &n, "", 0, &h[..1]);
+        assert!(!p.contains("Keep it slow."), "{}", p);
+        // Interval 0: never.
+        n.interval = 0;
+        let p = build("{{description}}", &n, "", 0, &history());
+        assert!(!p.contains("Keep it slow."), "{}", p);
+    }
+
+    #[test]
+    fn the_persona_joins_the_note_above_or_below_its_text() {
+        let story = "{{description}}{{#if persona}}\n{{persona}}{{/if}}";
+        let n = note("Keep it slow.", note::IN_CHAT, 1);
+        let p = build(story, &n, "Bob is tall.", TOP_NOTE, &history());
+        assert!(p.contains("Hello\nBob is tall.\nKeep it slow.\nBob: Go on"), "{}", p);
+        assert_eq!(p.matches("Bob is tall.").count(), 1, "{}", p);
+        let p = build(story, &n, "Bob is tall.", BOTTOM_NOTE, &history());
+        assert!(p.contains("Hello\nKeep it slow.\nBob is tall.\nBob: Go on"), "{}", p);
+        assert_eq!(p.matches("Bob is tall.").count(), 1, "{}", p);
+    }
+
+    #[test]
+    fn a_persona_in_the_note_is_sent_even_without_note_text() {
+        let n = note("", note::IN_CHAT, 1);
+        let p = build("{{description}}", &n, "Bob is tall.", TOP_NOTE, &history());
+        assert!(p.contains("Hello\nBob is tall.\nBob: Go on"), "{}", p);
     }
 }

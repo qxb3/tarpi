@@ -1,6 +1,13 @@
-//! `st-cli import-st <url>`: copy the personas and the characters of a
-//! SillyTavern server into st-cli's own folders (`~/.config/st-cli/persona/`
-//! and `~/.config/st-cli/characters/`, see `persona` and `charstore`).
+//! `st-cli import-st <url>`: copy the personas, the system prompts and the
+//! characters of a SillyTavern server into st-cli's own folders and files
+//! (`~/.config/st-cli/persona/`, `~/.config/st-cli/system-prompt.jsonl` and
+//! `~/.config/st-cli/characters/`, see `persona`, `sysprompt` and `charstore`).
+//!
+//! The system prompts are the server's system prompt presets, plus the one it
+//! has switched on when that is not one of them. An identical one (name, prompt
+//! and post-history instructions) is skipped; with `--overwrite` one with the
+//! same name is replaced. If you have not chosen a system prompt here yet, the
+//! one the server had on becomes yours too.
 //!
 //! Only reads from the server; nothing there is changed. A persona's picture is
 //! not copied. A character is copied as its card PNG with the file name it has
@@ -17,16 +24,19 @@ use crate::chatstore;
 use crate::config;
 use crate::jv::*;
 use crate::persona::{self, Imported};
+use crate::sysprompt;
 use anyhow::{Context, Result};
 use clap::Parser;
 
 #[derive(Parser, Debug)]
 #[command(
     name = "st-cli import-st",
-    about = "Import the personas and characters of a SillyTavern server into st-cli",
+    about = "Import the personas, system prompts and characters of a SillyTavern server into st-cli",
     long_about = "Copy every persona (name, title, description, position, depth, role and \
-                  lorebook) and every character card of a running SillyTavern server into \
-                  st-cli's own folders, ~/.config/st-cli/persona/ and \
+                  lorebook), every system prompt (name, prompt and post-history \
+                  instructions) and every character card of a running SillyTavern server \
+                  into st-cli's own folders and files, ~/.config/st-cli/persona/, \
+                  ~/.config/st-cli/system-prompt.jsonl and \
                   ~/.config/st-cli/characters/. Nothing is changed on the server. Every character's chats \
                   are copied to ~/.config/st-cli/chats/ too (chats that already exist here \
                   are kept). A character that is already here is skipped. \
@@ -44,8 +54,8 @@ struct ImportStCli {
     /// (default: `url` from config.yaml)
     url: Option<String>,
 
-    /// Replace a persona with the same name and title, and a character with the same
-    /// file name, instead of skipping it
+    /// Replace a persona with the same name and title, a system prompt with the same
+    /// name, and a character with the same file name, instead of skipping it
     #[arg(short, long)]
     overwrite: bool,
 }
@@ -128,6 +138,63 @@ pub async fn run() -> Result<()> {
                 .map(|d| d.display().to_string())
                 .unwrap_or_else(|| "the persona folder".to_string()),
             note
+        );
+    }
+
+    // ---- system prompts
+    // The server's presets (empty when it is too old to send them), and the
+    // one it has switched on.
+    let presets = api.sysprompts().await.unwrap_or_default();
+    let st_prompt = sysprompt::st_active(&settings);
+    let prompts = sysprompt::st_list(&presets, &settings);
+    if prompts.is_empty() {
+        println!("No system prompts found on {}.", server);
+    }
+    let prompts_any = !prompts.is_empty();
+    let (mut s_added, mut s_updated, mut s_skipped) = (0, 0, 0);
+    let mut s_active_here: Option<String> = None;
+    for p in prompts {
+        let label = p.name.clone();
+        let is_active = st_prompt
+            .as_ref()
+            .map(|a| sysprompt::same_prompt(a, &p))
+            .unwrap_or(false);
+        let outcome = sysprompt::import(p, cli.overwrite)?;
+        match &outcome {
+            Imported::Added(_) => {
+                s_added += 1;
+                println!("  added    {}", label);
+            }
+            Imported::Updated(_) => {
+                s_updated += 1;
+                println!("  updated  {}", label);
+            }
+            Imported::Skipped(_) => {
+                s_skipped += 1;
+                println!("  skipped  {} (identical one already here)", label);
+            }
+        }
+        if is_active {
+            s_active_here = Some(outcome.id().to_string());
+        }
+    }
+    // First import on a fresh install: keep using the prompt the server had on.
+    let mut s_note = String::new();
+    if let Some(id) = s_active_here {
+        if sysprompt::activate_if_unset(&id)? {
+            s_note = " The server's system prompt is now yours too.".to_string();
+        }
+    }
+    if prompts_any {
+        println!(
+            "System prompts: {} added, {} updated, {} skipped ({}).{}",
+            s_added,
+            s_updated,
+            s_skipped,
+            config::sysprompt_path()
+                .map(|d| d.display().to_string())
+                .unwrap_or_else(|| "the system prompt file".to_string()),
+            s_note
         );
     }
 

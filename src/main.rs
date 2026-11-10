@@ -18,12 +18,15 @@ mod import;
 mod import_st;
 mod input;
 mod jv;
+mod note;
 mod persona;
 mod picker;
+mod posedit;
 mod prompt;
 mod prose;
 mod spell;
 mod summary;
+mod sysprompt;
 mod termcolors;
 mod textgen;
 mod tokens;
@@ -75,6 +78,7 @@ use crate::jv::*;
         "  /chats          choose, create or delete chats (a window)\n",
         "  /chars          choose another character (a window)\n",
         "  /persona        choose who you are in the chat (a window)\n",
+        "  /note           edit this chat's Author's Note (/an)\n",
         "  /one-shot       lock this chat: no editing, undo, regen, swipes, branches\n",
         "  /api            API settings (address, model and sampler); back to the chat on quit\n",
         "  /char           view and edit this character's card\n",

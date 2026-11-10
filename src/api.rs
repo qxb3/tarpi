@@ -106,6 +106,25 @@ impl Api {
         serde_json::from_str(raw).context("parsing SillyTavern settings.json")
     }
 
+    /// The system prompt presets of the server: the `sysprompt` list of the
+    /// `/api/settings/get` response (each entry an object, or a JSON string of
+    /// one). Empty when the server has none or is too old to send them.
+    pub async fn sysprompts(&self) -> Result<Vec<Value>> {
+        let v = self.post_json("/api/settings/get", &json!({})).await?;
+        let list = match v.get("sysprompt") {
+            Some(Value::Array(a)) => a.clone(),
+            _ => Vec::new(),
+        };
+        Ok(list
+            .into_iter()
+            .filter_map(|x| match x {
+                Value::String(s) => serde_json::from_str::<Value>(&s).ok(),
+                Value::Object(_) => Some(x),
+                _ => None,
+            })
+            .collect())
+    }
+
     pub async fn characters(&self) -> Result<Vec<Value>> {
         let v = self.post_json("/api/characters/all", &json!({})).await?;
         match v {

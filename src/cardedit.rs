@@ -4,6 +4,7 @@
 
 use crate::character::Character;
 use crate::input::{Input, Mode};
+use crate::note::{self, Note};
 use crate::ui;
 use ratatui::layout::Rect;
 use serde_json::Value;
@@ -170,6 +171,73 @@ impl CardModal {
         ];
         let mut m = CardModal::from_fields(fields, cfg);
         m.title = "persona".to_string();
+        m
+    }
+
+    /// The form of a system prompt: name, the prompt and the post-history
+    /// instructions, all editable.
+    pub fn sysprompt(name: &str, content: &str, post_history: &str, cfg: &Input) -> CardModal {
+        let field = |key: &'static str, label: &str, text: &str| {
+            let t = norm(text);
+            CardField {
+                key,
+                label: label.to_string(),
+                orig: t.clone(),
+                text: t,
+                editable: true,
+                alt: false,
+            }
+        };
+        let fields = vec![
+            field("name", "Name", name),
+            field("content", "System prompt", content),
+            field("post_history", "Post-history instructions", post_history),
+        ];
+        let mut m = CardModal::from_fields(fields, cfg);
+        m.title = "system prompt".to_string();
+        m
+    }
+
+    /// The form of the chat's Author's Note: the note itself and the settings
+    /// that say where and how often it is sent, all typed as text (the words
+    /// each one takes are in its title; `App::save_note_form` checks them).
+    pub fn note(n: &Note, cfg: &Input) -> CardModal {
+        let field = |key: &'static str, label: &str, text: &str| {
+            let t = norm(text);
+            CardField {
+                key,
+                label: label.to_string(),
+                orig: t.clone(),
+                text: t,
+                editable: true,
+                alt: false,
+            }
+        };
+        let fields = vec![
+            field("note", "Author's note", &n.text),
+            field(
+                "position",
+                "Position: before, after or chat",
+                note::position_word(n.position),
+            ),
+            field(
+                "depth",
+                "Depth: messages from the end (chat position only)",
+                &n.depth.to_string(),
+            ),
+            field(
+                "role",
+                "Role: system, user or assistant (chat position only)",
+                note::role_word(n.role),
+            ),
+            field(
+                "interval",
+                "Interval: sent with every N-th message of yours (0 = never)",
+                &n.interval.to_string(),
+            ),
+        ];
+        let mut m = CardModal::from_fields(fields, cfg);
+        m.title = "author's note".to_string();
         m
     }
 

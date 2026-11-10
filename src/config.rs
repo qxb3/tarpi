@@ -185,6 +185,11 @@ pub fn persona_dir() -> Option<PathBuf> {
     dir().map(|d| d.join("persona"))
 }
 
+/// `~/.config/st-cli/system-prompt.jsonl`: the system prompts, one JSON object per line (see `sysprompt`).
+pub fn sysprompt_path() -> Option<PathBuf> {
+    dir().map(|d| d.join("system-prompt.jsonl"))
+}
+
 /// `~/.config/st-cli/characters/`: the character cards, `.png` (card embedded) or `.json` (see `charstore`).
 pub fn characters_dir() -> Option<PathBuf> {
     dir().map(|d| d.join("characters"))

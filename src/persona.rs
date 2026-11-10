@@ -234,6 +234,23 @@ pub fn put(id: Option<&str>, name: &str, title: &str, description: &str) -> Resu
     Ok(p)
 }
 
+/// Change where a persona's description goes into the prompt, keeping every
+/// other field. `position` 0 puts it into the story string, 4 into the chat
+/// `depth` messages from the end (as `role` 0 system / 1 user / 2 assistant),
+/// 2 / 3 add it above / below the text of the chat's Author's Note (see
+/// `note`), 9 leaves it out.
+pub fn set_injection(id: &str, position: i64, depth: i64, role: i64) -> Result<Persona> {
+    let mut p = list()
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| anyhow!("no persona '{}'", id))?;
+    p.position = position;
+    p.depth = depth.clamp(0, 999);
+    p.role = role.clamp(0, 2);
+    save(&p)?;
+    Ok(p)
+}
+
 /// Delete the persona `id` (nothing happens when it has no file).
 pub fn remove(id: &str) -> Result<()> {
     if !valid_id(id) {

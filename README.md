@@ -2,7 +2,7 @@
 
 A chat-only terminal client that uses a running [SillyTavern](https://github.com/SillyTavern/SillyTavern) server for its settings and templates. Characters, personas and chats are st-cli's own.
 
-Characters and personas are st-cli's own, kept in `~/.config/st-cli/characters/` and `~/.config/st-cli/persona/` (see Importing characters and Personas). Chats are st-cli's too (`~/.config/st-cli/chats/`). SillyTavern only supplies its settings and the context / instruct templates. `st-cli` only chats. Chats are saved as SillyTavern-format `.jsonl` files in `~/.config/st-cli/chats/`.
+Characters, personas and system prompts are st-cli's own, kept in `~/.config/st-cli/characters/`, `~/.config/st-cli/persona/` and `~/.config/st-cli/system-prompt.jsonl` (see Importing characters, Personas and System prompts). Chats are st-cli's too (`~/.config/st-cli/chats/`). SillyTavern only supplies its settings and the context / instruct templates. `st-cli` only chats. Chats are saved as SillyTavern-format `.jsonl` files in `~/.config/st-cli/chats/`.
 
 ```
 st-cli                  # pick a character, then chat
@@ -12,7 +12,7 @@ st-cli sofia -n         # start a new chat (named Sofia01, Sofia02, ...)
 st-cli -l               # list characters
 st-cli sofia -l         # list Sofia's chats
 st-cli import <source>  # add a character card to ~/.config/st-cli/characters (see below)
-st-cli import-st <url>  # copy the personas and characters of a SillyTavern server
+st-cli import-st <url>  # copy the personas, system prompts and characters of a SillyTavern server
 st-cli delete [sofia]   # delete a character card and all its chats (asks first)
 ```
 
@@ -24,7 +24,10 @@ Everything else happens inside the chat:
 | --- | --- |
 | `/chats` | opens a window over the chat with this character's chats: pick one (↑/↓ + Enter, or click / tap), choose `+ new chat`, or press `d` on one to delete it (asks `y`). Esc closes. The `_before-summary` copies are not listed. The chat that is open can't be deleted here (use `/newchat`), except when it is the last one: then it is deleted and st-cli exits |
 | `/one-shot` | locks **this chat file** as it is: editing, `/undo`, regenerating, `/continue`, swipes (and greeting switching) and summary branches are turned off. The status row asks you to type `/one-shot` a second time; typing anything else cancels. A grey `ONE SHOT MODE` tag stays at the start of the status row below the input box for as long as the chat is open; other status messages follow it after a `·`. A reply that is being written can't be stopped either (no Esc, no Stop button, and `/quit`, `/chats` and `/chars` wait until it is done). Sending new messages still works, and other chats are not affected. It is stored in the chat file's metadata (`st_cli_one_shot`); there is no command to undo it |
-| `/persona` | opens a window to choose who you are in the chat; `+ new persona` creates one, `e` edits, `d` deletes (see Personas) |
+| `/persona` | opens a window to choose who you are in the chat; `+ new persona` creates one, `e` edits, `p` sets where its description goes into the prompt, `d` deletes (see Personas) |
+| `/system` | opens a window to choose the system prompt; `+ new system prompt` creates one, `e` edits, `d` deletes (see *System prompts*) |
+| `/prompt` | opens a window with the whole prompt the next reply would be sent with, as plain text (see *Prompt window*) |
+| `/note` or `/an` | opens this chat's Author's Note in a form: the text and where, how deep and how often it is sent (see *Author's Note*) |
 | `/chars` | opens a window with every character (★ = favourite) to switch to someone else |
 | `/api` | open the API settings (llama.cpp address and every model setting) right here; when you quit them (`q` / Esc) you are back in this same chat, and the very next reply uses what you saved |
 | `/char` | open this character's card in a window: every field, editable, with **Cancel** and **Save** (see below) |
@@ -94,7 +97,63 @@ Only llama.cpp is built in, but a connection kind is one small file: implement `
 
 Personas belong to st-cli, not to SillyTavern. Each one is a small YAML file in `~/.config/st-cli/persona/` (`<id>.yaml` with `name`, `title`, `description`, `position`, `depth`, `role`, `lorebook`; hand edits are fine), and the file `persona/active` holds the id of the one in use. SillyTavern's own persona settings are never read for chatting and never written.
 
-`/persona` inside a chat opens a window with every persona as `Name (Title)` with a short preview of its description; the active one is marked `(current)`. Pick one with ↑/↓ + Enter (or click / tap); Esc closes it. The choice applies to the chat from the next message on (and to chats open in other terminals, which re-read the folder before every reply). The first row, `+ new persona`, opens a form (name, title, description; Ctrl+S saves, Esc cancels). `e` on a persona opens the same form for it; `d` deletes it (asks `y`; the persona in use can't be deleted). With no persona saved yet the list shows a plain `User`, which is written to disk once you edit it.
+`/persona` inside a chat opens a window with every persona as `Name (Title)` with a short preview of its description; the active one is marked `(current)`. Pick one with ↑/↓ + Enter (or click / tap); Esc closes it. The choice applies to the chat from the next message on (and to chats open in other terminals, which re-read the folder before every reply). The first row, `+ new persona`, opens a form (name, title, description; Ctrl+S saves, Esc cancels). `e` on a persona opens the same form for it; `d` deletes it (asks `y`; the persona in use can't be deleted).
+
+`p` on a persona opens a small window for where its description is injected into the prompt (the `position`, `depth` and `role` of its file):
+
+| Row | Values |
+| --- | --- |
+| Position | **In the prompt** (`position: 0`, the default: with the character card, in the context template's story string), **Top of the Author's Note** (`2`) or **Bottom of the Author's Note** (`3`): added above / below the text of the chat's Author's Note and sent wherever that goes (see *Author's Note*), **In the chat, at a depth** (`4`: added to the chat history), or **Not sent** (`9`: the description is left out) |
+| Depth | only for the chat position: messages from the end, `0` is after the last message (default `2`) |
+| Role | only for the chat position: whether the injected message is a `system`, `user` or `assistant` message |
+
+↑/↓ (or `j` / `k`, Tab) pick a row, ←/→ (or `h` / `l`) change it (Shift+arrows, PgUp / PgDn, `H` / `L`: ten at a time on Depth), digits type the depth, Enter or Ctrl+S saves and Esc cancels; both bring the `/persona` window back. With the mouse or a finger, a click on the left half of a row steps back and on the right half steps on; a click outside closes it. The change applies from the next message on, like switching persona. A persona imported from SillyTavern with its old *After the character* position (`1`) shows it as *not supported, not sent*; stepping to another position replaces it. With no persona saved yet the list shows a plain `User`, which is written to disk once you edit it.
+
+## Prompt window
+
+`/prompt` shows the prompt exactly as st-cli would send it for the next reply, built right then from the current settings, persona, system prompt, character card and chat: the system prompt and character card (the context template's story string), the example dialogue, the instruct formatting, and the messages that fit into the *Context size* (older ones that would be cut are not shown, like in the real request). It is not changed or sent by opening it, and nothing is saved. The title shows its size in characters and an estimated token count (`~`). On a summary branch it is the prompt of the branch that is showing.
+
+| Key / click | Action |
+| --- | --- |
+| Up / Down (or `k` / `j`), wheel | scroll one row (the wheel three) |
+| PgUp / PgDn (or Space) | scroll a page |
+| Ctrl+U / Ctrl+D | half a page up / down |
+| Home / End (or `g` / `G`) | top / bottom |
+| Esc, `q`, Enter, Ctrl+C or a click | close |
+
+Long lines are wrapped to the window; tabs are shown as four spaces. The window is read-only and a typed draft in the box is not part of it (the box holds `/prompt` while the window is open).
+
+## Author's Note
+
+The Author's Note is a short text that belongs to one chat and is added to the prompt of the replies, to steer the story (`Keep the pace slow.`, `[Style: terse, present tense]`). It is kept in the chat file's metadata under SillyTavern's own names (`note_prompt`, `note_position`, `note_depth`, `note_role`, `note_interval`), so a chat copied from SillyTavern keeps its note, and the web UI shows the one written here.
+
+`/note` (or `/an`) opens a form with five fields; Ctrl+S saves, Esc cancels (the fields work like those of `/char`, including the vim modes and the spell checker). The settings are typed as words and checked when you save:
+
+| Field | Values |
+| --- | --- |
+| Author's note | the text; `{{char}}`, `{{user}}` and the other macros work. Empty = nothing is sent |
+| Position | `chat` (default): into the chat history, `depth` messages from the end. `after`: with the system prompt and character card, after them. `before`: the same, before them |
+| Depth | only for `chat`: messages from the end, `0` is after the last message (default `4`) |
+| Role | only for `chat`: whether the injected message is a `system` (default), `user` or `assistant` message |
+| Interval | the note is sent with every N-th message of yours: `1` (default) every reply, `3` every third, `0` never |
+
+`before` and `after` fill `{{anchorBefore}}` and `{{anchorAfter}}` of the context template's story string; a template that has neither still gets the note, before or after the story string. The change applies from the next message on (the token count and `/prompt` change at once). The note is per chat: a new chat starts without one, and `/newchat` does not carry it over.
+
+A persona whose position is **Top** or **Bottom of the Author's Note** (see *Personas*) is added above or below the note's text, on its own line, and travels with the note: the note's Position, Depth and Role decide where it goes. It is sent even when the note has no text, and also when the Interval says the text is skipped for this reply.
+
+## System prompts
+
+System prompts belong to st-cli, not to SillyTavern. They are kept in one file, `~/.config/st-cli/system-prompt.jsonl`, one JSON object per line (hand edits are fine):
+
+```
+{"id":"roleplay-simple","name":"Roleplay - Simple","content":"You are {{char}}. ...","post_history":"","active":true}
+```
+
+`id` is the short file-name-like id, `name` what the window shows, `content` the system prompt, `post_history` the post-history instructions, and `"active": true` marks the prompt in use (only one line has it; the key is left out on the others). The text of the prompt in use is what goes into the `{{system}}` part of the context template for every reply, exactly where SillyTavern's own system prompt used to go. SillyTavern's system prompt settings are no longer read for chatting and never written. With no system prompt saved or chosen the system prompt is empty (the character card's own system prompt and post-history instructions, if it has them, still apply).
+
+`/system` inside a chat opens a window with every system prompt by name and a short preview of its text; the one in use is marked `(current)`. Pick one with ↑/↓ + Enter (or click / tap); Esc closes it. The choice applies from the next message on (and to chats open in other terminals, which re-read the file before every reply). The first row, `+ new system prompt`, opens a form (name, system prompt, post-history instructions; Ctrl+S saves, Esc cancels, the fields work like those of `/char`, including the vim modes and the spell checker). `e` on a prompt opens the same form for it; `d` deletes it (asks `y`; the one in use can't be deleted). A new prompt is not switched on by itself: pick it in the window.
+
+`{{char}}`, `{{user}}` and the other macros work in a system prompt as they did in SillyTavern. A character card's own system prompt still replaces the prompt in use (`{{original}}` in it stands for the prompt in use), as before.
 
 ### Importing from SillyTavern
 
@@ -103,7 +162,9 @@ st-cli import-st http://127.0.0.1:8000
 st-cli import-st http://127.0.0.1:8000 --overwrite
 ```
 
-Copies every persona (and every character, see Characters) of that SillyTavern server (name, title, description, position, depth, role, lorebook) into the persona folder. The server is only read, never changed, and the personas' pictures are not copied. `<url>` may be left out to use `url` from `config.yaml`, and `host:port` works without `http://`. Personas may share a name: each gets its own file (`alex.yaml`, `alex-2.yaml`, ...; the window tells them apart by title and description preview, and a new persona made with `+ new persona` can reuse a name too). A persona identical to one already here (same name, title and description) is skipped, so running it again is safe; `--overwrite` / `-o` replaces the one with the same name and title instead of adding another. If you have not chosen a persona here yet, the one the server had active becomes yours too.
+Copies every persona (and every system prompt and character, see System prompts and Characters) of that SillyTavern server (name, title, description, position, depth, role, lorebook) into the persona folder. The server is only read, never changed, and the personas' pictures are not copied. `<url>` may be left out to use `url` from `config.yaml`, and `host:port` works without `http://`. Personas may share a name: each gets its own file (`alex.yaml`, `alex-2.yaml`, ...; the window tells them apart by title and description preview, and a new persona made with `+ new persona` can reuse a name too). A persona identical to one already here (same name, title and description) is skipped, so running it again is safe; `--overwrite` / `-o` replaces the one with the same name and title instead of adding another. If you have not chosen a persona here yet, the one the server had active becomes yours too.
+
+The server's system prompts (its system prompt presets, plus the one it has switched on when that is not one of them) go into `system-prompt.jsonl` the same way: an identical one (same name, prompt and post-history instructions) is skipped, so running it again is safe, and `--overwrite` replaces one with the same name instead of adding `name-2`. If you have not chosen a system prompt here yet, the one the server had on becomes yours too.
 
 The chat's top bar reads ` st-cli <version> ` (white badge) `<character>/<chat file> • <persona> (<title>) • <api>@host:port`, e.g. `Mirei/Mire01`. The API type is what SillyTavern is set to; `host:port` is the `url` from `config.yaml`. Message names are black on white, with a grey rule between messages (none under the last one).
 
@@ -368,7 +429,7 @@ The pattern is matched as plain text (no regular expressions yet), so `.` and `*
 
 ## How it works
 
-SillyTavern only supplies the chats and the context / instruct templates (characters and personas are st-cli's own, in `~/.config/st-cli/characters/` and `~/.config/st-cli/persona/`); the prompt is built client side and the reply comes straight from your API connection (`/api`). Before every reply st-cli re-reads both SillyTavern's settings and `api.yaml`, so a change to a template, persona or sampler value applies to the next message.
+SillyTavern only supplies the chats and the context / instruct templates (characters, personas and system prompts are st-cli's own, in `~/.config/st-cli/characters/`, `~/.config/st-cli/persona/` and `~/.config/st-cli/system-prompt.jsonl`); the prompt is built client side and the reply comes straight from your API connection (`/api`). Before every reply st-cli re-reads both SillyTavern's settings and `api.yaml`, so a change to a template, persona, system prompt or sampler value applies to the next message.
 
 1. `GET /csrf-token` (+ optional login), then `POST /api/settings/get`.
 2. Character card from `~/.config/st-cli/characters/`; chats via `/api/chats/get` and `/api/chats/save`.
@@ -378,7 +439,7 @@ SillyTavern only supplies the chats and the context / instruct templates (charac
 ## Limitations
 
 - Only llama.cpp is supported, through a standalone connection (`/api`). SillyTavern's own API selection is never used for replies or token counts.
-- No World Info/lorebooks, Author's Note, summaries, vector memory, group chats, or tool calling. The prompt is therefore close to, but not byte-identical to, the web UI's when you use those.
+- No World Info/lorebooks, summaries, vector memory, group chats, or tool calling. The prompt is therefore close to, but not byte-identical to, the web UI's when you use those.
 - Token counting for trimming history to the context window is an estimate (`chars_per_token`), not a real tokenizer. The totals in the status row are exact once the connection's tokenizer has answered (see Keys).
 - Unfinished prose is closed for you while a reply streams: an open `*narration`, `**bold` or `"speech` is shown with its closing marker added, and the model's own closer simply takes its place. Nothing is added for a lone trailing `*`, `2 * 3`, bullets, a `*` inside a word, or past a blank line. When a reply ends with markers still open they are closed in the saved text too (Ctrl+K takes them off again before continuing).
 - Markdown is minimal: `*narration*` is bold and a neutral grey, `**bold**` is bold and "quoted speech" is yellow. Styles end at a blank line, and a `*` that has no partner (`2 * 3`, a `* ` bullet, an unclosed one) is shown as a plain asterisk.

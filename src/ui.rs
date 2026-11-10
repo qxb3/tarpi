@@ -4,6 +4,7 @@ use crate::app::{App, ChatStats};
 use crate::cardedit::{CardModal, Hit};
 use crate::input::Mode;
 use crate::picker::Picker;
+use crate::posedit::{self, PosEdit};
 use crate::termcolors;
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
@@ -603,7 +604,14 @@ const HELP: &[&str] = &[
     "/chats           window to open, create or delete (d) chats of this",
     "                 character",
     "/chars           window to switch to another character",
-    "/persona         window to choose who you are in the chat",
+    "/persona         window to choose who you are in the chat; p sets where",
+    "                 its description goes into the prompt",
+    "/system          window to choose, create (+), edit (e) or delete (d)",
+    "                 the system prompt",
+    "/prompt          show the whole prompt the next reply is sent with",
+    "                 (scroll; Esc closes)",
+    "/note            edit this chat's Author's Note: text, position",
+    "                 (before / after / chat), depth, role, interval (also /an)",
     "/api             open the API settings; quitting them (q) brings",
     "                 you back to this chat",
     "/char            view and edit this character's card",
@@ -845,8 +853,10 @@ fn draw_spell_menu(f: &mut Frame, app: &mut App, input_area: Rect, top: u16) {
     }
     if matches!(anchor, Some(None))
         || app.show_help
+        || app.prompt_view.is_some()
         || app.image_modal.is_some()
         || app.picker.is_some()
+        || app.pos_edit.is_some()
     {
         return;
     }
@@ -926,6 +936,81 @@ fn draw_spell_menu(f: &mut Frame, app: &mut App, input_area: Rect, top: u16) {
     app.spell_rows = hits;
 }
 
+/// Cut `line` into rows of at most `width` columns, at a space when there is
+/// one in the row, anywhere otherwise. An empty line stays one empty row.
+fn wrap_rows(line: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut w: usize = 0;
+    for c in line.chars() {
+        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+        while w + cw > width && !cur.is_empty() {
+            let cut = cur.rfind(' ').filter(|&p| !cur[..p].trim().is_empty());
+            match cut {
+                Some(p) => {
+                    let rest = cur[p + 1..].to_string();
+                    cur.truncate(p);
+                    out.push(std::mem::take(&mut cur));
+                    w = rest
+                        .chars()
+                        .map(|x| UnicodeWidthChar::width(x).unwrap_or(0))
+                        .sum();
+                    cur = rest;
+                }
+                None => {
+                    out.push(std::mem::take(&mut cur));
+                    w = 0;
+                }
+            }
+        }
+        cur.push(c);
+        w += cw;
+    }
+    out.push(cur);
+    out
+}
+
+/// The `/prompt` window: the whole prompt, scrollable, over the full area.
+fn draw_prompt_modal(f: &mut Frame, area: Rect, v: &mut crate::app::PromptView) {
+    f.render_widget(Clear, area);
+    let iw = (area.width as usize).saturating_sub(2).max(1);
+    let rows = (area.height as usize).saturating_sub(2).max(1);
+    if v.wrapped_w != iw || v.wrapped.is_empty() {
+        let mut lines: Vec<String> = Vec::new();
+        for l in v.text.split('\n') {
+            lines.extend(wrap_rows(l, iw));
+        }
+        v.wrapped = lines;
+        v.wrapped_w = iw;
+    }
+    let max_scroll = v.wrapped.len().saturating_sub(rows);
+    v.page = rows;
+    v.scroll = v.scroll.min(max_scroll);
+    let shown: Vec<Line<'static>> = v
+        .wrapped
+        .iter()
+        .skip(v.scroll)
+        .take(rows)
+        .map(|l| Line::from(l.clone()))
+        .collect();
+    let bottom = if max_scroll > 0 {
+        format!(
+            " \u{2191}/\u{2193} PgUp/PgDn scroll \u{b7} Esc closes ({}/{}) ",
+            v.scroll + 1,
+            max_scroll + 1
+        )
+    } else {
+        " Esc closes ".to_string()
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(v.title.clone())
+        .title_bottom(Line::from(bottom))
+        .border_style(Style::default().fg(Color::Cyan));
+    f.render_widget(Paragraph::new(shown).block(block), area);
+}
+
 /// The choose-one window of `/characters`, `/chats` and `/persona`: the
 /// entries, with the keys on the bottom edge.
 pub fn draw_picker(f: &mut Frame, area: Rect, p: &mut Picker) {
@@ -964,9 +1049,14 @@ pub fn draw_picker(f: &mut Frame, area: Rect, p: &mut Picker) {
         } else {
             ""
         };
+        let pos = if p.position_key && p.items.iter().any(|i| i.editable) {
+            " \u{b7} p position"
+        } else {
+            ""
+        };
         Line::from(format!(
-            " \u{2191}/\u{2193} move \u{b7} Enter choose{}{} \u{b7} Esc cancel ",
-            edit, del
+            " \u{2191}/\u{2193} move \u{b7} Enter choose{}{}{} \u{b7} Esc cancel ",
+            edit, pos, del
         ))
     };
     let block = Block::default()
@@ -1035,6 +1125,83 @@ pub fn draw_picker(f: &mut Frame, area: Rect, p: &mut Picker) {
         ]));
     }
     f.render_widget(Paragraph::new(lines), list);
+}
+
+/// The window of the `p` key in `/persona`: where the description of a persona
+/// is injected into the prompt (position, and for the chat position depth and
+/// role).
+pub fn draw_pos_edit(f: &mut Frame, area: Rect, e: &mut PosEdit) {
+    let rows = e.rows();
+    let w = area.width.min(64);
+    // Borders (2), the rows, an empty row and a line about the position.
+    let want = rows.len() as u16 + 4;
+    let h = want.min(area.height).max(3).min(area.height);
+    let rect = centered(area, w, h);
+    f.render_widget(Clear, rect);
+
+    let bottom: Line<'static> = if let Some(msg) = &e.note {
+        Line::from(Span::styled(
+            format!(" {} ", msg),
+            Style::default().fg(Color::Red),
+        ))
+    } else {
+        Line::from(" \u{2191}/\u{2193} row \u{b7} \u{2190}/\u{2192} change \u{b7} Enter save \u{b7} Esc cancel ")
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" position of {} ", fit_cols(&e.label, (w as usize).saturating_sub(16))))
+        .title_bottom(bottom)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    if inner.height < 1 || inner.width < 4 {
+        return;
+    }
+    let cols = inner.width as usize;
+    e.window = rect;
+    let shown = (rows.len() as u16).min(inner.height);
+    e.rows_area = Rect::new(inner.x, inner.y, inner.width, shown);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for r in rows.iter().take(shown as usize) {
+        let selected = *r == e.sel;
+        let value = match r {
+            posedit::Row::Position => posedit::position_name(e.position),
+            posedit::Row::Depth => e.depth.to_string(),
+            posedit::Row::Role => posedit::role_name(e.role).to_string(),
+        };
+        let text = fit_cols(
+            &format!(
+                "{} {:<9}\u{2039} {} \u{203a}",
+                if selected { "\u{25b8}" } else { " " },
+                r.label(),
+                value
+            ),
+            cols,
+        );
+        let pad = " ".repeat(cols.saturating_sub(cols_of(&text)));
+        let style = if selected {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(text, style),
+            Span::styled(pad, style),
+        ]));
+    }
+    // An empty row, then what the chosen position does.
+    if inner.height as usize > lines.len() + 1 {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            fit_cols(
+                &format!("  {}", posedit::position_note(e.position, e.depth, e.role)),
+                cols,
+            ),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 /// The `/character` window: every field of the card as a scrollable form,
@@ -1208,7 +1375,10 @@ fn draw_card_modal(
         // Misspelled words of editable fields (not the Name, which is free
         // text), except while a `:s` preview is shown. The word being typed
         // in the focused field (INSERT mode) is left alone.
-        let spell_it = fld.editable && fld.key != "name" && preview.is_none() && !(focused && live.is_some());
+        let spell_it = fld.editable
+            && fld.key != "name"
+            && !matches!(fld.key, "position" | "depth" | "role" | "interval")
+            && preview.is_none() && !(focused && live.is_some());
         let misspelled: Vec<(usize, usize)> = match spell.as_deref_mut() {
             Some(sp) if spell_it => {
                 let typing = (focused && m.input.mode == Mode::Insert && !rested).then_some(cur);
@@ -1765,6 +1935,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             .block(block)
             .scroll((app.help_scroll as u16, 0));
         f.render_widget(popup, rect);
+    } else if let Some(v) = app.prompt_view.as_mut() {
+        draw_prompt_modal(f, modal_area, v);
     } else if let Some(m) = app.image_modal.as_mut() {
         draw_image_modal(f, modal_area, m);
     } else if app.card_modal.is_some() {
@@ -1774,6 +1946,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         if let Some(m) = app.card_modal.as_mut() {
             draw_card_modal(f, modal_area, m, app.spell.as_mut(), rested);
         }
+    } else if let Some(e) = app.pos_edit.as_mut() {
+        draw_pos_edit(f, modal_area, e);
     } else if let Some((_, p)) = app.picker.as_mut() {
         draw_picker(f, modal_area, p);
     } else if let Some(x) = cmd_cursor_x {

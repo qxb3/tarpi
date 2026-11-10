@@ -11,13 +11,16 @@ use crate::gen::{self, GenEvent, GenMsg};
 use crate::history::History;
 use crate::input::{Input, Mode};
 use crate::picker::{Action as PickAction, Item as PickItem, Picker};
+use crate::posedit::{Action as PosAction, PosEdit};
 use crate::jv::*;
 use crate::chatstore;
 use crate::charstore;
+use crate::note::{self, Note};
 use crate::persona;
 use crate::prompt;
 use crate::prose;
 use crate::summary;
+use crate::sysprompt;
 use crate::textgen;
 use crate::tokens;
 use crate::ui;
@@ -92,6 +95,7 @@ pub enum PickKind {
     Characters,
     Chats,
     Personas,
+    SysPrompts,
 }
 
 /// Key of the "new chat" row of the `/chats` window.
@@ -99,10 +103,34 @@ const NEW_CHAT: &str = "\u{0}new";
 /// Key of the "new persona" row of the `/persona` window.
 const NEW_PERSONA: &str = "\u{0}new";
 
+/// Key of the "new system prompt" row of the `/system` window.
+const NEW_SYSPROMPT: &str = "\u{0}new";
+
 /// The persona form (`App::card_modal`) is open for this persona.
 struct PersonaEdit {
     /// `None`: a new persona is being made.
     avatar: Option<String>,
+}
+
+/// The `/prompt` window: the whole prompt of the next reply, as text.
+pub struct PromptView {
+    /// The prompt, tidied for the screen (no tabs or control characters).
+    pub text: String,
+    /// Window title: size of the prompt.
+    pub title: String,
+    /// First visible row (`ui::draw_prompt_modal` keeps it in range).
+    pub scroll: usize,
+    /// Text rows the window shows, for PgUp / PgDn (set when drawing).
+    pub page: usize,
+    /// `text` cut into screen rows for the width in `wrapped_w`.
+    pub wrapped: Vec<String>,
+    pub wrapped_w: usize,
+}
+
+/// The system prompt form (`App::card_modal`) is open for this prompt.
+struct SysEdit {
+    /// `None`: a new system prompt is being made.
+    id: Option<String>,
 }
 
 enum Outcome {
@@ -191,14 +219,22 @@ pub struct App {
     pub exit_to: Option<Exit>,
     /// The `/characters` or `/chats` window, if open.
     pub picker: Option<(PickKind, Picker)>,
+    /// The position window of the `/persona` window's `p` key, if open.
+    pub pos_edit: Option<PosEdit>,
     /// Set while `card_modal` is the persona form, not the character card.
     persona_edit: Option<PersonaEdit>,
+    /// Set while `card_modal` is the system prompt form.
+    sys_edit: Option<SysEdit>,
+    /// Set while `card_modal` is the Author's Note form (`/note`).
+    note_edit: bool,
     /// `/one-shot` was typed once and waits for the second time.
     one_shot_armed: bool,
     /// Set by `/api`: the main loop opens the API manager in this terminal and
     /// then continues with this same screen.
     pub open_api: bool,
     pub show_help: bool,
+    /// The `/prompt` window (the whole prompt of the next reply), if open.
+    pub prompt_view: Option<PromptView>,
     /// The `/character` window (the whole card as an editable form), if open.
     pub card_modal: Option<CardModal>,
     /// The `/char-img` window (the card picture), if open.
@@ -426,6 +462,7 @@ impl App {
         chars_per_token: f32,
     ) -> App {
         persona::normalize(&mut settings);
+        sysprompt::normalize(&mut settings);
         let (user_name, persona_title) = {
             let p = persona::current();
             (p.name, p.title)
@@ -467,10 +504,14 @@ impl App {
             exit_to: None,
             open_api: false,
             show_help: false,
+            prompt_view: None,
             card_modal: None,
             image_modal: None,
             picker: None,
+            pos_edit: None,
             persona_edit: None,
+            sys_edit: None,
+            note_edit: false,
             one_shot_armed: false,
             help_scroll: 0,
             help_page: 10,
@@ -592,6 +633,7 @@ impl App {
         // A chars-per-token this large keeps the history trimming from cutting anything.
         const NO_TRIM: f32 = 1.0e6;
         let history = &self.chat.messages[..];
+        let note = Note::from_chat(&self.chat);
         match jstr(&self.settings, "main_api").as_str() {
             "textgenerationwebui" => {
                 textgen::build_prompt(&textgen::TgArgs {
@@ -600,6 +642,7 @@ impl App {
                     user_name: &self.user_name,
                     persona: &self.persona,
                     persona_position: self.persona_position,
+                    note: &note,
                     history,
                     chars_per_token: NO_TRIM,
                     continue_text: None,
@@ -826,7 +869,7 @@ impl App {
                     c.follow = true;
                     return;
                 }
-                if self.picker.is_some() {
+                if self.picker.is_some() || self.pos_edit.is_some() || self.prompt_view.is_some() {
                     return;
                 }
                 self.input_scroll = None;
@@ -853,9 +896,32 @@ impl App {
             self.on_card_mouse(m).await;
             return;
         }
+        if let Some(e) = self.pos_edit.as_mut() {
+            let act = e.on_mouse(m);
+            self.pos_action(act).await;
+            return;
+        }
         if let Some((_, p)) = self.picker.as_mut() {
             let act = p.on_mouse(m);
             self.picker_action(act).await;
+            return;
+        }
+        if self.prompt_view.is_some() {
+            // The wheel scrolls the prompt; a click closes it.
+            match m.kind {
+                MouseEventKind::ScrollUp => {
+                    if let Some(v) = self.prompt_view.as_mut() {
+                        v.scroll = v.scroll.saturating_sub(3);
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    if let Some(v) = self.prompt_view.as_mut() {
+                        v.scroll = v.scroll.saturating_add(3);
+                    }
+                }
+                MouseEventKind::Down(MouseButton::Left) => self.prompt_view = None,
+                _ => {}
+            }
             return;
         }
         match m.kind {
@@ -1100,9 +1166,18 @@ impl App {
             self.on_card_key(k).await;
             return;
         }
+        if let Some(e) = self.pos_edit.as_mut() {
+            let act = e.handle_key(k);
+            self.pos_action(act).await;
+            return;
+        }
         if let Some((_, p)) = self.picker.as_mut() {
             let act = p.handle_key(k);
             self.picker_action(act).await;
+            return;
+        }
+        if self.prompt_view.is_some() {
+            self.prompt_key(k);
             return;
         }
         if self.show_help {
@@ -1546,6 +1621,18 @@ impl App {
                     self.input.clear();
                     self.open_persona_picker().await;
                 }
+                "prompt" => {
+                    self.input.clear();
+                    self.show_prompt().await;
+                }
+                "system" | "sys" | "sysprompt" | "system-prompt" => {
+                    self.input.clear();
+                    self.open_sysprompt_picker().await;
+                }
+                "note" | "an" | "authors-note" | "author" => {
+                    self.input.clear();
+                    self.open_note().await;
+                }
                 "one-shot" | "oneshot" => {
                     self.input.clear();
                     self.one_shot().await;
@@ -1978,7 +2065,75 @@ impl App {
             editable: true,
             key: p.id,
         }));
-        self.picker = Some((PickKind::Personas, Picker::new("persona", items)));
+        let mut picker = Picker::new("persona", items);
+        picker.position_key = true;
+        self.picker = Some((PickKind::Personas, picker));
+    }
+
+    /// The `/persona` window again, with the cursor on persona `id`.
+    async fn open_persona_picker_at(&mut self, id: &str) {
+        self.open_persona_picker().await;
+        if let Some((_, p)) = self.picker.as_mut() {
+            if let Some(i) = p.items.iter().position(|it| it.key == id) {
+                p.sel = i;
+            }
+        }
+    }
+
+    /// `p` in the `/persona` window: the window for where the description of
+    /// persona `id` goes into the prompt.
+    async fn open_persona_pos(&mut self, id: String) {
+        match persona::list().into_iter().find(|p| p.id == id) {
+            Some(p) => {
+                self.pos_edit = Some(PosEdit::new(p.id.clone(), p.label(), p.position, p.depth, p.role));
+            }
+            None => {
+                self.set_status("that persona no longer exists", true);
+                self.open_persona_picker().await;
+            }
+        }
+    }
+
+    /// Enter / Esc in the position window: save to the persona's file (and use
+    /// it from the next reply on), or leave it as it was. Either way the
+    /// `/persona` window comes back. A failed save keeps the window open.
+    async fn pos_action(&mut self, act: PosAction) {
+        match act {
+            PosAction::None => {}
+            PosAction::Cancel => {
+                if let Some(e) = self.pos_edit.take() {
+                    self.open_persona_picker_at(&e.id).await;
+                }
+            }
+            PosAction::Save => {
+                let Some(e) = self.pos_edit.as_ref() else {
+                    return;
+                };
+                let (id, position, depth, role) = (e.id.clone(), e.position, e.depth, e.role);
+                match persona::set_injection(&id, position, depth, role) {
+                    Ok(p) => {
+                        // The active persona may just have been changed.
+                        let settings = self.settings.clone();
+                        self.apply_settings(settings);
+                        self.pos_edit = None;
+                        self.open_persona_picker_at(&id).await;
+                        let msg = format!(
+                            "{}: {}",
+                            p.name,
+                            crate::posedit::position_note(p.position, p.depth, p.role)
+                        );
+                        if let Some((_, pk)) = self.picker.as_mut() {
+                            pk.note = Some((msg, false));
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(e) = self.pos_edit.as_mut() {
+                            e.note = Some(format!("could not save: {:#}", err));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Open the persona form for `id`, or an empty one for a new persona.
@@ -2072,6 +2227,209 @@ impl App {
         self.set_status(format!("now chatting as {}", p.label()), false);
     }
 
+    /// `/prompt`: show the whole prompt the next reply would be sent with: the
+    /// system prompt, character card, persona, examples, instruct formatting
+    /// and the messages that fit into the context size, as one text.
+    async fn show_prompt(&mut self) {
+        // The same fresh settings, persona and system prompt a reply would use.
+        self.refresh_settings().await;
+        let note = Note::from_chat(&self.chat);
+        let tp = textgen::build_prompt(&textgen::TgArgs {
+            settings: &self.settings,
+            ch: &self.character,
+            user_name: &self.user_name,
+            persona: &self.persona,
+            persona_position: self.persona_position,
+            note: &note,
+            history: &self.chat.messages[..],
+            chars_per_token: self.chars_per_token,
+            continue_text: None,
+            nudge: None,
+        });
+        let chars = tp.prompt.chars().count();
+        let tokens = prompt::est_tokens(&tp.prompt, self.chars_per_token);
+        let mut text = String::new();
+        for c in tp.prompt.chars() {
+            match c {
+                '\n' => text.push('\n'),
+                '\t' => text.push_str("    "),
+                '\r' => {}
+                c if c.is_control() => text.push(' '),
+                c => text.push(c),
+            }
+        }
+        self.prompt_view = Some(PromptView {
+            text,
+            title: format!(
+                " prompt \u{b7} {} characters \u{b7} ~{} tokens ",
+                chars,
+                summary::fmt_tokens(tokens)
+            ),
+            scroll: 0,
+            page: 10,
+            wrapped: Vec::new(),
+            wrapped_w: 0,
+        });
+    }
+
+    /// Keys in the `/prompt` window: scroll, Esc / q / Enter close.
+    fn prompt_key(&mut self, k: KeyEvent) {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let mut close = false;
+        if let Some(v) = self.prompt_view.as_mut() {
+            let page = v.page.max(1);
+            let half = (page / 2).max(1);
+            match k.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter if !ctrl => close = true,
+                KeyCode::Char('c') if ctrl => close = true,
+                KeyCode::Up | KeyCode::Char('k') if !ctrl => v.scroll = v.scroll.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') if !ctrl => {
+                    v.scroll = v.scroll.saturating_add(1)
+                }
+                KeyCode::PageUp => v.scroll = v.scroll.saturating_sub(page),
+                KeyCode::PageDown | KeyCode::Char(' ') => v.scroll = v.scroll.saturating_add(page),
+                KeyCode::Char('u') if ctrl => v.scroll = v.scroll.saturating_sub(half),
+                KeyCode::Char('d') if ctrl => v.scroll = v.scroll.saturating_add(half),
+                KeyCode::Home | KeyCode::Char('g') => v.scroll = 0,
+                KeyCode::End | KeyCode::Char('G') => v.scroll = usize::MAX,
+                _ => {}
+            }
+        }
+        if close {
+            self.prompt_view = None;
+        }
+    }
+
+    /// `/system`: choose the system prompt, make a new one (the first row),
+    /// edit one (`e`) or delete one (`d`).
+    async fn open_sysprompt_picker(&mut self) {
+        let active = sysprompt::current().map(|p| p.id);
+        let mut items = vec![PickItem {
+            key: NEW_SYSPROMPT.to_string(),
+            label: "+ new system prompt".to_string(),
+            detail: String::new(),
+            current: false,
+            deletable: false,
+            editable: false,
+        }];
+        let list = sysprompt::list();
+        let none_yet = list.is_empty();
+        items.extend(list.into_iter().map(|p| PickItem {
+            label: p.name.clone(),
+            detail: persona::brief(&p.content, 80),
+            current: active.as_ref() == Some(&p.id),
+            deletable: true,
+            editable: true,
+            key: p.id,
+        }));
+        let mut picker = Picker::new("system prompt", items);
+        if none_yet {
+            picker.note = Some((
+                "none yet: make one with + new, or run st-cli import-st".to_string(),
+                false,
+            ));
+        }
+        self.picker = Some((PickKind::SysPrompts, picker));
+    }
+
+    /// Open the system prompt form for `id`, or an empty one for a new prompt.
+    async fn open_sysprompt_form(&mut self, id: Option<String>) {
+        let (name, content, post_history) = match &id {
+            None => (String::new(), String::new(), String::new()),
+            Some(i) => match sysprompt::list().into_iter().find(|p| p.id == *i) {
+                Some(p) => (p.name, p.content, p.post_history),
+                None => {
+                    self.set_status("that system prompt no longer exists", true);
+                    return;
+                }
+            },
+        };
+        self.card_modal = Some(CardModal::sysprompt(
+            &name,
+            &content,
+            &post_history,
+            &self.input,
+        ));
+        self.sys_edit = Some(SysEdit { id });
+    }
+
+    /// Ctrl+S in the system prompt form: create or update the prompt, then
+    /// show the `/system` window again. On a failure the form stays open.
+    async fn save_sysprompt_form(&mut self) {
+        let (name, content, post_history) = match self.card_modal.as_mut() {
+            Some(m) => {
+                m.sync();
+                (m.value("name"), m.value("content"), m.value("post_history"))
+            }
+            None => return,
+        };
+        if name.is_empty() {
+            self.card_note("give the system prompt a name", true);
+            return;
+        }
+        let existing = self.sys_edit.as_ref().and_then(|e| e.id.clone());
+        let msg = match sysprompt::put(existing.as_deref(), &name, &content, &post_history) {
+            Ok(_) if existing.is_some() => format!("saved system prompt {}", name),
+            Ok(_) => format!("created system prompt {}", name),
+            Err(e) => {
+                self.card_note(format!("could not save the system prompt: {:#}", e), true);
+                return;
+            }
+        };
+        // The prompt in use may just have been edited.
+        let settings = self.settings.clone();
+        self.apply_settings(settings);
+        self.card_modal = None;
+        self.sys_edit = None;
+        self.open_sysprompt_picker().await;
+        if let Some((_, p)) = self.picker.as_mut() {
+            p.note = Some((msg, false));
+        }
+    }
+
+    /// Delete a system prompt chosen in the `/system` window; the window stays
+    /// open. The one in use can't be deleted.
+    async fn sysprompt_delete(&mut self, key: &str) {
+        let in_use = sysprompt::current().map(|p| p.id == key).unwrap_or(false);
+        let note = if in_use {
+            (
+                "that system prompt is in use \u{2014} switch to another one first".to_string(),
+                true,
+            )
+        } else {
+            match sysprompt::remove(key) {
+                Ok(()) => {
+                    if let Some((_, p)) = self.picker.as_mut() {
+                        p.remove(key);
+                    }
+                    ("deleted the system prompt".to_string(), false)
+                }
+                Err(e) => (format!("could not delete the system prompt: {:#}", e), true),
+            }
+        };
+        if let Some((_, p)) = self.picker.as_mut() {
+            p.note = Some(note);
+        }
+    }
+
+    /// Make `id` the system prompt in use: remembered in st-cli's
+    /// `system-prompt.jsonl` and used by this chat from the next message on.
+    async fn switch_sysprompt(&mut self, id: &str) {
+        if sysprompt::current().map(|p| p.id == id).unwrap_or(false) {
+            return;
+        }
+        let p = match sysprompt::activate(id) {
+            Ok(p) => p,
+            Err(e) => {
+                self.set_status(format!("could not switch the system prompt: {:#}", e), true);
+                return;
+            }
+        };
+        let settings = self.settings.clone();
+        self.apply_settings(settings);
+        self.set_status(format!("system prompt: {}", p.name), false);
+    }
+
     async fn picker_action(&mut self, act: PickAction) {
         let Some(kind) = self.picker.as_ref().map(|(k, _)| *k) else {
             return;
@@ -2094,6 +2452,13 @@ impl App {
                             self.switch_persona(&key).await;
                         }
                     }
+                    PickKind::SysPrompts => {
+                        if key == NEW_SYSPROMPT {
+                            self.open_sysprompt_form(None).await;
+                        } else {
+                            self.switch_sysprompt(&key).await;
+                        }
+                    }
                     PickKind::Chats => {
                         if key == NEW_CHAT {
                             self.leave(Exit::NewChat).await;
@@ -2105,12 +2470,22 @@ impl App {
             }
             PickAction::Delete(key) => match kind {
                 PickKind::Personas => self.persona_delete(&key).await,
+                PickKind::SysPrompts => self.sysprompt_delete(&key).await,
                 _ => self.picker_delete(&key).await,
             },
+            PickAction::Position(key) => {
+                if kind == PickKind::Personas {
+                    self.picker = None;
+                    self.open_persona_pos(key).await;
+                }
+            }
             PickAction::Edit(key) => {
                 if kind == PickKind::Personas {
                     self.picker = None;
                     self.open_persona_form(Some(key)).await;
+                } else if kind == PickKind::SysPrompts {
+                    self.picker = None;
+                    self.open_sysprompt_form(Some(key)).await;
                 }
             }
         }
@@ -2197,6 +2572,78 @@ impl App {
         self.card_modal = Some(CardModal::new(&shown, &self.input));
     }
 
+    /// `/note`: the Author's Note of this chat as a form.
+    async fn open_note(&mut self) {
+        let n = Note::from_chat(&self.chat);
+        self.card_modal = Some(CardModal::note(&n, &self.input));
+        self.note_edit = true;
+    }
+
+    /// Ctrl+S in the Author's Note form: check the settings, keep the note in
+    /// the chat file and use it from the next reply on. On a mistake the form
+    /// stays open and says what to type.
+    async fn save_note_form(&mut self) {
+        let (text, position, depth, role, interval) = match self.card_modal.as_mut() {
+            Some(m) => {
+                m.sync();
+                (
+                    m.value("note"),
+                    m.value("position"),
+                    m.value("depth"),
+                    m.value("role"),
+                    m.value("interval"),
+                )
+            }
+            None => return,
+        };
+        let Some(position) = note::parse_position(&position) else {
+            self.card_note("position: type before, after or chat", true);
+            return;
+        };
+        let Some(depth) = note::parse_number(&depth, note::MAX_DEPTH) else {
+            self.card_note(
+                format!("depth: type a whole number from 0 to {}", note::MAX_DEPTH),
+                true,
+            );
+            return;
+        };
+        let Some(role) = note::parse_role(&role) else {
+            self.card_note("role: type system, user or assistant", true);
+            return;
+        };
+        let Some(interval) = note::parse_number(&interval, note::MAX_INTERVAL) else {
+            self.card_note(
+                format!(
+                    "interval: type a whole number from 0 to {} (0 = never)",
+                    note::MAX_INTERVAL
+                ),
+                true,
+            );
+            return;
+        };
+        let n = Note {
+            text,
+            position,
+            depth,
+            role,
+            interval,
+        };
+        n.store(&mut self.chat);
+        self.save().await;
+        // The prompt (and its token count) is built from the note too.
+        self.settings_ver += 1;
+        self.card_modal = None;
+        self.note_edit = false;
+        let msg = if n.text.is_empty() {
+            "author's note saved (no text: nothing is sent)"
+        } else if n.interval == 0 {
+            "author's note saved (interval 0: it is never sent)"
+        } else {
+            "author's note saved"
+        };
+        self.set_status(msg, false);
+    }
+
     async fn cancel_card_modal(&mut self) {
         let dirty = self.card_modal.as_ref().map(|m| m.dirty()).unwrap_or(false);
         self.card_modal = None;
@@ -2205,6 +2652,21 @@ impl App {
             self.open_persona_picker().await;
             if dirty {
                 self.set_status("persona: changes discarded", false);
+            }
+            return;
+        }
+        if self.sys_edit.take().is_some() {
+            // Back to the system prompt window.
+            self.open_sysprompt_picker().await;
+            if dirty {
+                self.set_status("system prompt: changes discarded", false);
+            }
+            return;
+        }
+        if self.note_edit {
+            self.note_edit = false;
+            if dirty {
+                self.set_status("author's note: changes discarded", false);
             }
             return;
         }
@@ -2218,6 +2680,14 @@ impl App {
     async fn save_card_modal(&mut self) {
         if self.persona_edit.is_some() {
             self.save_persona_form().await;
+            return;
+        }
+        if self.sys_edit.is_some() {
+            self.save_sysprompt_form().await;
+            return;
+        }
+        if self.note_edit {
+            self.save_note_form().await;
             return;
         }
         let changes = match self.card_modal.as_mut() {
@@ -3113,6 +3583,7 @@ impl App {
 
     fn apply_settings(&mut self, mut settings: Value) {
         persona::normalize(&mut settings);
+        sysprompt::normalize(&mut settings);
         if let Some(c) = &self.conn {
             conn::overlay(&mut settings, c);
         }
@@ -3145,12 +3616,14 @@ impl App {
             Some((last, rest)) if continue_last => (rest, Some(chat::mes(last))),
             _ => (history, None),
         };
+        let note = Note::from_chat(&self.chat);
         let tp = textgen::build_prompt(&textgen::TgArgs {
             settings: &self.settings,
             ch: &self.character,
             user_name: &self.user_name,
             persona: &self.persona,
             persona_position: self.persona_position,
+            note: &note,
             history,
             chars_per_token: self.chars_per_token,
             continue_text,
