@@ -200,6 +200,12 @@ pub struct App {
     /// `start_generation_mode`).
     next_nudge: Option<String>,
     gen_handle: Option<JoinHandle<()>>,
+    /// Tokens the backend reported for the reply that just finished (prompt
+    /// plus reply), until `update_stats` pins them to the chat as it is then.
+    reported_pending: Option<usize>,
+    /// `(prompt_fingerprint, tokens)`: the backend's own count, valid while
+    /// the chat is exactly as it was when the reply finished.
+    reported: Option<(u64, usize)>,
     /// A running `/summarize` (its passes are generated one after the other).
     summary_job: Option<summary::Job>,
     /// A running `/import` (a download can take a while) and when it started.
@@ -537,6 +543,8 @@ impl App {
             help_page: 10,
             editing: None,
             tokens: tokens::Counter::default(),
+            reported_pending: None,
+            reported: None,
             prompt_text: String::new(),
             prompt_fp: None,
             settings_ver: 0,
@@ -712,6 +720,13 @@ impl App {
     /// settings changed; its token count is exact once the backend has
     /// counted it, and the characters / `chars_per_token` estimate until then.
     fn update_stats(&mut self) {
+        // The reply is in the chat now: the backend's count belongs to it.
+        if !self.is_generating() {
+            if let Some(n) = self.reported_pending.take() {
+                self.reported = Some((self.prompt_fingerprint(), n));
+                self.stats_at = None;
+            }
+        }
         let fp = self.prompt_fingerprint();
         if self.prompt_fp != Some(fp) {
             self.prompt_text = self.full_prompt_text();
@@ -719,6 +734,18 @@ impl App {
         } else if self.stats.exact && self.stats_at.is_some() {
             self.stats_at = Some(Instant::now());
             return;
+        }
+        // Exactly the chat the backend counted: its own figure, as reported.
+        if let Some((rfp, n)) = self.reported {
+            if rfp == fp {
+                self.stats = ChatStats {
+                    messages: self.chat.messages.len(),
+                    tokens: n,
+                    exact: true,
+                };
+                self.stats_at = Some(Instant::now());
+                return;
+            }
         }
         let backend = self.token_backend();
         let t = self.tokens.total(
@@ -3981,6 +4008,14 @@ impl App {
             GenEvent::Chunk(t) => {
                 if let Some(p) = self.pending.as_mut() {
                     p.text.push_str(&t);
+                }
+            }
+            GenEvent::Usage(u) => {
+                // The backend says how long the prompt was and how long the
+                // reply is: that is the chat's size, as the backend counts it.
+                // (A summary pass is about other text.)
+                if self.pending.as_ref().is_some_and(|p| !p.summary) {
+                    self.reported_pending = Some(u.prompt_tokens + u.completion_tokens);
                 }
             }
             GenEvent::Done => self.finish_generation(Outcome::Done).await,

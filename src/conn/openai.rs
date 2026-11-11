@@ -258,6 +258,13 @@ impl Provider for OpenAi {
         // Standard fields: always sent.
         m.insert("max_tokens".to_string(), val("max_tokens"));
         m.insert("stream".to_string(), val("stream"));
+        // Ask for the token counts of a streamed reply too (OpenAI, OpenRouter,
+        // vLLM...): the last chunk then carries `usage`, which keeps the token
+        // count in the status row exact. Servers that do not know the field
+        // ignore it; `extra_body` can switch it off with {"stream_options": null}.
+        if val("stream").as_bool().unwrap_or(true) {
+            m.insert("stream_options".to_string(), json!({ "include_usage": true }));
+        }
         m.insert("temperature".to_string(), val("temperature"));
         m.insert("top_p".to_string(), val("top_p"));
         // Fields only some servers know: sent once they are switched on.
@@ -304,7 +311,9 @@ impl Provider for OpenAi {
             serde_json::from_str::<Value>(text_of(&val("extra_body")).trim())
         {
             for (k, v) in extra {
-                if k != "prompt" {
+                if k == "stream_options" && v.is_null() {
+                    m.remove("stream_options");
+                } else if k != "prompt" {
                     m.insert(k, v);
                 }
             }
@@ -502,6 +511,38 @@ mod tests {
         p.insert("extra_body".into(), json!("[1, 2]"));
         let b = OpenAi.build_body(&p, "real", &[]);
         assert!(b.get("xtc_probability").is_none());
+    }
+
+    #[test]
+    fn streamed_requests_ask_for_usage_unless_switched_off() {
+        let mut p = Map::new();
+        let b = OpenAi.build_body(&p, "x", &[]);
+        assert_eq!(b["stream_options"], json!({"include_usage": true}));
+        // not streamed: the usage comes with the reply anyway
+        p.insert("stream".into(), json!(false));
+        assert!(OpenAi.build_body(&p, "x", &[]).get("stream_options").is_none());
+        // the person can remove it for a server that rejects it
+        p.insert("stream".into(), json!(true));
+        p.insert("extra_body".into(), json!("{\"stream_options\": null}"));
+        assert!(OpenAi.build_body(&p, "x", &[]).get("stream_options").is_none());
+    }
+
+    #[test]
+    fn usage_is_read_from_a_chunk_or_a_reply() {
+        let u = OpenAi
+            .usage_in(&json!({"choices": [], "usage": {"prompt_tokens": 812, "completion_tokens": 40, "total_tokens": 852}}))
+            .unwrap();
+        assert_eq!((u.prompt_tokens, u.completion_tokens), (812, 40));
+        // no report, an empty one, or one without a prompt count
+        assert!(OpenAi.usage_in(&json!({"choices": []})).is_none());
+        assert!(OpenAi.usage_in(&json!({"usage": {}})).is_none());
+        assert!(OpenAi.usage_in(&json!({"usage": null})).is_none());
+        assert!(OpenAi.usage_in(&json!({"usage": {"prompt_tokens": 0}})).is_none());
+        // the input / output spelling (OpenRouter, responses-style APIs)
+        let u = OpenAi.usage_in(&json!({"usage": {"input_tokens": 900, "output_tokens": 55}})).unwrap();
+        assert_eq!((u.prompt_tokens, u.completion_tokens), (900, 55));
+        // the completion count is optional
+        assert_eq!(OpenAi.usage_in(&json!({"usage": {"prompt_tokens": 5}})).unwrap().completion_tokens, 0);
     }
 
     #[test]

@@ -5,6 +5,8 @@ use serde_json::Value;
 
 pub enum GenEvent {
     Chunk(String),
+    /// Token counts the backend reported for this request.
+    Usage(crate::conn::Usage),
     Done,
     Error(String),
 }

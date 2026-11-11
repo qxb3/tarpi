@@ -195,6 +195,13 @@ pub enum Piece {
     Error(String),
 }
 
+/// Token counts a backend reported for one request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Usage {
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
+}
+
 /// A kind of backend tarpi can talk to. See the module docs for how to add one.
 pub trait Provider: Send + Sync {
     /// Short id stored in `api.yaml` (`llamacpp`).
@@ -243,6 +250,31 @@ pub trait Provider: Send + Sync {
     /// Path and body of a tokenize request, and how to read the count back.
     fn tokenize_request(&self, text: &str) -> (&'static str, Value);
     fn parse_token_count(&self, body: &Value) -> Option<usize>;
+
+    /// The token counts in a response body (a whole reply or one streamed
+    /// chunk), when it has any: the OpenAI `usage` object, which OpenRouter
+    /// sends too. This is how a backend with no tokenizer route still tells
+    /// exactly how long the prompt was.
+    fn usage_in(&self, body: &Value) -> Option<Usage> {
+        let u = body.get("usage")?;
+        // `prompt_tokens` / `completion_tokens` (OpenAI completions), or
+        // `input_tokens` / `output_tokens` (what OpenRouter's own and the
+        // responses-style APIs call them).
+        let count = |keys: &[&str]| {
+            keys.iter()
+                .find_map(|k| u.get(*k).and_then(|n| n.as_u64()))
+                .map(|n| n as usize)
+        };
+        let prompt = count(&["prompt_tokens", "input_tokens"])?;
+        if prompt == 0 {
+            return None;
+        }
+        let completion = count(&["completion_tokens", "output_tokens"]).unwrap_or(0);
+        Some(Usage {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+        })
+    }
 
     /// Where the backend lists its models, for kinds that have such a list
     /// (OpenRouter). The `api` TUI then opens a filterable picker when the
@@ -583,6 +615,9 @@ async fn run_inner(req: &DirectRequest, id: u64, tx: &UnboundedSender<GenMsg>) -
         if let Some(e) = p.error_in(&v) {
             bail!("{}", e);
         }
+        if let Some(u) = p.usage_in(&v) {
+            let _ = tx.send((id, GenEvent::Usage(u)));
+        }
         let out = p.parse_full(&v).unwrap_or_default();
         if out.is_empty() {
             bail!("the model returned an empty response");
@@ -591,39 +626,85 @@ async fn run_inner(req: &DirectRequest, id: u64, tx: &UnboundedSender<GenMsg>) -
         return Ok(());
     }
 
+    // The usage report comes in a chunk of its own after the one that ends
+    // the text (and before `[DONE]`), when the request asked for it.
+    let wants_usage = req
+        .body
+        .pointer("/stream_options/include_usage")
+        .and_then(|b| b.as_bool())
+        .unwrap_or(false);
     let mut buf: Vec<u8> = Vec::new();
     let mut done = false;
-    while !done {
-        let chunk = resp.chunk().await.context("stream interrupted")?;
+    let mut got_usage = false;
+    // `[DONE]` is the last thing a server says: nothing more to wait for.
+    let mut end = false;
+    loop {
+        let chunk = if done {
+            // Text is over: wait only a moment for the usage report.
+            match tokio::time::timeout(USAGE_WAIT, resp.chunk()).await {
+                Ok(r) => r.context("stream interrupted")?,
+                Err(_) => break,
+            }
+        } else {
+            resp.chunk().await.context("stream interrupted")?
+        };
         let Some(chunk) = chunk else { break };
         buf.extend_from_slice(&chunk);
         while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
             let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
             let line = String::from_utf8_lossy(&line_bytes).trim().to_string();
+            if let Some(u) = usage_of_line(p, &line) {
+                got_usage = true;
+                let _ = tx.send((id, GenEvent::Usage(u)));
+            }
+            if line.strip_prefix("data:").map(str::trim) == Some("[DONE]") {
+                end = true;
+            }
+            if done {
+                continue;
+            }
             match p.parse_stream_line(&line) {
                 Piece::Text(t) => {
                     let _ = tx.send((id, GenEvent::Chunk(t)));
                 }
-                Piece::Done => {
-                    done = true;
-                    break;
-                }
+                Piece::Done => done = true,
                 Piece::Error(e) => bail!("{}", e),
                 Piece::Skip => {}
             }
         }
+        if end || (done && (got_usage || !wants_usage)) {
+            break;
+        }
     }
-    if !done && !buf.is_empty() {
+    if !buf.is_empty() {
         let line = String::from_utf8_lossy(&buf).trim().to_string();
-        match p.parse_stream_line(&line) {
-            Piece::Text(t) => {
-                let _ = tx.send((id, GenEvent::Chunk(t)));
+        if let Some(u) = usage_of_line(p, &line) {
+            let _ = tx.send((id, GenEvent::Usage(u)));
+        }
+        if !done {
+            match p.parse_stream_line(&line) {
+                Piece::Text(t) => {
+                    let _ = tx.send((id, GenEvent::Chunk(t)));
+                }
+                Piece::Error(e) => bail!("{}", e),
+                _ => {}
             }
-            Piece::Error(e) => bail!("{}", e),
-            _ => {}
         }
     }
     Ok(())
+}
+
+/// How long to keep listening for the usage report once the text has ended.
+const USAGE_WAIT: Duration = Duration::from_secs(3);
+
+/// The usage report in one line of a streamed reply (`data: {...}`).
+fn usage_of_line(p: &dyn Provider, line: &str) -> Option<Usage> {
+    let payload = line.strip_prefix("data:")?.trim();
+    if !payload.starts_with('{') {
+        return None;
+    }
+    let v: Value = serde_json::from_str(payload).ok()?;
+    p.usage_in(&v)
 }
 
 /// Ask the backend whether it is up and what it has loaded.

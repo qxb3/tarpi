@@ -7,6 +7,8 @@
 //!   public) in a window you can filter by typing; see `Provider::model_source`.
 //! - `/v1/key` is used to test the connection, so a wrong API key shows up.
 //! - There is no `/tokenize` route and no EOS ban, so those settings are gone.
+//!   The token count comes from the `usage` OpenRouter reports for every
+//!   request instead (see `Provider::usage_in`).
 //!
 //! Only models that still offer plain text completion work: a model that is
 //! chat-only on OpenRouter answers with an error that tarpi shows as it is.
@@ -118,6 +120,10 @@ impl Provider for OpenRouter {
         None
     }
 
+    fn usage_in(&self, body: &Value) -> Option<super::Usage> {
+        OpenAi.usage_in(body)
+    }
+
     fn model_source(&self) -> Option<ModelSource> {
         Some(ModelSource {
             param: "model",
@@ -209,6 +215,17 @@ fn price_of(pricing: Option<&Value>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn usage_is_read_in_either_spelling() {
+        let a = OpenRouter
+            .usage_in(&json!({"usage": {"prompt_tokens": 10, "completion_tokens": 3}}))
+            .unwrap();
+        let b = OpenRouter
+            .usage_in(&json!({"usage": {"input_tokens": 10, "output_tokens": 3}}))
+            .unwrap();
+        assert_eq!(a, b);
+    }
+
     use super::*;
 
     #[test]
