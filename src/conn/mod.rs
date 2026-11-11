@@ -18,6 +18,7 @@
 //! generation loop only talk to the trait.
 
 pub mod llamacpp;
+pub mod ollama;
 pub mod openai;
 pub mod openrouter;
 
@@ -312,6 +313,7 @@ pub struct ModelEntry {
 static LLAMACPP: llamacpp::LlamaCpp = llamacpp::LlamaCpp;
 static OPENAI: openai::OpenAi = openai::OpenAi;
 static OPENROUTER: openrouter::OpenRouter = openrouter::OpenRouter;
+static OLLAMA: ollama::Ollama = ollama::Ollama;
 
 /// Every kind of connection tarpi knows. Add new ones here. The first is the
 /// one the very first `/api` creates.
@@ -320,6 +322,7 @@ pub fn providers() -> Vec<&'static dyn Provider> {
         &LLAMACPP as &'static dyn Provider,
         &OPENAI as &'static dyn Provider,
         &OPENROUTER as &'static dyn Provider,
+        &OLLAMA as &'static dyn Provider,
     ]
 }
 
@@ -506,6 +509,7 @@ pub fn for_summary(c: &Connection, max_tokens: usize) -> Connection {
     let mut set: Vec<(&str, Value)> = vec![
         ("n_predict", json!(max_tokens as i64)),
         ("max_tokens", json!(max_tokens as i64)),
+        ("num_predict", json!(max_tokens as i64)),
         ("temperature", json!(0.5)),
         ("repeat_penalty", json!(1.0)),
         ("repetition_penalty", json!(1.0)),
@@ -697,9 +701,11 @@ async fn run_inner(req: &DirectRequest, id: u64, tx: &UnboundedSender<GenMsg>) -
 /// How long to keep listening for the usage report once the text has ended.
 const USAGE_WAIT: Duration = Duration::from_secs(3);
 
-/// The usage report in one line of a streamed reply (`data: {...}`).
+/// The usage report in one line of a streamed reply: `data: {...}` (server-sent
+/// events), or a bare `{...}` for a server that streams one JSON object per
+/// line (Ollama).
 fn usage_of_line(p: &dyn Provider, line: &str) -> Option<Usage> {
-    let payload = line.strip_prefix("data:")?.trim();
+    let payload = line.strip_prefix("data:").map(str::trim).unwrap_or(line);
     if !payload.starts_with('{') {
         return None;
     }
@@ -919,5 +925,35 @@ mod remote_host_tests {
     fn host_of_the_serve_address() {
         assert_eq!(split_host("http://192.168.1.20:7878").unwrap().0, "192.168.1.20");
         assert_eq!(split_host("http://[fe80::1]:7878").unwrap().0, "[fe80::1]");
+    }
+}
+
+#[cfg(test)]
+mod usage_line_tests {
+    use super::*;
+
+    #[test]
+    fn usage_is_read_from_sse_lines_and_from_bare_json_lines() {
+        let sse = "data: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}";
+        let u = usage_of_line(&openai::OpenAi, sse).unwrap();
+        assert_eq!((u.prompt_tokens, u.completion_tokens), (10, 2));
+        // a server that streams one JSON object per line (Ollama)
+        let bare = "{\"response\":\"\",\"done\":true,\"prompt_eval_count\":812,\"eval_count\":40}";
+        let u = usage_of_line(&ollama::Ollama, bare).unwrap();
+        assert_eq!((u.prompt_tokens, u.completion_tokens), (812, 40));
+        // lines with no report
+        assert!(usage_of_line(&ollama::Ollama, "{\"response\":\"Hi\",\"done\":false}").is_none());
+        assert!(usage_of_line(&openai::OpenAi, "data: [DONE]").is_none());
+        assert!(usage_of_line(&openai::OpenAi, ": keep-alive").is_none());
+        assert!(usage_of_line(&openai::OpenAi, "").is_none());
+    }
+
+    #[test]
+    fn every_kind_is_found_by_its_id() {
+        for k in ["llamacpp", "openai", "openrouter", "ollama"] {
+            assert_eq!(provider(k).map(|p| p.kind()), Some(k));
+        }
+        // the first one is what the very first `/api` creates
+        assert_eq!(providers()[0].kind(), "llamacpp");
     }
 }
