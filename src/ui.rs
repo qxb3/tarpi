@@ -627,8 +627,13 @@ const HELP: &[&str] = &[
     "",
     "Typing / opens a menu of commands above the box, the top one",
     "highlighted. Tab / Down go to the next one, Shift+Tab / Up to the",
-    "previous one (filling it in), Esc puts back what you typed, a",
-    "click picks one. Enter runs the highlighted one (/su -> /summarize).",
+    "previous one (filling it in), a click picks one. Enter chooses the",
+    "highlighted one and adds a space (/su -> /summarize ).",
+    "After /import, Tab opens a menu of folders and card files and fills",
+    "in the first one (Tab / Up / Down move on, Enter on a folder opens it,",
+    "on a file imports it).",
+    "Esc or Ctrl+C hides any menu above the box (command, /import path,",
+    "spelling) and does nothing else.",
     "With only a / in the box, Up brings back the commands you ran before",
     "(/regen softer, ...): Up goes further back, Down forward, Down past",
     "the newest puts the / back.",
@@ -773,6 +778,12 @@ fn fit_cols(s: &str, w: usize) -> String {
 fn draw_completion(f: &mut Frame, app: &mut App, input_area: Rect, top: u16) {
     app.comp_area = Rect::default();
     app.comp_rows.clear();
+    app.path_rows.clear();
+    // After `/import `, the menu lists paths instead of commands.
+    if let Some((list, sel, _)) = app.path_completion() {
+        draw_path_menu(f, app, input_area, top, &list, sel);
+        return;
+    }
     let Some((list, sel, _)) = app.completion() else {
         return;
     };
@@ -845,6 +856,95 @@ fn draw_completion(f: &mut Frame, app: &mut App, input_area: Rect, top: u16) {
     app.comp_area = rect;
 }
 
+/// The `/import` path menu: drawn like the command menu, just above the input
+/// box, but listing the folders and card files that the path typed after
+/// `/import ` leads to (name and size; folders end with `/`). Tab / the arrows
+/// fill an entry in, a click does too (see `App::path_key`).
+fn draw_path_menu(
+    f: &mut Frame,
+    app: &mut App,
+    input_area: Rect,
+    top: u16,
+    list: &[crate::pathcomp::Entry],
+    sel: usize,
+) {
+    use crate::pathcomp::{human_size, Entry};
+    // A border row above and below plus at least one entry.
+    let avail = input_area.y.saturating_sub(top) as usize;
+    if avail < 3 || input_area.width < 8 {
+        return;
+    }
+    let shown = list.len().min(8).min(avail - 2);
+    // Keep the highlighted entry in view, at the bottom edge once it scrolls.
+    let first = if sel >= shown { sel + 1 - shown } else { 0 };
+    let label = |e: &Entry| -> String {
+        if e.is_dir {
+            format!("{}/", e.name)
+        } else {
+            e.name.clone()
+        }
+    };
+    let desc = |e: &Entry| -> String {
+        if e.is_dir {
+            "folder".to_string()
+        } else {
+            human_size(e.size)
+        }
+    };
+    let name_w = list.iter().map(|e| cols_of(&label(e))).max().unwrap_or(0);
+    let desc_w = list.iter().map(|e| cols_of(&desc(e))).max().unwrap_or(0);
+    let want = 1 + name_w + 2 + desc_w + 1;
+    let w = (want.min(u16::MAX as usize - 2) as u16 + 2)
+        .min(input_area.width)
+        .max(4);
+    let iw = (w - 2) as usize;
+    let h = shown as u16 + 2;
+    let rect = Rect::new(input_area.x, input_area.y - h, w, h);
+
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    for (n, e) in list.iter().enumerate().skip(first).take(shown) {
+        let on = n == sel;
+        let (name_style, desc_style) = if on {
+            let st = Style::default().fg(Color::Black).bg(Color::Cyan);
+            (st.add_modifier(Modifier::BOLD), st)
+        } else {
+            let name = if e.is_dir {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            (name, Style::default().fg(Color::DarkGray))
+        };
+        let name_txt = fit_cols(&format!(" {}", label(e)), iw);
+        let left = cols_of(&name_txt);
+        // Pad the name column so the sizes line up.
+        let pad = (1 + name_w + 2).saturating_sub(left);
+        let desc_room = iw.saturating_sub(left + pad);
+        let desc_txt = fit_cols(&desc(e), desc_room);
+        let used = left + pad + cols_of(&desc_txt);
+        let mut spans = vec![
+            Span::styled(name_txt, name_style),
+            Span::styled(" ".repeat(pad.min(iw.saturating_sub(left))), desc_style),
+            Span::styled(desc_txt, desc_style),
+        ];
+        if on && used < iw {
+            // The highlight runs to the right edge.
+            spans.push(Span::styled(" ".repeat(iw - used), desc_style));
+        }
+        rows.push(Line::from(spans));
+        app.path_rows.push((rect.y + 1 + (n - first) as u16, n));
+    }
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    if list.len() > shown {
+        block = block.title_bottom(Line::from(format!(" {}/{} ", sel + 1, list.len())));
+    }
+    f.render_widget(Clear, rect);
+    f.render_widget(Paragraph::new(rows).block(block), rect);
+    app.comp_area = rect;
+}
+
 /// The spelling menu: suggestions for the misspelled word the cursor is in.
 /// In the chat it is drawn like the command menu, just above the input box;
 /// in the `/char` and persona windows it sits at the text cursor.
@@ -853,7 +953,7 @@ fn draw_spell_menu(f: &mut Frame, app: &mut App, input_area: Rect, top: u16) {
     app.spell_rows.clear();
     let anchor = app.card_modal.as_ref().map(|m| m.cursor_xy);
     // The `/command` menu takes the place when it is showing.
-    if anchor.is_none() && app.completion().is_some() {
+    if anchor.is_none() && (app.completion().is_some() || app.path_completion().is_some()) {
         return;
     }
     if matches!(anchor, Some(None))

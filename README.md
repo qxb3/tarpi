@@ -53,12 +53,29 @@ Typing `/` in the input box opens a menu of commands just above it, narrowing as
 
 | Key / click | Action |
 | --- | --- |
-| Tab or Down | move the highlight to the next command and fill it in (the top one is highlighted from the start, so the first press already goes to the second) |
-| Shift+Tab | move the highlight to the previous command and fill it in; wraps around (from the top one to the last) |
+| Tab or Down | move the highlight to the next command and fill it in, with a space after it (the top one is highlighted from the start, so the first press already goes to the second). With `/import ` filled in, Tab opens the path menu instead (see below) |
+| Shift+Tab | move the highlight to the previous command and fill it in (with a space); wraps around (from the top one to the last) |
 | Up | on a bare `/` once a command has been run: the command history instead (see *Command history*). Otherwise the same as Shift+Tab |
-| Esc | put back what you had typed before Tab started filling commands in |
-| click / tap | fill in that command and close the menu |
-| Enter | run the highlighted command when what you typed is only the start of one (`/su` runs `/summarize`); a full name or short form (`/c`, `/nc`) runs as typed |
+| Esc or Ctrl+C | hide the menu and nothing else (see below); what is in the box stays as it is |
+| click / tap | fill in that command (with a space after it) and close the menu |
+| Enter | choose the highlighted command when what you typed is only the start of one: `/su` becomes `/summarize ` (with a space after it, ready for what it takes) and is not run yet. A full name or short form (`/c`, `/nc`) runs as typed |
+
+Esc or Ctrl+C while the command menu, the path menu (below) or the spelling menu is showing only hides that menu: tarpi does not quit, stop a reply, cancel an edit or leave a mode. The command and path menus stay hidden until the next key (typing brings them back); the box keeps whatever is in it. With no menu showing, Esc and Ctrl+C do what they always did (see *Keys*).
+
+### Path menu (`/import`)
+
+After `/import ` press **Tab** to open a menu like the command menu, but listing paths: the folders and the card files (`.png` / `.json`) of the folder you are typing in, with each file's size, folders first and every group sorted by name, ignoring case. It never opens by itself and only `/import` has it (Tab does what it always did anywhere else). Once it is open, what you type after the last `/` narrows it (any case); with just `/import ` it lists the folder tarpi was started in. `~` is your home folder, hidden files and folders only show once the name you type starts with a `.`, and a path in quotes (`/import "~/My Cards/so`) or with `\ ` before its spaces is understood. Nothing opens for a link or JSON text (`/import https://...`, `/import {...`), or when nothing matches. The path menu works with `command_menu: false` too, since it only opens when you ask.
+
+| Key / click | Action |
+| --- | --- |
+| Tab | with the menu closed, after `/import `: open it and fill in the first entry right away |
+| Tab or Down | with it open: fill in the next entry; wraps around |
+| Shift+Tab or Up | fill in the previous entry (from the first one: the last); wraps around. With nothing filled in yet, the last entry |
+| Enter | chooses the highlighted entry, like in the command menu: a folder is filled in and opened, so the menu lists what is inside; a file is filled in and imported at once. After Tab has filled an entry in, Enter does the same with that one |
+| Esc or Ctrl+C | hide the menu and nothing else (see above); Tab opens it again |
+| click / tap | fill in that entry: a folder is opened (the menu lists what is inside), a file closes the menu |
+
+A folder is filled in as `folder/` and a space in a name as `\ ` (or the quote you opened is kept and closed after a file), so what ends up in the box is always something `/import` reads back. Typing anything after an entry has been filled in goes on from it. The menu closes when the box stops holding an `/import` path.
 
 ### Command history
 
@@ -383,7 +400,7 @@ A character is identified by `Name.png` whichever of the two it is stored as; th
 /import {"name": "Sofia", ...}                       # JSON given directly
 ```
 
-A path is read like a shell would: `~` is your home folder, a relative path starts from the folder tarpi was started in, and quotes, `\ ` (a backslash before a space, as a terminal pastes a dragged file) and `file://` links are understood. `/import` with nothing after it shows what it takes.
+A path is read like a shell would: `~` is your home folder, a relative path starts from the folder tarpi was started in, and quotes, `\ ` (a backslash before a space, as a terminal pastes a dragged file) and `file://` links are understood. `/import` with nothing after it shows what it takes. After `/import ` press Tab to open a menu of the matching folders and card files (see *Path menu*).
 
 The card is saved as it came into `~/.config/tarpi/characters/`, named after the character (`Sofia.png`, or `Sofia-2.png` when that name is taken; a PNG stays a PNG, JSON stays JSON). Before saving, tarpi checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and says so if not. Any other http(s) link is treated as a direct link to a card file: tarpi downloads it itself (up to 50 MB; the file type is detected from its content, not the URL) and runs the same check. chub.ai (also characterhub.org) and pygmalion.chat links (`/character/<id>`) are downloaded by tarpi straight from those sites (chub.ai: the card PNG on its image host, then its download endpoints one after the other, because chub changes them now and then; pygmalion.chat: its export endpoint). When every attempt fails, each one's reason is listed; downloading the card PNG in a browser and importing the file always works; no other program is needed. Lorebook links are refused.
 
@@ -471,7 +488,7 @@ vim:
 - `author_note: true` (default) keeps the Author's Note. `author_note: false` turns it off: `/note` is no longer offered in the menu and says it is off when typed, no note is added to any prompt (the notes already saved in your chat files stay there, untouched, and come back if you turn it on again), and a persona whose position is *Top / Bottom of the Author's Note* is sent in the prompt like the default position instead.
 - `command_menu: true` (default) opens the `/command` menu above the input box while you type a slash (see *Command menu*). `command_menu: false` turns it off: nothing opens, Tab / Up / Down / Esc keep their old meaning (Up / Down scroll the chat), and Enter runs exactly what you typed. The command history (Up on a bare `/`) still works.
 - `spellcheck: true` turns on offline spell checking in the chat input box and in the `/char` and persona windows (default `false`; the Name fields are not checked). Misspelled words get a red underline (the red of the terminal's theme, asked from the terminal at start-up like the prose colours; the text keeps its colour); words of one or two letters are checked too (`ho` and `x` are marked, `a`, `I`, `of`, `up` are not). The word you are still typing is not marked until the cursor leaves it. The word list is English and built into the program, so no internet or system dictionary is needed. Extra words go in `~/.config/tarpi/dictionary.txt` (one per line, `#` starts a comment); the character's name and your persona's name are always accepted. Details: `src/spell.rs`.
-- With spell checking on, press **Tab** with the cursor in a marked word to open a **suggestion menu**: above the input box in the chat (like the command menu), and at the text cursor in the `/char` and persona windows. Misspelled words are only underlined (in the theme's red); the menu never opens by itself. It lists up to six spellings, best first (a swapped pair such as `teh` -> `the`, then a missing letter such as `helo` -> `hello`, then other close words), and keeps a capital first letter. It works in INSERT and NORMAL mode. Tab / Down go to the next entry, Shift+Tab / Up to the previous one, Enter puts the highlighted one in, Esc closes the menu, and a click or tap on an entry puts it in; any other key closes it. The Name fields of the windows are not checked.
+- With spell checking on, press **Tab** with the cursor in a marked word to open a **suggestion menu**: above the input box in the chat (like the command menu), and at the text cursor in the `/char` and persona windows. Misspelled words are only underlined (in the theme's red); the menu never opens by itself. It lists up to six spellings, best first (a swapped pair such as `teh` -> `the`, then a missing letter such as `helo` -> `hello`, then other close words), and keeps a capital first letter. It works in INSERT and NORMAL mode. Tab / Down go to the next entry, Shift+Tab / Up to the previous one, Enter puts the highlighted one in, Esc or Ctrl+C hides the menu (and does nothing else), and a click or tap on an entry puts it in; any other key closes it. The Name fields of the windows are not checked.
 - `autopair: true` (default) closes `"`, `'`, `*` and `(` `[` `{` as you type them, in INSERT mode and in the `/char` window: `"` gives `"|"`, `'` gives `'|'`, `*` gives `*|*`, a second `*` inside an empty pair gives `**|**`. Typing the closing character steps over the one already there, and Backspace between an empty pair removes both. It stays out of the way next to words (`2*3`, `5"`, and apostrophes like `don't` or `Sofia's`), when the paragraph already has an unclosed one (so the second `"` closes), and when the next character is a letter. Apostrophes inside a word are not counted as quotes, so `'I don't know'` types out as written. An apostrophe at the start of a word (`'em`, `'til`) opens a pair like any quote: Backspace removes it while it is still empty. Pasted text is never changed. Set `autopair: false` to turn it off.
 - `vim.enabled: false` removes the modes and the mode tag under the box; the box is plain text editing. Left/Right arrows move the cursor once the box has a draft (on an empty box they switch swipes), and Home/End and Alt+Left/Right (word jump) move the cursor, and Up/Down move through a multi-line draft (with a one-line draft they scroll the chat as before).
 - `vim.normal_mode_keys` can be any sequence of two or more characters, for example `jk`. It is typed quickly in INSERT mode (within about 0.6 s) and the keys are removed again.
@@ -488,7 +505,7 @@ The row under the input box shows the totals on the right: the number of message
 | --- | --- |
 | Shift+Enter (also Alt+Enter, Ctrl+J) | new line. Shift+Enter needs a terminal with the kitty keyboard protocol (kitty, WezTerm, foot, Ghostty, Alacritty, recent iTerm2); elsewhere use Alt+Enter or Ctrl+J |
 | Enter, or click **Send** | send. An empty box adds no message; it just asks the character to reply (like the web UI) |
-| Esc | stop generating (partial reply is kept) / cancel an edit |
+| Esc | hide the menu above the input box when one is open (command, path or spelling menu); otherwise stop generating (partial reply is kept) / cancel an edit |
 | Ctrl+K, `/continue` or `/c` | continue the last reply (appends to it) |
 | Click in the input box | move the cursor there (also while editing a message) |
 | Click a message | edit that message in the input box, in INSERT mode (Enter / **Save** saves, Shift+Enter adds a line, Esc cancels; the cursor starts at the end of the text; your unsent draft comes back) |
@@ -502,7 +519,7 @@ The row under the input box shows the totals on the right: the number of message
 | `/new` | new chat with this character (keeps the current one) |
 | `/newchat` or `/nc` | delete this chat and start a new one |
 | F1 or `/help` | help window; scroll it with ↑/↓ (or j/k), PgUp/PgDn, Home/End or the mouse wheel, any other key closes it |
-| Ctrl+C / Ctrl+D | quit |
+| Ctrl+C / Ctrl+D | quit (Ctrl+C only hides the menu above the input box when one is open) |
 
 ### Vim motions in the input box
 

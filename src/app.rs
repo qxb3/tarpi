@@ -314,6 +314,15 @@ pub struct App {
     /// row of each command in it, to hit-test clicks. Empty when it is shut.
     pub comp_area: Rect,
     pub comp_rows: Vec<(u16, &'static str)>,
+    /// The same for the `/import` path menu: the screen row of each entry
+    /// and its index in the list `path_completion` gives.
+    pub path_rows: Vec<(u16, usize)>,
+    /// The last folder listing of the path menu (see `pathcomp::Cache`).
+    path_cache: crate::pathcomp::Cache,
+    /// The path menu is open: Tab opened it after `/import ` (see
+    /// `path_key`). It closes when the box stops being an `/import` path, on
+    /// Esc / Ctrl+C and when a file is picked.
+    path_open: bool,
     /// Manual scroll position of the input box (first text row shown), set
     /// by the mouse wheel over the box. `None`: the box follows the cursor.
     /// Cleared by any key press or paste.
@@ -572,6 +581,9 @@ impl App {
             spell_since: Instant::now(),
             comp_area: Rect::default(),
             comp_rows: Vec::new(),
+            path_rows: Vec::new(),
+            path_cache: crate::pathcomp::Cache::default(),
+            path_open: false,
             input_first_row: 0,
             input_scroll: None,
             press: None,
@@ -1099,6 +1111,11 @@ impl App {
                     // A click on a command of the menu fills it in.
                     if let Some(&(_, name)) = self.comp_rows.iter().find(|(y, _)| *y == m.row) {
                         self.accept_completion(name);
+                    } else if let Some(&(_, i)) =
+                        self.path_rows.iter().find(|(y, _)| *y == m.row)
+                    {
+                        // ... and a click on a path of the `/import` menu.
+                        self.accept_path(i);
                     }
                     return;
                 }
@@ -1266,6 +1283,10 @@ impl App {
     async fn on_key(&mut self, k: KeyEvent) {
         // Typing or moving the cursor brings the box back to the cursor.
         self.input_scroll = None;
+        // The path menu only lives while the box holds an `/import` path.
+        if self.path_open && crate::pathcomp::typed_arg(&self.input.text).is_none() {
+            self.path_open = false;
+        }
         if self.image_modal.is_some() {
             // Any key closes the picture.
             self.image_modal = None;
@@ -1342,6 +1363,15 @@ impl App {
             return;
         }
 
+        // Esc / Ctrl+C with a menu above the box open only hide the menu.
+        if self.hide_menu_key(&k) {
+            return;
+        }
+        // The path menu of `/import`: Tab opens it, then Tab / arrows / Enter
+        // fill paths in. Before the spelling menu, which also uses Tab.
+        if self.path_key(&k) {
+            return;
+        }
         // The spelling menu above the box (Tab opens it on a misspelled word).
         if self.spell_key(&k) {
             return;
@@ -1518,7 +1548,8 @@ impl App {
         if let Some(base) = &self.comp.base {
             let list = self.menu_commands(base);
             if let Some(c) = list.get(self.comp.sel) {
-                if cmds::typed_word(&self.input.text) == Some(c.name) {
+                // The box holds the filled-in name and the space after it.
+                if self.input.text == format!("/{} ", c.name) {
                     return Some((list, self.comp.sel, true));
                 }
             }
@@ -1588,7 +1619,7 @@ impl App {
     /// The top command is highlighted from the start. Tab / Down move the
     /// highlight to the next one and Shift+Tab / Up to the previous one
     /// (wrapping), filling it into the box; the first press already leaves
-    /// the top one. Esc puts back what was typed.
+    /// the top one. Esc only hides the menu (see `hide_menu_key`).
     /// Returns false when the key is not for the menu.
     fn completion_key(&mut self, k: &KeyEvent) -> bool {
         if k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
@@ -1597,17 +1628,6 @@ impl App {
         let step: i32 = match k.code {
             KeyCode::Tab | KeyCode::Down => 1,
             KeyCode::BackTab | KeyCode::Up => -1,
-            KeyCode::Esc => {
-                let picked = self.completion().map_or(false, |(_, _, p)| p);
-                if picked {
-                    if let Some(base) = self.comp.base.take() {
-                        self.comp = Comp::default();
-                        self.set_input_text(format!("/{}", base));
-                        return true;
-                    }
-                }
-                return false;
-            }
             _ => return false,
         };
         let Some((list, sel, picked)) = self.completion() else {
@@ -1626,7 +1646,7 @@ impl App {
             (typed, step.rem_euclid(n) as usize)
         };
         let name = list[idx].name;
-        self.set_input_text(format!("/{}", name));
+        self.set_input_text(format!("/{} ", name));
         self.comp = Comp {
             base: Some(base),
             sel: idx,
@@ -1635,27 +1655,221 @@ impl App {
         true
     }
 
-    /// Enter on a half-typed command runs the highlighted one: `/su` runs
-    /// `/summarize`. A word that already is a command or short form (`/c`,
-    /// `/nc`) is left as typed.
-    fn apply_top_completion(&mut self) {
-        let Some((list, sel, _)) = self.completion() else {
-            return;
+    /// Enter on a half-typed command chooses the highlighted one: `/su`
+    /// becomes `/summarize ` (with a space after it, ready for what the
+    /// command takes) and nothing is run yet. A word that already is a
+    /// command or short form (`/c`, `/nc`) is left as typed and runs.
+    /// Returns true when it completed something.
+    fn apply_top_completion(&mut self) -> bool {
+        let Some((list, sel, picked)) = self.completion() else {
+            return false;
         };
+        // Already filled in with Tab / the arrows: it runs as it stands.
+        if picked {
+            return false;
+        }
         let word = cmds::typed_word(&self.input.text)
             .unwrap_or("")
             .to_lowercase();
         let complete = cmds::COMMANDS
             .iter()
             .any(|c| c.name == word || (!c.alias.is_empty() && c.alias == word));
-        if !complete {
-            self.set_input_text(format!("/{}", list[sel].name));
+        if complete {
+            return false;
+        }
+        self.set_input_text(format!("/{} ", list[sel].name));
+        self.comp = Comp::default();
+        true
+    }
+
+    /// Esc or Ctrl+C while a menu above the input box is showing (the
+    /// `/command` menu, the `/import` path menu or the spelling menu) hides
+    /// that menu and does nothing else: no quitting, no stopping a reply, no
+    /// leaving the mode. The command menu stays shut until the next key (like
+    /// after a click) and the path menu until Tab opens it again; what is in
+    /// the box is left as it is. Returns
+    /// false when no menu is showing (or for any other key).
+    fn hide_menu_key(&mut self, k: &KeyEvent) -> bool {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = k.modifiers.contains(KeyModifiers::ALT);
+        let esc = k.code == KeyCode::Esc && !ctrl && !alt;
+        let ctrl_c = k.code == KeyCode::Char('c') && ctrl && !alt;
+        if !esc && !ctrl_c {
+            return false;
+        }
+        if self.spell_menu.is_some() {
+            self.spell_menu = None;
+            return true;
+        }
+        if self.card_modal.is_none() {
+            if self.path_completion().is_some() {
+                self.path_open = false;
+                self.comp = Comp::default();
+                return true;
+            }
+            if self.completion().is_some() {
+                self.comp = Comp {
+                    base: None,
+                    sel: 0,
+                    done: true,
+                };
+                return true;
+            }
+        }
+        false
+    }
+
+    // ------------------------------------------------------ path completion
+
+    /// Whether the box is in a state where the path menu may be used: INSERT
+    /// mode, no message being edited, no command history walk going on.
+    fn path_usable(&self) -> bool {
+        self.editing.is_none() && self.hist_pos.is_none() && self.input.mode == Mode::Insert
+    }
+
+    /// The path menu of `/import`, when it should show: Tab opened it (see
+    /// `path_key`), the box is in INSERT mode and holds `/import ` and a path
+    /// (see `pathcomp::typed_arg`) that has entries. Gives the entries, the
+    /// highlighted one (the top one until Tab / the arrows move it) and
+    /// whether it has been filled into the box. It does not depend on
+    /// `command_menu`: it never opens by itself.
+    pub fn path_completion(&self) -> Option<(Vec<crate::pathcomp::Entry>, usize, bool)> {
+        if !self.path_open || !self.path_usable() {
+            return None;
+        }
+        let arg = crate::pathcomp::typed_arg(&self.input.text)?;
+        // While cycling, the list stays that of the path typed at the start,
+        // even though the box now holds one of its entries.
+        if let Some(base) = &self.comp.base {
+            let list = self.path_cache.entries(base);
+            if let Some(e) = list.get(self.comp.sel) {
+                if arg == e.insert {
+                    return Some((list, self.comp.sel, true));
+                }
+            }
+        }
+        let list = self.path_cache.entries(arg);
+        if list.is_empty() {
+            None
+        } else {
+            Some((list, 0, false))
         }
     }
 
-    /// A command was clicked in the menu: fill it in and close the menu.
+    /// Keys of the path menu. After `/import ` (and a path, if one is typed
+    /// already) **Tab opens** the menu and fills in its first entry at once; it
+    /// never opens by itself. Once open, Tab (or Down) goes on to the next
+    /// entry on each press; Shift+Tab (or Up) starts from the last entry and moves
+    /// back; both wrap. Enter chooses the highlighted entry like the command
+    /// menu does: a folder is opened (the menu lists what is inside), a file
+    /// is filled in and imported at once; with an entry already filled in,
+    /// Enter on a folder opens it and on a file imports it. Esc / Ctrl+C
+    /// only hide the menu (see `hide_menu_key`).
+    /// Returns false when the key is not for the menu.
+    fn path_key(&mut self, k: &KeyEvent) -> bool {
+        if k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+            return false;
+        }
+        if !self.path_open {
+            // Tab on `/import <path>` opens the menu. While the command menu
+            // is cycling, Tab belongs to it, except on `/import ` itself
+            // (filled in by Tab): that goes on to the paths.
+            let cmd_menu_has_tab = match self.completion() {
+                Some((list, sel, picked)) => !(picked && list[sel].name == "import"),
+                None => false,
+            };
+            if k.code == KeyCode::Tab && self.path_usable() && !cmd_menu_has_tab {
+                let typed = crate::pathcomp::typed_arg(&self.input.text).map(str::to_string);
+                if let Some(arg) = typed {
+                    let list = self.path_cache.entries(&arg);
+                    if let Some(first) = list.first() {
+                        // Opens the menu and fills in the very first entry
+                        // right away; the next Tab goes on to the second.
+                        self.path_open = true;
+                        self.set_input_text(format!("/import {}", first.insert));
+                        self.comp = Comp {
+                            base: Some(arg),
+                            sel: 0,
+                            done: false,
+                        };
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+        let step: i32 = match k.code {
+            KeyCode::Tab | KeyCode::Down => 1,
+            KeyCode::BackTab | KeyCode::Up => -1,
+            KeyCode::Enter => {
+                let Some((list, sel, picked)) = self.path_completion() else {
+                    return false;
+                };
+                let e = &list[sel];
+                if picked {
+                    if e.is_dir {
+                        // The folder is already in the box; forgetting the
+                        // cycle makes the menu list its contents.
+                        self.comp = Comp::default();
+                        return true;
+                    }
+                    // A file that is filled in: import it.
+                    return false;
+                }
+                // Nothing filled in yet: choose the highlighted entry.
+                let (insert, is_dir) = (e.insert.clone(), e.is_dir);
+                self.set_input_text(format!("/import {}", insert));
+                self.comp = Comp::default();
+                // A folder: the menu goes on with what is inside. A file: the
+                // key goes on to send the command, which imports it.
+                return is_dir;
+            }
+            _ => return false,
+        };
+        let Some((list, sel, picked)) = self.path_completion() else {
+            return false;
+        };
+        let n = list.len() as i32;
+        let (base, idx) = if picked {
+            (
+                self.comp.base.clone().unwrap_or_default(),
+                (sel as i32 + step).rem_euclid(n) as usize,
+            )
+        } else {
+            let typed = crate::pathcomp::typed_arg(&self.input.text)
+                .unwrap_or("")
+                .to_string();
+            (typed, if step > 0 { 0 } else { (n - 1) as usize })
+        };
+        self.set_input_text(format!("/import {}", list[idx].insert));
+        self.comp = Comp {
+            base: Some(base),
+            sel: idx,
+            done: false,
+        };
+        true
+    }
+
+    /// An entry was clicked in the path menu: fill it in. A folder is opened
+    /// (the menu goes on with what is inside); a file closes the menu.
+    fn accept_path(&mut self, i: usize) {
+        let Some((list, _, _)) = self.path_completion() else {
+            return;
+        };
+        let Some(e) = list.get(i) else {
+            return;
+        };
+        let (insert, is_dir) = (e.insert.clone(), e.is_dir);
+        self.set_input_text(format!("/import {}", insert));
+        self.comp = Comp::default();
+        // A folder keeps the menu open on its contents; a file closes it.
+        self.path_open = is_dir;
+    }
+
+    /// A command was clicked in the menu: fill it in (with a space after it)
+    /// and close the menu.
     fn accept_completion(&mut self, name: &str) {
-        self.set_input_text(format!("/{}", name));
+        self.set_input_text(format!("/{} ", name));
         self.comp = Comp {
             base: None,
             sel: 0,
@@ -1695,7 +1909,9 @@ impl App {
             );
             return;
         }
-        self.apply_top_completion();
+        if self.apply_top_completion() {
+            return;
+        }
         let text = self.input.text.trim().to_string();
         self.hist_pos = None;
 
@@ -1747,6 +1963,8 @@ impl App {
                     let arg = cmd.trim_start_matches(|c: char| !c.is_whitespace()).trim().to_string();
                     if arg.is_empty() {
                         known = false;
+                        // Ready for the path (Tab opens its menu).
+                        self.set_input_text("/import ".to_string());
                         self.set_status(crate::import::USAGE, true);
                     } else {
                         self.input.clear();
@@ -3025,6 +3243,10 @@ impl App {
     async fn on_card_key(&mut self, k: KeyEvent) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let alt = k.modifiers.contains(KeyModifiers::ALT);
+        // Esc / Ctrl+C with the spelling menu open only hide the menu.
+        if self.hide_menu_key(&k) {
+            return;
+        }
         if ctrl {
             match k.code {
                 KeyCode::Char('c') => {
@@ -3408,7 +3630,8 @@ impl App {
         if self.spell.is_none()
             || !matches!(self.spell_input().mode, Mode::Insert | Mode::Normal)
             || k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-            || (self.card_modal.is_none() && self.completion().is_some())
+            || (self.card_modal.is_none()
+                && (self.completion().is_some() || self.path_completion().is_some()))
         {
             self.spell_menu = None;
             return false;

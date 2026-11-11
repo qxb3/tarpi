@@ -23,6 +23,7 @@ mod input;
 mod jv;
 mod mirror;
 mod note;
+mod pathcomp;
 mod persona;
 mod picker;
 mod posedit;
@@ -110,7 +111,7 @@ enum Arrival {
         "\nSHARING BETWEEN DEVICES:\n",
         "  tarpi serve (s)         share your characters, chats and settings on the network\n",
         "  tarpi connect (c) [token]   use them from another device (serve_url in config.yaml)\n",
-        "\nTyping / opens a command menu above the input box; the top entry is picked\n(Tab, Shift+Tab, Up, Down to change it, Enter to run).\nWith only a / in the box, Up brings back the commands you ran before."
+        "\nTyping / opens a command menu above the input box; the top entry is picked\n(Tab, Shift+Tab, Up, Down to change it, Enter to choose it).\nAfter /import, Tab opens a menu of the folders and card files of the path being\ntyped (Tab or Enter fills one in, a folder opens, a file is imported).\nWith only a / in the box, Up brings back the commands you ran before."
     )
 )]
 struct Cli {

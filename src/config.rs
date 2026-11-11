@@ -132,8 +132,8 @@ const TEMPLATE: &str = "\
 
 # The menu of /commands that opens above the input box when you type a
 # slash: the top entry is highlighted, Tab / Down and Shift+Tab / Up move
-# through it, Enter runs the highlighted one. false: no menu, and Enter runs
-# exactly what you typed.
+# through it, Enter chooses the highlighted one (and adds a space). false: no
+# menu, and Enter runs exactly what you typed.
 # command_menu: true
 
 # The Author's Note (/note). false: turns it off. The command is not offered,
