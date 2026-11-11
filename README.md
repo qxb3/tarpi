@@ -24,10 +24,10 @@ One binary. No browser, no extra server: nothing to run except your model.
  *Cracks knuckles.* "Fine. But you're eating a vegetable.
  Monday: pasta. Yes, tomatoes count."
 ────────────────────────────────────────────────────────────
- ┌ INSERT ──────────────────────────────────────────────────┐
+ ┌──────────────────────────────────────────────────────────┐
  │ _                                                        │
- └──────────────────────────────────────────────────────────┘
-                                          3 msgs · 412 tok
+ └ INSERT ──────────────────────────────────────────────────┘
+                                      3 messages · 412 tokens
 ```
 <sub>illustrative</sub>
 
