@@ -183,17 +183,25 @@ A connection kind is one small file: implement `conn::Provider` (its settings li
 - **Instruct template**: instruct mode on/off, names (`none` / `force` / `always`), wrap and macros, the prefix and suffix of user, assistant and system messages, first / last assistant prefix, first / last user prefix, last system prefix, system-same-as-user, skip examples, the stop sequence, sequences as stop strings, and the story string prefix / suffix.
 - **Reply cleanup**: trim unfinished sentences, collapse blank lines, single line, and custom stop strings (one per line, with or without macros).
 
-Texts are typed on one line in a small window: type `\n` for a line break and `\\` for a backslash. `p` offers presets for the part the cursor is in, as starting points. **Instruct template**: Off, ChatML, Llama 3, Llama 2, Mistral, Mistral V7, Phi-3, Phi-4, Gemma, Zephyr, Command R, DeepSeek V3, OpenChat, Granite, Vicuna, Alpaca and Metharme (roughly the chat templates llama.cpp knows); they replace the instruct template and keep the story string. **Context template**: Default, Short, Labeled, Pygmalion and No separators; they replace the story string, example separator and chat start and keep the stop switches. Reply cleanup has no presets.
+Texts are typed on one line in a small window: type `\n` for a line break and `\\` for a backslash. `p` offers presets for the part the cursor is in, as starting points. **Instruct template**: Off, ChatML, Llama 3, Llama 2, Mistral, Mistral V7, Phi-3, Phi-4, Gemma, Zephyr, Command R, DeepSeek V3, OpenChat, Granite, Vicuna, Alpaca and Metharme (roughly the chat templates llama.cpp knows); they replace the instruct template and keep the story string. **Context template**: Default, Short, Labeled, Pygmalion and No separators; they replace the story string, example separator and chat start and keep the stop switches. A context preset changes only the story string, the example separator and the chat start; every other setting stays as it is. Reply cleanup has no presets.
 
 | Key | Action |
 | --- | --- |
 | ↑ / ↓ (`k` / `j`), PgUp / PgDn, Home / End | select a setting (click works too; a second click acts on it) |
 | Enter | edit a text (Enter accepts, Esc cancels) or flip / step the setting |
 | ← / → (`h` / `l`) | flip a switch or step through the choices |
+| Tab / Shift+Tab | jump to the next / previous section |
 | `r` / `R` | reset the setting / every setting to its default |
+| `u` | undo the last change (a setting, a reset, a preset; as many times as you like) |
 | `p` | presets of the template the cursor is in (↑ / ↓, Enter applies) |
 | `s` | save |
 | `q` / Esc | quit (asks to save when there are unsaved changes) |
+
+While typing a text: ← → Home End move, Ctrl+A / Ctrl+E go to the start / end, Ctrl+← / Ctrl+→ jump a word, Ctrl+W deletes the word before the cursor, Ctrl+K everything after it, Ctrl+U everything. Long texts wrap in the window (full-width characters such as `｜` count as two columns), and below the list a text setting is shown in full, wrapped, with its line breaks as `\n`, since the list line only has room for the start of it.
+
+The editor checks what you type. *Story string depth* has to be a whole number from 0 to 9999 (the window stays open until it is). A story string with an `{{#if}}` that is never closed, a stray `{{/if}}` or `{{else}}`, or an `{{#if name}}` that tests a name that is never filled in (a typo such as `{{#if descripton}}`) is kept as typed, with a warning in the status line, because the prompt builder would otherwise print it silently as something unexpected. *Unsaved changes* is shown only while the settings really differ from what is saved: changing a setting and changing it back clears it.
+
+`formatting.yaml` can be edited by hand: a number where a text goes (`story_string_depth: 3`), an empty value (`chat_start:` means no text), `wrap: no` / `on` / `off` for switches and a choice in any case (`names_behavior: Force`) all mean what they say. If the file cannot be read at all (a YAML mistake), `/formatting` still opens, on the defaults, and says why; saving first keeps the old file as `formatting.yaml.bad`.
 
 The next reply uses what you saved; nothing is sent to the server.
 

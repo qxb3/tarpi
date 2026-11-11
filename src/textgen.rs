@@ -90,6 +90,65 @@ fn tokenize(tpl: &str) -> Vec<(bool, String)> {
     toks
 }
 
+/// Names a story string can test with `{{#if name}}` (the ones `build_prompt`
+/// fills in).
+pub const STORY_FIELDS: &[&str] = &[
+    "system",
+    "description",
+    "personality",
+    "scenario",
+    "persona",
+    "char",
+    "user",
+    "wiBefore",
+    "wiAfter",
+    "loreBefore",
+    "loreAfter",
+    "anchorBefore",
+    "anchorAfter",
+    "mesExamples",
+    "mesExamplesRaw",
+];
+
+/// What is wrong with a story string, in words for the `/formatting` editor.
+/// The renderer is forgiving (an unclosed `{{#if}}` runs to the end, a stray
+/// `{{/if}}` is printed as it is, a name that is never set is always empty),
+/// so a typo gives a strange prompt and no error: this says so up front.
+pub fn check_template(tpl: &str) -> Vec<String> {
+    let mut problems: Vec<String> = Vec::new();
+    let mut open = 0usize;
+    for (is_tag, c) in tokenize(tpl) {
+        if !is_tag {
+            continue;
+        }
+        if let Some(n) = c.strip_prefix("#if ").or_else(|| c.strip_prefix("#unless ")) {
+            let n = n.trim();
+            if !STORY_FIELDS.contains(&n) {
+                problems.push(format!("{{{{#if {}}}}} tests a name that is never filled in", n));
+            }
+            open += 1;
+        } else if c == "else" {
+            if open == 0 {
+                problems.push("{{else}} is outside of any {{#if}}".to_string());
+            }
+        } else if c.starts_with('/') {
+            if open == 0 {
+                problems.push(format!("{{{{{}}}}} closes nothing", c));
+            } else {
+                open -= 1;
+            }
+        }
+    }
+    if open > 0 {
+        problems.push(format!(
+            "{} {{{{#if}}}} {} never closed with {{{{/if}}}}",
+            open,
+            if open == 1 { "is" } else { "are" }
+        ));
+    }
+    problems
+}
+
 fn parse_block(toks: &[(bool, String)], pos: &mut usize) -> Vec<Node> {
     let mut out = Vec::new();
     while *pos < toks.len() {

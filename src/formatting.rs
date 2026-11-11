@@ -160,14 +160,58 @@ impl Field {
         }
     }
 
-    /// `v` if it is the right kind of value for this setting, else the default.
+    /// `v` as a value of this setting's kind, else the default. A hand-edited
+    /// file is read generously: `story_string_depth: 3` (a number), an empty
+    /// `chat_start:` (nothing), `wrap: no` or `names_behavior: Force` all mean
+    /// what they say.
     fn coerce(&self, v: &Value) -> Value {
-        match (self.kind, v) {
-            (Kind::Toggle, Value::Bool(_)) | (Kind::Text, Value::String(_)) => v.clone(),
-            (Kind::Choice(opts), Value::String(s)) if opts.contains(&s.as_str()) => v.clone(),
-            _ => self.default_value(),
+        match self.kind {
+            Kind::Toggle => match v {
+                Value::Bool(_) => v.clone(),
+                Value::String(s) => match s.trim().to_lowercase().as_str() {
+                    "true" | "yes" | "on" => json!(true),
+                    "false" | "no" | "off" => json!(false),
+                    _ => self.default_value(),
+                },
+                _ => self.default_value(),
+            },
+            Kind::Text => match v {
+                Value::String(_) => v.clone(),
+                Value::Null => json!(""),
+                Value::Number(n) => json!(n.to_string()),
+                Value::Bool(b) => json!(b.to_string()),
+                _ => self.default_value(),
+            },
+            Kind::Choice(opts) => match v {
+                Value::String(s) => opts
+                    .iter()
+                    .find(|o| o.eq_ignore_ascii_case(s.trim()))
+                    .map(|o| json!(*o))
+                    .unwrap_or_else(|| self.default_value()),
+                _ => self.default_value(),
+            },
         }
     }
+}
+
+/// Whether `text` may be stored as the value of a text setting: `Err` is a
+/// message for the person (the editor stays open on it).
+pub fn validate(fd: &Field, text: &str) -> Result<(), String> {
+    if fd.key == "story_string_depth" {
+        match text.trim().parse::<i64>() {
+            Ok(n) if (0..=9999).contains(&n) => {}
+            _ => return Err("a whole number from 0 to 9999 (messages from the end)".to_string()),
+        }
+    }
+    Ok(())
+}
+
+/// Things worth a second look in a text that is accepted anyway.
+pub fn warnings(fd: &Field, text: &str) -> Vec<String> {
+    if fd.key == "story_string" {
+        return crate::textgen::check_template(text);
+    }
+    Vec::new()
 }
 
 // ---- presets ----------------------------------------------------------------
@@ -491,6 +535,16 @@ impl Formatting {
         }
     }
 
+    /// The same settings with every one written out, so two of them compare
+    /// equal when they mean the same (a default stored or left out alike).
+    pub fn normalized(&self) -> Formatting {
+        Formatting {
+            context: self.section(Sec::Context),
+            instruct: self.section(Sec::Instruct),
+            reply: self.section(Sec::Reply),
+        }
+    }
+
     /// Every setting of section `s` with its value, as a JSON object.
     fn section(&self, s: Sec) -> Map<String, Value> {
         let mut out = Map::new();
@@ -571,11 +625,7 @@ impl Formatting {
                 .with_context(|| format!("creating {}", dir.display()))?;
         }
         // Write every setting, so the file shows what there is to edit.
-        let full = Formatting {
-            context: self.section(Sec::Context),
-            instruct: self.section(Sec::Instruct),
-            reply: self.section(Sec::Reply),
-        };
+        let full = self.normalized();
         let mut text = String::from(
             "# tarpi formatting. Edited with /formatting in a chat; hand edits are fine too.\n",
         );
@@ -802,9 +852,62 @@ mod tests {
     #[test]
     fn wrong_types_fall_back_to_the_default() {
         let mut f = Formatting::default();
-        f.set(field("wrap"), json!("yes"));
+        f.set(field("wrap"), json!(5));
         f.set(field("names_behavior"), json!("sometimes"));
+        f.set(field("story_string"), json!(["a"]));
         assert_eq!(f.get(field("wrap")), json!(true));
         assert_eq!(f.get(field("names_behavior")), json!("force"));
+        assert_eq!(f.get(field("story_string")), field("story_string").default_value());
+    }
+
+    #[test]
+    fn a_hand_edited_file_is_read_generously() {
+        let f: Formatting = serde_yaml::from_str(
+            "context:\n  story_string_depth: 3\n  chat_start:\n  examples: Always Include\ninstruct:\n  wrap: no\n  enabled: 'on'\n  input_sequence: 7\n",
+        )
+        .unwrap();
+        assert_eq!(f.get(field("story_string_depth")), json!("3"));
+        assert_eq!(f.get(field("chat_start")), json!(""));
+        assert_eq!(f.get(field("examples")), json!("always include"));
+        assert_eq!(f.get(field("wrap")), json!(false));
+        assert_eq!(f.get(field("enabled")), json!(true));
+        assert_eq!(f.get(field("input_sequence")), json!("7"));
+        let mut s = json!({});
+        f.apply(&mut s);
+        assert_eq!(s["power_user"]["context"]["story_string_depth"], 3);
+        assert_eq!(s["power_user"]["pin_examples"], true);
+    }
+
+    #[test]
+    fn the_depth_must_be_a_number() {
+        let d = field("story_string_depth");
+        assert!(validate(d, "0").is_ok());
+        assert!(validate(d, " 12 ").is_ok());
+        assert!(validate(d, "9999").is_ok());
+        assert!(validate(d, "10000").is_err());
+        assert!(validate(d, "-1").is_err());
+        assert!(validate(d, "abc").is_err());
+        assert!(validate(d, "").is_err());
+        assert!(validate(field("chat_start"), "anything").is_ok());
+    }
+
+    #[test]
+    fn a_broken_story_string_is_reported_but_accepted() {
+        let st = field("story_string");
+        assert!(warnings(st, &st.default_value().as_str().unwrap()).is_empty());
+        assert_eq!(warnings(st, "{{#if description}}x").len(), 1);
+        assert!(warnings(field("chat_start"), "{{#if x}}").is_empty());
+        assert!(validate(st, "{{#if description}}x").is_ok());
+    }
+
+    #[test]
+    fn settings_compare_equal_when_they_mean_the_same() {
+        let mut a = Formatting::default();
+        let b = Formatting::default();
+        a.set(field("wrap"), json!(true)); // the default, written out
+        assert_ne!(a, b);
+        assert_eq!(a.normalized(), b.normalized());
+        a.set(field("wrap"), json!(false));
+        assert_ne!(a.normalized(), b.normalized());
     }
 }
