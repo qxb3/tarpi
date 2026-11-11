@@ -7,11 +7,10 @@
                    |_|
 ```
 
-**A chat-only terminal client for character cards.**
-One binary. No browser, no extra server: nothing to run except your model.
+**Roleplay from the command line.**
 
 ```
- tarpi 0.7.3  Tarpi/Tarpi01 • User • llamacpp@127.0.0.1:8080
+ tarpi 0.7.4  Tarpi/Tarpi01 • User • llamacpp@127.0.0.1:8080
 ────────────────────────────────────────────────────────────
  Tarpi
  *Spins around in the chair.* "Finally. I was about to start
@@ -25,7 +24,7 @@ One binary. No browser, no extra server: nothing to run except your model.
  Monday: pasta. Yes, tomatoes count."
 ────────────────────────────────────────────────────────────
  ┌──────────────────────────────────────────────────────────┐
- │ _                                                        │
+ │ ❚                                                        │
  └ INSERT ──────────────────────────────────────────────────┘
                                       3 messages · 412 tokens
 ```
