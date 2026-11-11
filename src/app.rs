@@ -734,13 +734,18 @@ impl App {
     /// Recount the totals. The prompt is rebuilt only when the chat or the
     /// settings changed; its token count is exact once the backend has
     /// counted it, and the characters / `chars_per_token` estimate until then.
+    /// Nothing is recounted while a reply is being generated (see below).
     fn update_stats(&mut self) {
+        // While a reply (or a summary pass) streams, the totals stay as they
+        // were: no estimate (`~`) flickers in and no tokenizer request is
+        // made. They are recounted on the first tick after the stream ends.
+        if self.is_generating() {
+            return;
+        }
         // The reply is in the chat now: the backend's count belongs to it.
-        if !self.is_generating() {
-            if let Some(n) = self.reported_pending.take() {
-                self.reported = Some((self.prompt_fingerprint(), n));
-                self.stats_at = None;
-            }
+        if let Some(n) = self.reported_pending.take() {
+            self.reported = Some((self.prompt_fingerprint(), n));
+            self.stats_at = None;
         }
         let fp = self.prompt_fingerprint();
         if self.prompt_fp != Some(fp) {
