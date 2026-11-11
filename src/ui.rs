@@ -619,6 +619,8 @@ const HELP: &[&str] = &[
     "                 you back to this chat",
     "/formatting      edit the context and instruct templates; quitting",
     "                 them (q) brings you back to this chat",
+    "/config          edit config.yaml in a window (vim modes as in the",
+    "                 chat box); Ctrl+S saves and applies it right away",
     "/char            view and edit this character's card",
     "/char-img        show the card's picture in a square window",
     "/one-shot        lock THIS chat: no editing, undo, regen, swipes or",
@@ -1431,7 +1433,7 @@ fn draw_card_modal(
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    bottom.push(Span::raw(" Ctrl+S save \u{b7} Esc cancel "));
+    bottom.push(Span::raw(" Ctrl+S save \u{b7} :wq save & close \u{b7} Esc cancel "));
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
@@ -2119,8 +2121,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.spell_names();
         app.spell_touch();
         let rested = app.spell_rested();
+        // The `/config` window (YAML) is never spell checked.
+        let no_spell = app.config_edit;
         if let Some(m) = app.card_modal.as_mut() {
-            draw_card_modal(f, modal_area, m, app.spell.as_mut(), rested);
+            let sp = if no_spell { None } else { app.spell.as_mut() };
+            draw_card_modal(f, modal_area, m, sp, rested);
         }
     } else if let Some(e) = app.pos_edit.as_mut() {
         draw_pos_edit(f, modal_area, e);

@@ -16,10 +16,29 @@ pub struct Cmd {
     pub alias: &'static str,
     /// One line about what it does.
     pub desc: &'static str,
+    /// Takes something after it (`/import <card>`, `/regen [nudge]`, `/undo [n]`):
+    /// choosing it from the menu leaves a space for that instead of running it.
+    pub args: bool,
+}
+
+impl Cmd {
+    /// What choosing the command puts in the input box: `/name ` (with a
+    /// space to type its argument after) when it takes one, else just `/name`.
+    pub fn fill(&self) -> String {
+        if self.args {
+            format!("/{} ", self.name)
+        } else {
+            format!("/{}", self.name)
+        }
+    }
 }
 
 const fn cmd(name: &'static str, alias: &'static str, desc: &'static str) -> Cmd {
-    Cmd { name, alias, desc }
+    Cmd { name, alias, desc, args: false }
+}
+
+const fn cmd_args(name: &'static str, alias: &'static str, desc: &'static str) -> Cmd {
+    Cmd { name, alias, desc, args: true }
 }
 
 /// In the order the menu shows them (for a given prefix, the ones whose
@@ -30,18 +49,19 @@ pub const COMMANDS: &[Cmd] = &[
     cmd("char", "", "view and edit this character's card"),
     cmd("chars", "", "switch to another character"),
     cmd("char-img", "", "show the card's picture"),
-    cmd("import", "", "add a character: card file or chub / pygmalion link"),
+    cmd_args("import", "", "add a character: card file or chub / pygmalion link"),
     cmd("persona", "", "choose who you are in the chat"),
     cmd("system", "", "choose, create or edit the system prompt"),
     cmd("prompt", "", "show the whole prompt of the next reply"),
     cmd("note", "an", "edit the Author's Note of this chat"),
     cmd("api", "", "API connection and sampler settings"),
     cmd("formatting", "", "context and instruct templates"),
+    cmd("config", "", "edit config.yaml (applied when saved)"),
     cmd("new", "", "new chat with this character"),
     cmd("newchat", "nc", "delete this chat, start a new one"),
-    cmd("regen", "", "regenerate the last reply [nudge]"),
+    cmd_args("regen", "", "regenerate the last reply [nudge]"),
     cmd("continue", "c", "continue the last reply"),
-    cmd("undo", "u", "delete the last message [n]"),
+    cmd_args("undo", "u", "delete the last message [n]"),
     cmd("summarize", "summ", "summary of the chat as a new branch"),
     cmd("deletebranch", "db", "delete the branch that is showing"),
     cmd("one-shot", "", "lock this chat (permanent)"),
@@ -93,6 +113,16 @@ mod tests {
         assert_eq!(names("char"), vec!["char", "chars", "char-img"]);
         assert_eq!(names("chars"), vec!["chars"]);
         assert!(names("characters").is_empty());
+    }
+
+    #[test]
+    fn only_commands_with_arguments_leave_a_space() {
+        let fill = |w: &str| matches(w)[0].fill();
+        assert_eq!(fill("import"), "/import ");
+        assert_eq!(fill("regen"), "/regen ");
+        assert_eq!(fill("undo"), "/undo ");
+        assert_eq!(fill("chats"), "/chats");
+        assert_eq!(fill("config"), "/config");
     }
 
     #[test]

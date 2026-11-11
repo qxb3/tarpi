@@ -244,6 +244,8 @@ pub struct App {
     sys_edit: Option<SysEdit>,
     /// Set while `card_modal` is the Author's Note form (`/note`).
     note_edit: bool,
+    /// Set while `card_modal` is the `/config` window (config.yaml).
+    pub config_edit: bool,
     /// `/one-shot` was typed once and waits for the second time.
     one_shot_armed: bool,
     /// Set by `/api`: the main loop opens the API manager in this terminal and
@@ -547,6 +549,7 @@ impl App {
             persona_edit: None,
             sys_edit: None,
             note_edit: false,
+            config_edit: false,
             one_shot_armed: false,
             help_scroll: 0,
             help_page: 10,
@@ -1110,7 +1113,9 @@ impl App {
                 if self.comp_area.contains(pos) {
                     // A click on a command of the menu fills it in.
                     if let Some(&(_, name)) = self.comp_rows.iter().find(|(y, _)| *y == m.row) {
-                        self.accept_completion(name);
+                        if self.accept_completion(name) {
+                            self.submit().await;
+                        }
                     } else if let Some(&(_, i)) =
                         self.path_rows.iter().find(|(y, _)| *y == m.row)
                     {
@@ -1354,6 +1359,7 @@ impl App {
                         Err(msg) => self.set_status(msg, true),
                     }
                     // `:w` = Ctrl+S.
+                    let _ = self.input.take_quit_req();
                     if self.input.take_write_req() {
                         self.commit_edit_to_card().await;
                     }
@@ -1548,8 +1554,9 @@ impl App {
         if let Some(base) = &self.comp.base {
             let list = self.menu_commands(base);
             if let Some(c) = list.get(self.comp.sel) {
-                // The box holds the filled-in name and the space after it.
-                if self.input.text == format!("/{} ", c.name) {
+                // The box holds the filled-in name (and the space after it,
+                // for a command that takes an argument).
+                if self.input.text == c.fill() {
                     return Some((list, self.comp.sel, true));
                 }
             }
@@ -1645,8 +1652,8 @@ impl App {
             // the first Tab (or arrow) already moves on from it.
             (typed, step.rem_euclid(n) as usize)
         };
-        let name = list[idx].name;
-        self.set_input_text(format!("/{} ", name));
+        let fill = list[idx].fill();
+        self.set_input_text(fill);
         self.comp = Comp {
             base: Some(base),
             sel: idx,
@@ -1655,11 +1662,12 @@ impl App {
         true
     }
 
-    /// Enter on a half-typed command chooses the highlighted one: `/su`
-    /// becomes `/summarize ` (with a space after it, ready for what the
-    /// command takes) and nothing is run yet. A word that already is a
-    /// command or short form (`/c`, `/nc`) is left as typed and runs.
-    /// Returns true when it completed something.
+    /// Enter on a half-typed command chooses the highlighted one. A command
+    /// that takes an argument (`/imp` -> `/import `) is filled in with a space
+    /// after it and nothing is run yet; any other (`/ch` -> `/chats`) is
+    /// filled in and runs at once (this returns false so the key goes on to
+    /// run it). A word that already is a command or short form (`/c`, `/nc`)
+    /// is left as typed and runs. Returns true when it only completed.
     fn apply_top_completion(&mut self) -> bool {
         let Some((list, sel, picked)) = self.completion() else {
             return false;
@@ -1677,9 +1685,10 @@ impl App {
         if complete {
             return false;
         }
-        self.set_input_text(format!("/{} ", list[sel].name));
+        let top = list[sel];
+        self.set_input_text(top.fill());
         self.comp = Comp::default();
-        true
+        top.args
     }
 
     /// Esc or Ctrl+C while a menu above the input box is showing (the
@@ -1866,15 +1875,24 @@ impl App {
         self.path_open = is_dir;
     }
 
-    /// A command was clicked in the menu: fill it in (with a space after it)
-    /// and close the menu.
-    fn accept_completion(&mut self, name: &str) {
-        self.set_input_text(format!("/{} ", name));
+    /// A command was clicked in the menu: fill it in and close the menu.
+    /// Returns true when the command takes nothing more, so it should run now.
+    fn accept_completion(&mut self, name: &str) -> bool {
+        let args = cmds::COMMANDS
+            .iter()
+            .find(|c| c.name == name)
+            .map_or(true, |c| c.args);
+        self.set_input_text(if args {
+            format!("/{} ", name)
+        } else {
+            format!("/{}", name)
+        });
         self.comp = Comp {
             base: None,
             sel: 0,
             done: true,
         };
+        !args
     }
 
     /// Replace the whole box with `text`, cursor at the end.
@@ -1994,6 +2012,10 @@ impl App {
                             true,
                         );
                     }
+                }
+                "config" | "settings" => {
+                    self.input.clear();
+                    self.open_config().await;
                 }
                 "one-shot" | "oneshot" => {
                     self.input.clear();
@@ -2543,7 +2565,7 @@ impl App {
 
     /// Ctrl+S in the persona form: create or update the persona, then show the
     /// persona window again. On a failure the form stays open.
-    async fn save_persona_form(&mut self) {
+    async fn save_persona_form(&mut self, close: bool) {
         let (name, title, description) = match self.card_modal.as_mut() {
             Some(m) => {
                 m.sync();
@@ -2556,9 +2578,9 @@ impl App {
             return;
         }
         let existing = self.persona_edit.as_ref().and_then(|e| e.avatar.clone());
-        let msg = match persona::put(existing.as_deref(), &name, &title, &description) {
-            Ok(_) if existing.is_some() => format!("saved persona {}", name),
-            Ok(_) => format!("created persona {}", name),
+        let (saved, msg) = match persona::put(existing.as_deref(), &name, &title, &description) {
+            Ok(p) if existing.is_some() => (p, format!("saved persona {}", name)),
+            Ok(p) => (p, format!("created persona {}", name)),
             Err(e) => {
                 self.card_note(format!("could not save the persona: {:#}", e), true);
                 return;
@@ -2567,6 +2589,21 @@ impl App {
         // The active persona may just have been edited.
         let settings = self.settings.clone();
         self.apply_settings(settings);
+        if !close {
+            // Stay in the form. A new persona now exists: further saves
+            // update it instead of making another one.
+            self.persona_edit = Some(PersonaEdit {
+                avatar: Some(saved.id.clone()),
+            });
+            if let Some(m) = self.card_modal.as_mut() {
+                for k in ["name", "title", "description"] {
+                    m.mark_saved(k);
+                }
+            }
+            self.card_note(msg.clone(), false);
+            self.set_status(msg, false);
+            return;
+        }
         self.card_modal = None;
         self.persona_edit = None;
         self.open_persona_picker().await;
@@ -2744,7 +2781,7 @@ impl App {
 
     /// Ctrl+S in the system prompt form: create or update the prompt, then
     /// show the `/system` window again. On a failure the form stays open.
-    async fn save_sysprompt_form(&mut self) {
+    async fn save_sysprompt_form(&mut self, close: bool) {
         let (name, content, post_history) = match self.card_modal.as_mut() {
             Some(m) => {
                 m.sync();
@@ -2757,9 +2794,10 @@ impl App {
             return;
         }
         let existing = self.sys_edit.as_ref().and_then(|e| e.id.clone());
-        let msg = match sysprompt::put(existing.as_deref(), &name, &content, &post_history) {
-            Ok(_) if existing.is_some() => format!("saved system prompt {}", name),
-            Ok(_) => format!("created system prompt {}", name),
+        let (saved, msg) = match sysprompt::put(existing.as_deref(), &name, &content, &post_history)
+        {
+            Ok(p) if existing.is_some() => (p, format!("saved system prompt {}", name)),
+            Ok(p) => (p, format!("created system prompt {}", name)),
             Err(e) => {
                 self.card_note(format!("could not save the system prompt: {:#}", e), true);
                 return;
@@ -2768,6 +2806,20 @@ impl App {
         // The prompt in use may just have been edited.
         let settings = self.settings.clone();
         self.apply_settings(settings);
+        if !close {
+            // Stay in the form; a new prompt now exists, so later saves update it.
+            self.sys_edit = Some(SysEdit {
+                id: Some(saved.id.clone()),
+            });
+            if let Some(m) = self.card_modal.as_mut() {
+                for k in ["name", "content", "post_history"] {
+                    m.mark_saved(k);
+                }
+            }
+            self.card_note(msg.clone(), false);
+            self.set_status(msg, false);
+            return;
+        }
         self.card_modal = None;
         self.sys_edit = None;
         self.open_sysprompt_picker().await;
@@ -3055,10 +3107,87 @@ impl App {
         self.note_edit = true;
     }
 
+    /// `/config`: `config.yaml` in a window, edited with the same vim modes
+    /// as the chat box (when `vim.enabled`). Ctrl+S / `:w` / Save checks it,
+    /// writes it and applies it to this running screen (see `apply_config`).
+    async fn open_config(&mut self) {
+        let text = config::read_text();
+        self.card_modal = Some(CardModal::config(&text, &self.input));
+        self.config_edit = true;
+    }
+
+    /// Ctrl+S in the `/config` window: check the YAML, write it to
+    /// `config.yaml` and use it right away. On a mistake nothing is written
+    /// and the window stays open, saying what is wrong.
+    async fn save_config_form(&mut self, close: bool) {
+        let text = match self.card_modal.as_mut() {
+            Some(m) => {
+                m.sync();
+                m.fields.first().map(|f| f.text.clone()).unwrap_or_default()
+            }
+            None => return,
+        };
+        let cfg = match config::parse_text(&text) {
+            Ok(c) => c,
+            Err(e) => {
+                self.card_note(format!("not saved: {:#}", e), true);
+                return;
+            }
+        };
+        if let Err(e) = config::write_text(&text) {
+            self.card_note(format!("{:#}", e), true);
+            return;
+        }
+        self.apply_config(&cfg);
+        if close {
+            self.card_modal = None;
+            self.config_edit = false;
+        } else if let Some(m) = self.card_modal.as_mut() {
+            m.mark_saved("config");
+            // The window itself follows the new vim settings at once.
+            m.input.configure(cfg.vim().enabled, cfg.vim().keys());
+            if let Some(l) = cfg.vim().leader_char() {
+                m.input.set_leader(l);
+            }
+            m.note = "config.yaml saved and applied".to_string();
+            m.note_err = false;
+        }
+        self.set_status("config.yaml saved and applied", false);
+    }
+
+    /// Use these settings in the running screen (start-up and `/config` both
+    /// come here). `serve_url` / `serve_trust_all` are only read when
+    /// `tarpi serve` / `tarpi connect` start, so they need a restart.
+    pub fn apply_config(&mut self, cfg: &config::FileConfig) {
+        self.vim = cfg.vim().enabled;
+        self.input.configure(cfg.vim().enabled, cfg.vim().keys());
+        self.input.set_autopair(cfg.autopair.unwrap_or(true));
+        self.command_menu = cfg.command_menu.unwrap_or(true);
+        self.comp = Comp::default();
+        self.set_author_note(cfg.author_note.unwrap_or(true));
+        // The word list is only loaded when spell checking is switched on.
+        if cfg.spellcheck.unwrap_or(false) {
+            if self.spell.is_none() {
+                self.spell = Some(crate::spell::Checker::new());
+            }
+        } else {
+            self.spell = None;
+            self.spell_menu = None;
+        }
+        if let Some(l) = cfg.vim().leader_char() {
+            self.input.set_leader(l);
+        }
+        self.tap_move_cursor = cfg.mouse().tap_to_move_cursor;
+        self.tap_open_keyboard = cfg.mouse().open_keyboard_on_tap;
+        self.chars_per_token = cfg.chars_per_token.unwrap_or(3.2);
+        // The token estimate (and so the status row) depends on it.
+        self.settings_ver += 1;
+    }
+
     /// Ctrl+S in the Author's Note form: check the settings, keep the note in
     /// the chat file and use it from the next reply on. On a mistake the form
     /// stays open and says what to type.
-    async fn save_note_form(&mut self) {
+    async fn save_note_form(&mut self, close: bool) {
         let (text, position, depth, role, interval) = match self.card_modal.as_mut() {
             Some(m) => {
                 m.sync();
@@ -3108,8 +3237,6 @@ impl App {
         self.save().await;
         // The prompt (and its token count) is built from the note too.
         self.settings_ver += 1;
-        self.card_modal = None;
-        self.note_edit = false;
         let msg = if n.text.is_empty() {
             "author's note saved (no text: nothing is sent)"
         } else if n.interval == 0 {
@@ -3117,6 +3244,17 @@ impl App {
         } else {
             "author's note saved"
         };
+        if close {
+            self.card_modal = None;
+            self.note_edit = false;
+        } else {
+            if let Some(m) = self.card_modal.as_mut() {
+                for k in ["note", "position", "depth", "role", "interval"] {
+                    m.mark_saved(k);
+                }
+            }
+            self.card_note(msg, false);
+        }
         self.set_status(msg, false);
     }
 
@@ -3146,24 +3284,36 @@ impl App {
             }
             return;
         }
+        if self.config_edit {
+            self.config_edit = false;
+            if dirty {
+                self.set_status("config: changes discarded", false);
+            }
+            return;
+        }
         if dirty {
             self.set_status("character card: changes discarded", false);
         }
     }
 
-    /// Write every changed field of the form to the card, then close it. On a
-    /// failure the form stays open (what was already written counts as saved).
-    async fn save_card_modal(&mut self) {
+    /// Write every changed field of the form to the card. The form stays open
+    /// (Ctrl+S, `:w`, Save) unless `close` is set (`:wq`). On a failure it
+    /// stays open either way (what was already written counts as saved).
+    async fn save_card_modal(&mut self, close: bool) {
         if self.persona_edit.is_some() {
-            self.save_persona_form().await;
+            self.save_persona_form(close).await;
             return;
         }
         if self.sys_edit.is_some() {
-            self.save_sysprompt_form().await;
+            self.save_sysprompt_form(close).await;
             return;
         }
         if self.note_edit {
-            self.save_note_form().await;
+            self.save_note_form(close).await;
+            return;
+        }
+        if self.config_edit {
+            self.save_config_form(close).await;
             return;
         }
         let changes = match self.card_modal.as_mut() {
@@ -3174,7 +3324,11 @@ impl App {
             None => return,
         };
         if changes.is_empty() {
-            self.card_modal = None;
+            if close {
+                self.card_modal = None;
+            } else {
+                self.card_note("no changes to save", false);
+            }
             self.set_status("character card: no changes to save", false);
             return;
         }
@@ -3191,15 +3345,17 @@ impl App {
                 m.mark_saved(key);
             }
         }
-        self.card_modal = None;
-        self.set_status(
-            format!(
-                "saved to the character card ({} field{})",
-                total,
-                if total == 1 { "" } else { "s" }
-            ),
-            false,
+        let msg = format!(
+            "saved to the character card ({} field{})",
+            total,
+            if total == 1 { "" } else { "s" }
         );
+        if close {
+            self.card_modal = None;
+        } else {
+            self.card_note(msg.clone(), false);
+        }
+        self.set_status(msg, false);
     }
 
     /// Keep the card held in memory in step with what was just saved.
@@ -3254,7 +3410,8 @@ impl App {
                     return;
                 }
                 KeyCode::Char('s') => {
-                    self.save_card_modal().await;
+                    // Saves and stays; `:wq` saves and closes.
+                    self.save_card_modal(false).await;
                     return;
                 }
                 _ => {}
@@ -3270,9 +3427,12 @@ impl App {
             _ => 0,
         };
 
+        // Only the `/config` window: Tab types two spaces (YAML indent).
+        let tab_spaces = self.config_edit;
         let mut cancel = false;
         let mut cmd_result: Option<Result<String, String>> = None;
         let mut write = false;
+        let mut quit = false;
         let mut clip: Option<String> = None;
         {
             let Some(c) = self.card_modal.as_mut() else {
@@ -3296,6 +3456,7 @@ impl App {
                     KeyCode::Enter => {
                         cmd_result = Some(c.input.run_command());
                         write = c.input.take_write_req();
+                        quit = c.input.take_quit_req();
                     }
                     _ => {}
                 }
@@ -3357,6 +3518,12 @@ impl App {
                             c.down();
                         }
                     }
+                    KeyCode::Tab if tab_spaces && !ctrl && !alt => {
+                        if mode == Mode::Insert {
+                            c.input.insert_char(' ');
+                            c.input.insert_char(' ');
+                        }
+                    }
                     KeyCode::Char('a') if ctrl => c.input.home(),
                     KeyCode::Char('e') if ctrl => c.input.end(),
                     KeyCode::Char('w') if ctrl => c.input.delete_word_back(),
@@ -3382,8 +3549,8 @@ impl App {
             return;
         }
         if write {
-            // `:w` = Ctrl+S / the Save button.
-            self.save_card_modal().await;
+            // `:w` = Ctrl+S / the Save button (stays open); `:wq` closes too.
+            self.save_card_modal(quit).await;
             return;
         }
         match cmd_result {
@@ -3431,7 +3598,7 @@ impl App {
                 if cancel {
                     self.cancel_card_modal().await;
                 } else if save {
-                    self.save_card_modal().await;
+                    self.save_card_modal(false).await;
                 } else if let Some(c) = self.card_modal.as_mut() {
                     c.click(m.column, m.row);
                 }
@@ -3532,6 +3699,10 @@ impl App {
     /// Empty when spell checking is off. The word the cursor is in is left
     /// alone while typing (INSERT mode), since it is not finished yet.
     pub fn spell_marks(&mut self, text: &str) -> Vec<(usize, usize)> {
+        // The `/config` window holds YAML, not prose: nothing is underlined.
+        if self.config_edit {
+            return Vec::new();
+        }
         self.spell_touch();
         let typing = (self.input.mode == crate::input::Mode::Insert && !self.spell_rested())
             .then_some(self.input.cursor);
@@ -3628,6 +3799,7 @@ impl App {
     /// not for the menu (and then closes it).
     fn spell_key(&mut self, k: &KeyEvent) -> bool {
         if self.spell.is_none()
+            || self.config_edit
             || !matches!(self.spell_input().mode, Mode::Insert | Mode::Normal)
             || k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
             || (self.card_modal.is_none()

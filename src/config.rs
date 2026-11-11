@@ -307,6 +307,12 @@ pub fn load() -> Result<FileConfig> {
         FileConfig::default()
     };
 
+    validate(&cfg, &yaml)?;
+    Ok(cfg)
+}
+
+/// The checks `load` makes on a parsed config (`yaml` is only named in the errors).
+fn validate(cfg: &FileConfig, yaml: &std::path::Path) -> Result<()> {
     let keys = cfg.vim().keys();
     if cfg.vim().enabled && (keys.len() < 2 || keys.iter().any(|c| c.is_whitespace())) {
         bail!(
@@ -324,7 +330,39 @@ pub fn load() -> Result<FileConfig> {
             cfg.vim().leader
         );
     }
+    Ok(())
+}
+
+/// `/config`: the text of `config.yaml` as it is now (the commented starting
+/// point when there is no file yet).
+pub fn read_text() -> String {
+    config_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_else(|| TEMPLATE.to_string())
+}
+
+/// `/config`: check `text` the way `load` checks the file, without writing
+/// anything. The error says what is wrong (YAML mistake, bad `vim` value).
+pub fn parse_text(text: &str) -> Result<FileConfig> {
+    let name = std::path::Path::new("config.yaml");
+    let cfg = if text.trim().is_empty()
+        || text.lines().all(|l| l.trim().is_empty() || l.trim_start().starts_with('#'))
+    {
+        FileConfig::default()
+    } else {
+        serde_yaml::from_str(text).with_context(|| format!("parsing {}", name.display()))?
+    };
+    validate(&cfg, name)?;
     Ok(cfg)
+}
+
+/// `/config`: write `text` as `config.yaml`.
+pub fn write_text(text: &str) -> Result<()> {
+    let path = config_path().context("no config folder")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))
 }
 
 /// The settings the prompt builders start from, before tarpi's own persona,

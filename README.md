@@ -32,6 +32,7 @@ Everything else happens inside the chat:
 | `/import <card>` | adds a character: a card `.png` / `.json` file, a chub.ai or pygmalion.chat link, a direct link to a card file, or the card's JSON text (see *Importing characters*) |
 | `/api` | open the API settings (server address and every model setting of a llama.cpp or OpenAI-compatible connection) right here; when you quit them (`q` / Esc) you are back in this same chat, and the very next reply uses what you saved |
 | `/formatting` | open the formatting editor: context template (story string), instruct template and reply cleanup; when you quit it (`q` / Esc) you are back in this same chat (see *Formatting*) |
+| `/config` | opens `config.yaml` in a window, edited with the same vim modes as the input box when `vim.enabled` is on. Tab types two spaces (YAML indent) and the spell checker is always off here, even with `spellcheck: true`. Ctrl+S (or `:w`, or the Save button) checks the YAML, writes the file and applies it to the running chat at once, so no restart is needed, and the window stays open (`:wq` saves and closes it); a mistake is reported in the window and nothing is written. Esc cancels (asks twice when there are unsaved changes). `serve_url` and `serve_trust_all` are only read when `tarpi serve` / `connect` start (see *Configuration*) |
 | `/char` | open this character's card in a window: every field, editable, with **Cancel** and **Save** (see below) |
 | `/char-img` | shows the character card's picture in a square window (full resolution in terminals with the Kitty graphics protocol, iTerm2 images or Sixel (kitty, WezTerm, Ghostty, iTerm2, foot, Windows Terminal, mlterm); elsewhere, including Termux and tmux, it is drawn with coloured half-block cells, which is coarse. `TARPI_IMAGE=blocks|kitty|iterm|sixel` forces one (`sixel` is never auto-detected beyond the terminals listed); any key or click closes it) |
 | `/new` | new chat with this character right away (keeps the current one) |
@@ -53,12 +54,12 @@ Typing `/` in the input box opens a menu of commands just above it, narrowing as
 
 | Key / click | Action |
 | --- | --- |
-| Tab or Down | move the highlight to the next command and fill it in, with a space after it (the top one is highlighted from the start, so the first press already goes to the second). With `/import ` filled in, Tab opens the path menu instead (see below) |
+| Tab or Down | move the highlight to the next command and fill it in (with a space after it only for a command that takes an argument: `/import `, `/regen `, `/undo `; the others are filled in bare, like `/chats`) (the top one is highlighted from the start, so the first press already goes to the second). With `/import ` filled in, Tab opens the path menu instead (see below) |
 | Shift+Tab | move the highlight to the previous command and fill it in (with a space); wraps around (from the top one to the last) |
 | Up | on a bare `/` once a command has been run: the command history instead (see *Command history*). Otherwise the same as Shift+Tab |
 | Esc or Ctrl+C | hide the menu and nothing else (see below); what is in the box stays as it is |
-| click / tap | fill in that command (with a space after it) and close the menu |
-| Enter | choose the highlighted command when what you typed is only the start of one: `/su` becomes `/summarize ` (with a space after it, ready for what it takes) and is not run yet. A full name or short form (`/c`, `/nc`) runs as typed |
+| click / tap | fill in that command and close the menu; a command that takes nothing (`/chats`) runs at once, one that takes an argument (`/import `) waits for it |
+| Enter | choose the highlighted command when what you typed is only the start of one: a command that takes nothing runs at once (`/su` runs `/summarize`), while one that takes an argument is filled in with a space and not run yet (`/imp` becomes `/import `, ready for the path). A full name or short form (`/c`, `/nc`) runs as typed. Only `/import`, `/regen` and `/undo` take arguments |
 
 Esc or Ctrl+C while the command menu, the path menu (below) or the spelling menu is showing only hides that menu: tarpi does not quit, stop a reply, cancel an edit or leave a mode. The command and path menus stay hidden until the next key (typing brings them back); the box keeps whatever is in it. With no menu showing, Esc and Ctrl+C do what they always did (see *Keys*).
 
@@ -316,7 +317,8 @@ All fields except the card file and the depth prompt (shown read-only) can be ed
 | Ctrl+U / Ctrl+D (NORMAL / VISUAL mode) | half a window up / down; on reaching the edge of a field, move into the previous / next field |
 | click | put the cursor in that field |
 | mouse wheel | scroll the window |
-| Ctrl+S, `:w` (NORMAL mode, vim modes on), or the **Save** button | write the changed fields to the character card file in `~/.config/tarpi/characters/` (as Card save does) and close |
+| Ctrl+S, `:w` (NORMAL mode, vim modes on), or the **Save** button | write the changed fields to the character card file in `~/.config/tarpi/characters/` (as Card save does); the window stays open |
+| `:wq` (or `:x`) | the same, then close the window. The other windows with this form (`/persona`, `/system`, `/note`, `/config`) work the same way: Ctrl+S / `:w` / Save only save, `:wq` saves and closes (a new persona or system prompt is created by the first save; later saves update it) |
 | Esc (see above), or the **Cancel** button | close without saving |
 
 The focused field is edited with the same editor as the chat box, so the vim modes work there too (unless `vim.enabled: false`): `qq` typed quickly or Esc goes to NORMAL mode, `i a I A o O` back to INSERT, then all the motions and operators from the tables above, VISUAL mode, and the `:%s/find/new/` command line (find / replace only ever touches the field you are in, never the rest of the card; while you type it the matches are highlighted and, once you type the replacement, the field shows the result with the new text in green, with the field name and match count on the row above the buttons; the mode shows on the bottom edge). In NORMAL mode `j` / `k` on the last / first row of a field carry on to the next / previous field. With vim modes on, Esc in INSERT mode goes to NORMAL mode; Esc in NORMAL mode closes the window, and when there are unsaved changes it asks for a second Esc first.

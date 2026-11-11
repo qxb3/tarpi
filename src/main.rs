@@ -98,6 +98,7 @@ enum Arrival {
         "  /one-shot       lock this chat: no editing, undo, regen, swipes, branches\n",
         "  /api            API settings (address, model and sampler); back to the chat on quit\n",
         "  /formatting     context and instruct templates (story string, prefixes, suffixes)\n",
+        "  /config         edit config.yaml in a window; applied as soon as you save\n",
         "  /char           view and edit this character's card\n",
         "  /char-img       show the card's picture in a square window\n",
         "  /new            new chat with this character (keeps this one)\n",
@@ -708,20 +709,8 @@ async fn main() -> Result<()> {
         app.set_connection(conn::Store::load()?.active_connection());
         app.hint_if_no_connection();
         app.touch = touch;
-        app.vim = cfg.vim().enabled;
-        app.input.configure(cfg.vim().enabled, cfg.vim().keys());
-        app.input.set_autopair(cfg.autopair.unwrap_or(true));
-        app.command_menu = cfg.command_menu.unwrap_or(true);
-        app.set_author_note(cfg.author_note.unwrap_or(true));
-        // Spell checking is off unless `spellcheck: true` is in the config.
-        if cfg.spellcheck.unwrap_or(false) {
-            app.spell = Some(spell::Checker::new());
-        }
-        if let Some(l) = cfg.vim().leader_char() {
-            app.input.set_leader(l);
-        }
-        app.tap_move_cursor = cfg.mouse().tap_to_move_cursor;
-        app.tap_open_keyboard = cfg.mouse().open_keyboard_on_tap;
+        // Also what `/config` runs after a save, so a change applies live.
+        app.apply_config(&cfg);
         app.max_rows = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(0);
         app.mouse = mouse_on;
         if startup {

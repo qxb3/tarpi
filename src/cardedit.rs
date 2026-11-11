@@ -241,6 +241,27 @@ impl CardModal {
         m
     }
 
+    /// The `/config` window: `config.yaml` as one editable field. It opens in
+    /// NORMAL mode when vim modes are on (see the `vim:` config), so the file
+    /// can be read and moved around in with the usual motions.
+    pub fn config(text: &str, cfg: &Input) -> CardModal {
+        let t = norm(text);
+        let fields = vec![CardField {
+            key: "config",
+            label: "config.yaml".to_string(),
+            orig: t.clone(),
+            text: t,
+            editable: true,
+            alt: false,
+        }];
+        let mut m = CardModal::from_fields(fields, cfg);
+        m.title = "config".to_string();
+        // It is YAML: no auto-closing of quotes and brackets.
+        m.input.set_autopair(false);
+        m.input.enter_normal();
+        m
+    }
+
     /// The text of the field with this key, trimmed.
     pub fn value(&self, key: &str) -> String {
         self.fields

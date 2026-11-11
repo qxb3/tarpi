@@ -20,6 +20,8 @@ pub struct Input {
     /// `:w` was run; the screen that owns the box takes it with
     /// `take_write_req` and saves.
     write_req: bool,
+    /// `:wq` was run (together with `write_req`): save, then close the window.
+    quit_req: bool,
     /// Cursor position in chars (not bytes).
     pub cursor: usize,
     pub mode: Mode,
@@ -238,6 +240,8 @@ enum Cmd {
     Subst(Subst),
     /// `:w` / `:write` — save (what Ctrl+S does where the box is).
     Write,
+    /// `:wq` / `:x` — save, then close the window.
+    WriteQuit,
 }
 
 impl Subst {
@@ -436,6 +440,12 @@ fn parse_command(
             return Err(format!("E488: Trailing characters: {}", cmd.trim()));
         }
         return Ok(Some(Cmd::Write));
+    }
+    if matches!(name.as_str(), "wq" | "x" | "xit" | "exit") {
+        if range.is_some() || s[i..].iter().any(|c| !c.is_whitespace()) {
+            return Err(format!("E488: Trailing characters: {}", cmd.trim()));
+        }
+        return Ok(Some(Cmd::WriteQuit));
     }
     if !"substitute".starts_with(name.as_str()) {
         return Err(format!("E492: Not an editor command: {}", cmd.trim()));
@@ -680,6 +690,12 @@ impl Input {
     /// Was `:w` run since the last call? (Clears the flag.)
     pub fn take_write_req(&mut self) -> bool {
         std::mem::take(&mut self.write_req)
+    }
+
+    /// Was `:wq` run since the last call? (Clears the flag; `take_write_req`
+    /// is true then too.)
+    pub fn take_quit_req(&mut self) -> bool {
+        std::mem::take(&mut self.quit_req)
     }
 
     pub fn copy_config(&mut self, other: &Input) {
@@ -1315,6 +1331,11 @@ impl Input {
             }
             Cmd::Write => {
                 self.write_req = true;
+                Ok(String::new())
+            }
+            Cmd::WriteQuit => {
+                self.write_req = true;
+                self.quit_req = true;
                 Ok(String::new())
             }
             Cmd::Subst(sub) => {
@@ -1955,6 +1976,21 @@ mod tests {
         assert!(run("abc", "foo").1.unwrap_err().starts_with("E492"));
         assert!(run("abc", "%s/a/b/q").1.unwrap_err().starts_with("E488"));
         assert!(run("abc", "%s//b/").1.is_err());
+    }
+
+    #[test]
+    fn w_saves_and_wq_saves_and_closes() {
+        let mut i = vim("abc");
+        type_cmd(&mut i, "w");
+        i.run_command().unwrap();
+        assert!(i.take_write_req());
+        assert!(!i.take_quit_req());
+        type_cmd(&mut i, "wq");
+        i.run_command().unwrap();
+        assert!(i.take_write_req());
+        assert!(i.take_quit_req());
+        type_cmd(&mut i, "wq now");
+        assert!(i.run_command().unwrap_err().starts_with("E488"));
     }
 
     #[test]
