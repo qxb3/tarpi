@@ -1,6 +1,6 @@
 [package]
 name = "tarpi"
-version = "0.7.3"
+version = "0.7.4"
 edition = "2021"
 description = "Standalone terminal chat client for character cards"
 license = "MIT"

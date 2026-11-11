@@ -46,17 +46,17 @@ The full manual. For a short introduction see the [README](../README.md).
 
 ## Command line and chat commands
 
-A standalone, chat-only terminal client for character cards. Characters, personas, system prompts, formatting, API connections and chats are all tarpi's own, so nothing needs a SillyTavern server (or any server except your model backend).
+A standalone, chat-only terminal client for character cards. Characters, personas, system prompts, formatting, API connections and chats are all tarpi's own, so nothing needs a server except your model backend.
 
-Characters, personas and system prompts are tarpi's own, kept in `~/.config/tarpi/characters/`, `~/.config/tarpi/persona/` and `~/.config/tarpi/system-prompt.jsonl` (see Importing characters, Deleting characters, Personas and System prompts). Chats are tarpi's too (`~/.config/tarpi/chats/`). `tarpi` only chats. Chats are saved as SillyTavern-format `.jsonl` files in `~/.config/tarpi/chats/`.
+Characters, personas and system prompts are tarpi's own, kept in `~/.config/tarpi/characters/`, `~/.config/tarpi/persona/` and `~/.config/tarpi/system-prompt.jsonl` (see Importing characters, Deleting characters, Personas and System prompts). Chats are tarpi's too (`~/.config/tarpi/chats/`). `tarpi` only chats. Chats are saved as `.jsonl` files in `~/.config/tarpi/chats/`.
 
 ```
 tarpi                  # open the character window, pick one, then chat
-tarpi sofia            # continue the latest chat with Sofia
-tarpi sofia 3          # open Sofia's chat number 3 (or by name: Sofia03)
-tarpi sofia -n         # start a new chat (named Sofia01, Sofia02, ...)
+tarpi tarpi            # continue the latest chat with Tarpi
+tarpi tarpi 3          # open Tarpi's chat number 3 (or by name: Tarpi03)
+tarpi tarpi -n         # start a new chat (named Tarpi01, Tarpi02, ...)
 tarpi -l               # list characters
-tarpi sofia -l         # list Sofia's chats
+tarpi tarpi -l         # list Tarpi's chats
 tarpi import-st <url>  # copy the personas, system prompts and characters of a SillyTavern server
 tarpi serve            # share everything with other devices (no chat screen; see Sharing between devices); `tarpi s` for short
 tarpi connect [token]  # chat with the data of the machine named by serve_url (see Sharing between devices); `tarpi c` for short
@@ -134,7 +134,7 @@ The history keeps the last 200 different commands in `~/.config/tarpi/command_hi
 
 The menu lists the short names `/char` and `/chars` and the short forms `/summ`, `/nc`, `/db`, `/c`, `/u`, `/q` and `/h` (shown in brackets). The longer spellings `/character`, `/characters` and `/summarise` still work when typed in full, but are not offered. While the menu is open Up / Down move through it instead of scrolling the chat.
 
-`<character>` is matched case-insensitively against the name or card file name; a unique partial match works. New chats are numbered per character (`Sofia01`, `Sofia02`, ...). A chat can be given as a number, an exact name, or a unique partial name.
+`<character>` is matched case-insensitively against the name or card file name; a unique partial match works. New chats are numbered per character (`Tarpi01`, `Tarpi02`, ...). A chat can be given as a number, an exact name, or a unique partial name.
 
 ## Sharing between devices (`serve` and `connect`)
 
@@ -165,13 +165,12 @@ tarpi connect --local-api    # keep this device's own API connection (see below)
 ```
 14:02:11  192.168.1.31  first sync: 3 downloaded, 1 uploaded
 14:02:11  192.168.1.31  connected
-14:02:13  192.168.1.31  opened chat Sofia03 with Sofia
-14:05:40  192.168.1.31  updated chat Sofia03 with Sofia (uploaded)
-14:06:02  192.168.1.31  switched to chat Sofia01 with Sofia
-14:07:30  192.168.1.31  switched to Mira: opened chat Mira01
-14:09:12  192.168.1.31  added character Nadia (uploaded)
+14:02:13  192.168.1.31  opened chat Tarpi03 with Tarpi
+14:05:40  192.168.1.31  updated chat Tarpi03 with Tarpi (uploaded)
+14:06:02  192.168.1.31  switched to chat Tarpi01 with Tarpi
+14:09:12  192.168.1.31  added character Tarpi (uploaded)
 14:09:12  192.168.1.31  synced: 1 downloaded
-14:11:48  192.168.1.31  left chat Mira01 with Mira
+14:11:48  192.168.1.31  left chat Tarpi01 with Tarpi
 14:11:49  192.168.1.31  disconnected after 9m 38s
 ```
 
@@ -192,7 +191,7 @@ What the server sees by itself is the live connection (`connected` / `disconnect
 
 ## API connection (`/api`)
 
-The API connection belongs to tarpi, not to SillyTavern. `/api` inside a chat opens a full-screen manager; connections are stored in `~/.config/tarpi/api.yaml`. Replies go **straight to the backend** (llama.cpp's `/completion`, `/v1/completions` for an OpenAI-compatible server, or `/api/generate` for Ollama), SillyTavern's API selection and sampler presets are ignored, and the token count in the status row comes from the backend's own `/tokenize` (an OpenAI-compatible connection only asks for it when *Count tokens on the server* is on). There is no fallback to any other API: if `api.yaml` has no active connection, sending a message shows `no API connection` and nothing is generated.
+The API connection belongs to tarpi. `/api` inside a chat opens a full-screen manager; connections are stored in `~/.config/tarpi/api.yaml`. Replies go **straight to the backend** (llama.cpp's `/completion`, `/v1/completions` for an OpenAI-compatible server, or `/api/generate` for Ollama), and the token count in the status row comes from the backend's own `/tokenize` (an OpenAI-compatible connection only asks for it when *Count tokens on the server* is on). There is no fallback to any other API: if `api.yaml` has no active connection, sending a message shows `no API connection` and nothing is generated.
 
 There is no separate command for it: type `/api` in any chat. The manager takes over the same terminal window and the chat is not closed, so when you quit it (`q` / Esc) you are back exactly where you were: same chat, same scroll position, unsent draft and swipes untouched. Whatever you saved applies at once (title bar and token count update) and to the next reply. If there is no connection yet, the chat starts with a hint to type `/api`, and the first time you open it a connection named `local` is created for you to fill in. On a phone, mouse reporting is switched on while the manager is open (so sliders can be tapped) and goes back to what the chat had when you leave it.
 
@@ -253,7 +252,7 @@ A connection kind is one small file: implement `conn::Provider` (its settings li
 
 ## Formatting
 
-`/formatting` opens a full-screen editor for how the prompt is laid out. The settings are tarpi's own, kept in `~/.config/tarpi/formatting.yaml` (every setting is written out; hand edits are fine). It is local to each device: `tarpi serve` and `tarpi connect` do not share it, so every device has its own formatting. Until you have saved it, the built-in defaults apply, and the editor starts from them. Nothing here is read from a SillyTavern server.
+`/formatting` opens a full-screen editor for how the prompt is laid out. The settings are tarpi's own, kept in `~/.config/tarpi/formatting.yaml` (every setting is written out; hand edits are fine). It is local to each device: `tarpi serve` and `tarpi connect` do not share it, so every device has its own formatting. Until you have saved it, the built-in defaults apply, and the editor starts from them.
 
 - **Context template**: the story string (`{{#if description}}...{{/if}}`, `{{description}}`, `{{personality}}`, `{{scenario}}`, `{{persona}}`, `{{system}}`, `{{char}}`, `{{user}}`), where the story string goes (`prompt`: top of the prompt, or `chat`: into the history at a depth and as a system / user / assistant message), *Always add the name* (end a non-instruct prompt with `Name:`), *Example messages* (`gradual push-out`, `always include` or `never include`), the example separator and chat start, and the stop-on-separators / stop-on-names switches.
 - **Instruct template**: instruct mode on/off, names (`none` / `force` / `always`), wrap and macros, the prefix and suffix of user, assistant and system messages, first / last assistant prefix, first / last user prefix, last system prefix, system-same-as-user, skip examples, the stop sequence, sequences as stop strings, and the story string prefix / suffix.
@@ -283,7 +282,7 @@ The next reply uses what you saved; nothing is sent to the server.
 
 ## Personas
 
-Personas belong to tarpi, not to SillyTavern. Each one is a small YAML file in `~/.config/tarpi/persona/` (`<id>.yaml` with `name`, `title`, `description`, `position`, `depth`, `role`, `lorebook`; hand edits are fine), and the file `persona/active` holds the id of the one in use. SillyTavern's own persona settings are never read for chatting and never written.
+Personas belong to tarpi. Each one is a small YAML file in `~/.config/tarpi/persona/` (`<id>.yaml` with `name`, `title`, `description`, `position`, `depth`, `role`, `lorebook`; hand edits are fine), and the file `persona/active` holds the id of the one in use.
 
 `/persona` inside a chat opens a window with every persona as `Name (Title)` with a short preview of its description; the active one is marked `(current)`. Pick one with ↑/↓ + Enter (or click / tap); Esc closes it. The choice applies to the chat from the next message on (and to chats open in other terminals, which re-read the folder before every reply). The first row, `+ new persona`, opens a form (name, title, description; Ctrl+S saves, Esc cancels). `e` on a persona opens the same form for it; `d` deletes it (asks `y`; the persona in use can't be deleted).
 
@@ -295,7 +294,7 @@ Personas belong to tarpi, not to SillyTavern. Each one is a small YAML file in `
 | Depth | only for the chat position: messages from the end, `0` is after the last message (default `2`) |
 | Role | only for the chat position: whether the injected message is a `system`, `user` or `assistant` message |
 
-↑/↓ (or `j` / `k`, Tab) pick a row, ←/→ (or `h` / `l`) change it (Shift+arrows, PgUp / PgDn, `H` / `L`: ten at a time on Depth), digits type the depth, Enter or Ctrl+S saves and Esc cancels; both bring the `/persona` window back. With the mouse or a finger, a click on the left half of a row steps back and on the right half steps on; a click outside closes it. The change applies from the next message on, like switching persona. A persona imported from SillyTavern with its old *After the character* position (`1`) shows it as *not supported, not sent*; stepping to another position replaces it. With no persona saved yet the list shows a plain `User`, which is written to disk once you edit it.
+↑/↓ (or `j` / `k`, Tab) pick a row, ←/→ (or `h` / `l`) change it (Shift+arrows, PgUp / PgDn, `H` / `L`: ten at a time on Depth), digits type the depth, Enter or Ctrl+S saves and Esc cancels; both bring the `/persona` window back. With the mouse or a finger, a click on the left half of a row steps back and on the right half steps on; a click outside closes it. The change applies from the next message on, like switching persona. A persona imported by `tarpi import-st` with its old *After the character* position (`1`) shows it as *not supported, not sent*; stepping to another position replaces it. With no persona saved yet the list shows a plain `User`, which is written to disk once you edit it.
 
 ## Prompt window
 
@@ -313,7 +312,7 @@ Long lines are wrapped to the window; tabs are shown as four spaces. The window 
 
 ## Author's Note
 
-The Author's Note is a short text that belongs to one chat and is added to the prompt of the replies, to steer the story (`Keep the pace slow.`, `[Style: terse, present tense]`). It is kept in the chat file's metadata under SillyTavern's own names (`note_prompt`, `note_position`, `note_depth`, `note_role`, `note_interval`), so a chat copied from SillyTavern keeps its note, and the web UI shows the one written here.
+The Author's Note is a short text that belongs to one chat and is added to the prompt of the replies, to steer the story (`Keep the pace slow.`, `[Style: terse, present tense]`). It is kept in the chat file's metadata (`note_prompt`, `note_position`, `note_depth`, `note_role`, `note_interval`).
 
 `/note` (or `/an`) opens a form with five fields; Ctrl+S saves, Esc cancels (the fields work like those of `/char`, including the vim modes and the spell checker). The settings are typed as words and checked when you save:
 
@@ -331,17 +330,17 @@ A persona whose position is **Top** or **Bottom of the Author's Note** (see *Per
 
 ## System prompts
 
-System prompts belong to tarpi, not to SillyTavern. They are kept in one file, `~/.config/tarpi/system-prompt.jsonl`, one JSON object per line (hand edits are fine):
+System prompts belong to tarpi. They are kept in one file, `~/.config/tarpi/system-prompt.jsonl`, one JSON object per line (hand edits are fine):
 
 ```
 {"id":"roleplay-simple","name":"Roleplay - Simple","content":"You are {{char}}. ...","post_history":"","active":true}
 ```
 
-`id` is the short file-name-like id, `name` what the window shows, `content` the system prompt, `post_history` the post-history instructions, and `"active": true` marks the prompt in use (only one line has it; the key is left out on the others). The text of the prompt in use is what goes into the `{{system}}` part of the context template for every reply, exactly where SillyTavern's own system prompt used to go. SillyTavern's system prompt settings are no longer read for chatting and never written. With no system prompt saved or chosen the system prompt is empty (the character card's own system prompt and post-history instructions, if it has them, still apply).
+`id` is the short file-name-like id, `name` what the window shows, `content` the system prompt, `post_history` the post-history instructions, and `"active": true` marks the prompt in use (only one line has it; the key is left out on the others). The text of the prompt in use is what goes into the `{{system}}` part of the context template for every reply. With no system prompt saved or chosen the system prompt is empty (the character card's own system prompt and post-history instructions, if it has them, still apply).
 
 `/system` inside a chat opens a window with every system prompt by name and a short preview of its text; the one in use is marked `(current)`. Pick one with ↑/↓ + Enter (or click / tap); Esc closes it. The choice applies from the next message on (and to chats open in other terminals, which re-read the file before every reply). The first row, `+ new system prompt`, opens a form (name, system prompt, post-history instructions; Ctrl+S saves, Esc cancels, the fields work like those of `/char`, including the vim modes and the spell checker). `e` on a prompt opens the same form for it; `d` deletes it (asks `y`; the one in use can't be deleted). A new prompt is not switched on by itself: pick it in the window.
 
-`{{char}}`, `{{user}}` and the other macros work in a system prompt as they did in SillyTavern. A character card's own system prompt still replaces the prompt in use (`{{original}}` in it stands for the prompt in use), as before.
+`{{char}}`, `{{user}}` and the other macros work in a system prompt. A character card's own system prompt still replaces the prompt in use (`{{original}}` in it stands for the prompt in use), as before.
 
 ### Importing from SillyTavern
 
@@ -354,7 +353,7 @@ Copies every persona (and every system prompt and character, see System prompts 
 
 The server's system prompts (its system prompt presets, plus the one it has switched on when that is not one of them) go into `system-prompt.jsonl` the same way: an identical one (same name, prompt and post-history instructions) is skipped, so running it again is safe, and `--overwrite` replaces one with the same name instead of adding `name-2`. If you have not chosen a system prompt here yet, the one the server had on becomes yours too.
 
-The chat's top bar reads ` tarpi <version> ` (white badge) `<character>/<chat file> • <persona> (<title>) • <api>@host:port`, e.g. `Mirei/Mire01`. The API type and `host:port` are those of the active connection (`/api`). The connection turns red when the backend does not answer (checked in the background every 5 seconds) or when no connection is set. Message names are black on white, with a grey rule between messages (none under the last one).
+The chat's top bar reads ` tarpi <version> ` (white badge) `<character>/<chat file> • <persona> (<title>) • <api>@host:port`, e.g. `Tarpi/Tarpi01`. The API type and `host:port` are those of the active connection (`/api`). The connection turns red when the backend does not answer (checked in the background every 5 seconds) or when no connection is set. Message names are black on white, with a grey rule between messages (none under the last one).
 
 ## Card save
 
@@ -424,24 +423,24 @@ Details:
 - The summary is written with the active API connection (`/api`), with its own settings: the reply length is raised as needed and sampling is made calm (low temperature, no DRY / XTC / penalties / dynamic temperature, no extra stop strings). Your saved connection is not changed. The character card, system prompt and persona are not part of that request.
 - A chat that does not fit into the context together with its summary is read in parts: each request gets the summary so far plus the next part of the chat. If the *Context size* is too small even for that, `/summarize` says so and does nothing.
 - Before anything is changed, the full chat is also saved as `<chat>_before-summary` (then `...2`, `...3`). It is a normal chat file, but `/chats` does not list it, and `/deletebranch` removes it again. If that copy cannot be saved, the chat is left alone.
-- The branches are stored in the chat file, inside the first message (`tarpi_branch`), so the file stays a normal `.jsonl`. The web UI shows the branch that was showing when you left.
+- The branches are stored in the chat file, inside the first message (`tarpi_branch`), so the file stays a normal `.jsonl`.
 - `Ctrl+S` / **Card save** is not offered on the summary: it is never written into the character card. Branched chats no longer get the card's alternate greetings added as swipes. `/undo` (with or without a number) will not delete the first message of a branched chat.
 - It needs at least three messages. Summaries are written by the model, so read the result; branch 1 and the saved copy have everything.
 - Chats summarized by an older version (summary as a second swipe of the first message) are left as they are and behave like a normal chat; run `/summarize` again to get branches. Chats with the earlier two-branch format load as they are.
 
 ## Placeholders and tidy text
 
-`{{user}}`, `{{char}}` and the old `<USER>` / `<BOT>` / `<CHAR>` / `<GROUP>` are replaced in greetings (when a chat is created) and in every message on screen. When you send a message, macros such as `{{roll:1d6}}`, `{{random::a::b}}`, `{{time}}`, `{{date}}`, `{{time_UTC+2}}`, `{{newline}}`, `{{trim}}` and `{{//comment}}` are filled in like in SillyTavern, and unknown ones are left as typed. Messages you send or edit (and replies) are trimmed: no spaces or empty lines at the start or end, no trailing spaces on lines.
+`{{user}}`, `{{char}}` and the old `<USER>` / `<BOT>` / `<CHAR>` / `<GROUP>` are replaced in greetings (when a chat is created) and in every message on screen. When you send a message, macros such as `{{roll:1d6}}`, `{{random::a::b}}`, `{{time}}`, `{{date}}`, `{{time_UTC+2}}`, `{{newline}}`, `{{trim}}` and `{{//comment}}` are filled in, and unknown ones are left as typed. Messages you send or edit (and replies) are trimmed: no spaces or empty lines at the start or end, no trailing spaces on lines.
 
 ## Chats
 
-Chats belong to tarpi too: `~/.config/tarpi/chats/<Name>/<chat>.jsonl`, one folder per character (named like the card file without `.png`). The files are the same SillyTavern `.jsonl` format as before (header line, then one message per line, unknown fields kept), so a chat folder copied from SillyTavern's `data/<user>/chats/` works as it is. Saving refuses to overwrite a file that another terminal changed in the meantime (`chat_metadata.integrity`), as SillyTavern did; reopen tarpi to reload it. `tarpi import-st <url>` copies the chats of every character of a server here (a chat that already exists here is kept; `--overwrite` replaces it). 
+Chats belong to tarpi too: `~/.config/tarpi/chats/<Name>/<chat>.jsonl`, one folder per character (named like the card file without `.png`). Each chat is a `.jsonl` file (a header line, then one message per line, unknown fields kept). Saving refuses to overwrite a file that another terminal changed in the meantime (`chat_metadata.integrity`); reopen tarpi to reload it. `tarpi import-st <url>` copies the chats of every character of a server here (a chat that already exists here is kept; `--overwrite` replaces it). 
 
 ## Characters
 
-Characters belong to tarpi, not to SillyTavern. Each card is a file in `~/.config/tarpi/characters/`:
+Characters belong to tarpi. Each card is a file in `~/.config/tarpi/characters/`:
 
-- `Name.png`: a card PNG with the card embedded (the `chara` / `ccv3` text chunks SillyTavern, chub.ai and others use). The picture is what `/char-img` shows.
+- `Name.png`: a card PNG with the card embedded (the `chara` / `ccv3` text chunks chub.ai and other sites use). The picture is what `/char-img` shows.
 - `Name.json`: a card that is only JSON (V1, V2, V3 or Pygmalion). It has no picture. V1 and Pygmalion cards are read as V2; if you edit one with `/char` or Card save it is saved back as V2.
 
 A character is identified by `Name.png` whichever of the two it is stored as; that name is also the folder its chats live in (see Chats). `/char` and Card save edit the card file right here (a PNG keeps its picture; only the embedded card data is rewritten). Cards you drop into the folder by hand are picked up the next time the list is read.
@@ -451,26 +450,26 @@ A character is identified by `Name.png` whichever of the two it is stored as; th
 `/import` adds a character card. Type it in the input box of a chat, followed by what to import:
 
 ```
-/import sofia.png                                    # V2/V3 card PNG
-/import ~/Downloads/sofia.json                       # card JSON (V1, V2, V3, Pygmalion)
-/import /path with spaces/sofia.png                  # quotes or \ before spaces also work
+/import tarpi.png                                    # V2/V3 card PNG
+/import ~/Downloads/tarpi.json                       # card JSON (V1, V2, V3, Pygmalion)
+/import /path with spaces/tarpi.png                  # quotes or \ before spaces also work
 /import https://chub.ai/characters/<creator>/<name>  # chub.ai (also characterhub.org)
 /import https://pygmalion.chat/character/<id>        # pygmalion.chat
-/import https://example.com/cards/sofia.png          # direct link to a card .png or .json
-/import {"name": "Sofia", ...}                       # JSON given directly
+/import https://example.com/cards/tarpi.png          # direct link to a card .png or .json
+/import {"name": "Tarpi", ...}                       # JSON given directly
 ```
 
 A path is read like a shell would: `~` is your home folder, a relative path starts from the folder tarpi was started in, and quotes, `\ ` (a backslash before a space, as a terminal pastes a dragged file) and `file://` links are understood. `/import` with nothing after it shows what it takes. After `/import ` press Tab to open a menu of the matching folders and card files (see *Path menu*).
 
-The card is saved as it came into `~/.config/tarpi/characters/`, named after the character (`Sofia.png`, or `Sofia-2.png` when that name is taken; a PNG stays a PNG, JSON stays JSON). Before saving, tarpi checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and says so if not. Any other http(s) link is treated as a direct link to a card file: tarpi downloads it itself (up to 50 MB; the file type is detected from its content, not the URL) and runs the same check. chub.ai (also characterhub.org) and pygmalion.chat links (`/character/<id>`) are downloaded by tarpi straight from those sites (chub.ai: the card PNG on its image host, then its download endpoints one after the other, because chub changes them now and then; pygmalion.chat: its export endpoint). When every attempt fails, each one's reason is listed; downloading the card PNG in a browser and importing the file always works; no other program is needed. Lorebook links are refused.
+The card is saved as it came into `~/.config/tarpi/characters/`, named after the character (`Tarpi.png`, or `Tarpi-2.png` when that name is taken; a PNG stays a PNG, JSON stays JSON). Before saving, tarpi checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and says so if not. Any other http(s) link is treated as a direct link to a card file: tarpi downloads it itself (up to 50 MB; the file type is detected from its content, not the URL) and runs the same check. chub.ai (also characterhub.org) and pygmalion.chat links (`/character/<id>`) are downloaded by tarpi straight from those sites (chub.ai: the card PNG on its image host, then its download endpoints one after the other, because chub changes them now and then; pygmalion.chat: its export endpoint). When every attempt fails, each one's reason is listed; downloading the card PNG in a browser and importing the file always works; no other program is needed. Lorebook links are refused.
 
-The import runs in the background: the status row shows `importing… 5s` while a download is going and you can keep chatting; when it is done the status row says `imported "Sofia" (Sofia.png)` (or why it failed, on one row). Then `/chars` lists the new character. One import runs at a time, and leaving the chat (another character, quitting) cancels one that is still downloading.
+The import runs in the background: the status row shows `importing… 5s` while a download is going and you can keep chatting; when it is done the status row says `imported "Tarpi" (Tarpi.png)` (or why it failed, on one row). Then `/chars` lists the new character. One import runs at a time, and leaving the chat (another character, quitting) cancels one that is still downloading.
 
 Before a chat is open, `/import` is not available: with no character yet, `tarpi` makes the default `Tarpi` character, so there is always a character to open `/import` from.
 
 ### Importing and deleting while connected
 
-Nothing different has to be done on a device that uses `tarpi connect`: there the characters folder *is* the local copy of the server's data (see *Sharing between devices*), so `/import` and the delete in `/chars` change that copy and the running sync passes it on at once (within a fraction of a second; a final sync also runs when you quit). The server's log shows `added character Sofia (uploaded)`, `deleted ...` lines and, from the device itself, `imported character Sofia (Sofia.png)` / `deleted character Sofia and its 3 chats`, and every other device that is connected has the change at its next sync. A card name that the server already has is noticed because the copy is brought up to date before the screen opens (`Sofia-2.png`); two devices importing the same new name at the same moment end up as a conflict, where the newer file wins and the older one is kept beside it (see *Sharing between devices*). Without `tarpi connect`, `/import` and the delete change this device's own `~/.config/tarpi/` only, as before.
+Nothing different has to be done on a device that uses `tarpi connect`: there the characters folder *is* the local copy of the server's data (see *Sharing between devices*), so `/import` and the delete in `/chars` change that copy and the running sync passes it on at once (within a fraction of a second; a final sync also runs when you quit). The server's log shows `added character Tarpi (uploaded)`, `deleted ...` lines and, from the device itself, `imported character Tarpi (Tarpi.png)` / `deleted character Tarpi and its 3 chats`, and every other device that is connected has the change at its next sync. A card name that the server already has is noticed because the copy is brought up to date before the screen opens (`Tarpi-2.png`); two devices importing the same new name at the same moment end up as a conflict, where the newer file wins and the older one is kept beside it (see *Sharing between devices*). Without `tarpi connect`, `/import` and the delete change this device's own `~/.config/tarpi/` only, as before.
 
 ### Copying everything from SillyTavern
 
@@ -478,19 +477,18 @@ Nothing different has to be done on a device that uses `tarpi connect`: there th
 
 ## Deleting characters
 
-`/chars` opens the window with every character; press `d` on one and it asks `Delete 'Sofia' and its chats? y = yes, other = no` (only `y` says yes; Enter does not). Then the card file is deleted from the characters folder and the character's folder in `chats/` goes with it, the `_before-summary` copies too. The window stays open with a note saying what was deleted (`deleted Sofia and its 3 chats`), and the list is shorter.
+`/chars` opens the window with every character; press `d` on one and it asks `Delete 'Tarpi' and its chats? y = yes, other = no` (only `y` says yes; Enter does not). Then the card file is deleted from the characters folder and the character's folder in `chats/` goes with it, the `_before-summary` copies too. The window stays open with a note saying what was deleted (`deleted Tarpi and its 3 chats`), and the list is shorter.
 
-When the character you delete is the one you are chatting with, the question adds `(quits tarpi)` and after the `y` tarpi stops the reply that is being written, deletes everything and exits, printing `Deleted "Sofia" and its 3 chats.` In a `/one-shot` chat a reply that is being written can't be stopped, so the open character can't be deleted until it is done.
+When the character you delete is the one you are chatting with, the question adds `(quits tarpi)` and after the `y` tarpi stops the reply that is being written, deletes everything and exits, printing `Deleted "Tarpi" and its 3 chats.` In a `/one-shot` chat a reply that is being written can't be stopped, so the open character can't be deleted until it is done.
 
-This cannot be undone. Nothing on a SillyTavern server is touched. With `tarpi connect` the files go from the local copy and the sync deletes them on the server too (see *Importing and deleting while connected*): a file that was changed on the other side in the meantime is never deleted, so a chat another device wrote just before is kept in `chats/` (not shown while the card is gone; importing a card of the same name shows it again).
+This cannot be undone. With `tarpi connect` the files go from the local copy and the sync deletes them on the server too (see *Importing and deleting while connected*): a file that was changed on the other side in the meantime is never deleted, so a chat another device wrote just before is kept in `chats/` (not shown while the card is gone; importing a card of the same name shows it again).
 
 ## Phone / Termux (touch)
 
 No setup needed. tarpi notices it runs on Android:
 
-- **Tap a message** to edit it, like a click on desktop. Swipes scroll the chat.
-- **Swipe gesture on Termux:** swipe sideways across the chat with a slight slant (a thumb's natural arc is enough; a perfectly flat swipe sends nothing at all). Left = next swipe, right = previous. One drag flips exactly one swipe. Only in touch mode and only when the last reply can be swiped. This works because Termux's scroll events carry the finger's column, so a sideways drag is recognised from them.
-- **Tap the `‹2/3›` counter** in the last reply's header to change swipes: the left half goes to the previous one, the right half to the next (past the last generates a new one, like →). A horizontal drag on the chat does the same where the terminal reports drags (swipe left = next, right = previous), also with a mouse on desktop. ←/→ still work.
+- **Tap a message** to edit it, like a click on desktop.
+- **Tap the `‹2/3›` counter** in the last reply's header to change swipes: the left half goes to the previous one, the right half to the next (past the last generates a new one, like →). ←/→ still work.
 - **Tap the text box** to open the keyboard. For that moment tarpi stops asking the terminal for mouse events (like `vim.opt.mouse = ""` in Neovim), and it turns them back on by itself as soon as the keyboard is up. If the keyboard doesn't show on the first tap, tap the box once more.
 
 Enter sends; for a new line use the Termux extra-keys row: ALT then Enter, or CTRL then J. ESC on that row leaves INSERT mode, as does typing the NORMAL-mode keys (`qq` by default) quickly.
@@ -549,7 +547,7 @@ vim:
 - `command_menu: true` (default) opens the `/command` menu above the input box while you type a slash (see *Command menu*). `command_menu: false` turns it off: nothing opens, Tab / Up / Down / Esc keep their old meaning (Up / Down scroll the chat), and Enter runs exactly what you typed. The command history (Up on a bare `/`) still works.
 - `spellcheck: true` turns on offline spell checking in the chat input box and in the `/char` and persona windows (default `false`; the Name fields are not checked). Misspelled words get a red underline (the red of the terminal's theme, asked from the terminal at start-up like the prose colours; the text keeps its colour); words of one or two letters are checked too (`ho` and `x` are marked, `a`, `I`, `of`, `up` are not). The word you are still typing is not marked until the cursor leaves it. The word list is English and built into the program, so no internet or system dictionary is needed. Extra words go in `~/.config/tarpi/dictionary.txt` (one per line, `#` starts a comment); the character's name and your persona's name are always accepted. Details: `src/spell.rs`.
 - With spell checking on, press **Tab** with the cursor in a marked word to open a **suggestion menu**: above the input box in the chat (like the command menu), and at the text cursor in the `/char` and persona windows. Misspelled words are only underlined (in the theme's red); the menu never opens by itself. It lists up to six spellings, best first (a swapped pair such as `teh` -> `the`, then a missing letter such as `helo` -> `hello`, then other close words), and keeps a capital first letter. It works in INSERT and NORMAL mode. Tab / Down go to the next entry, Shift+Tab / Up to the previous one, Enter puts the highlighted one in, Esc or Ctrl+C hides the menu (and does nothing else), and a click or tap on an entry puts it in; any other key closes it. The Name fields of the windows are not checked.
-- `autopair: true` (default) closes `"`, `'`, `*` and `(` `[` `{` as you type them, in INSERT mode and in the `/char` window: `"` gives `"|"`, `'` gives `'|'`, `*` gives `*|*`, a second `*` inside an empty pair gives `**|**`. Typing the closing character steps over the one already there, and Backspace between an empty pair removes both. It stays out of the way next to words (`2*3`, `5"`, and apostrophes like `don't` or `Sofia's`), when the paragraph already has an unclosed one (so the second `"` closes), and when the next character is a letter. Apostrophes inside a word are not counted as quotes, so `'I don't know'` types out as written. An apostrophe at the start of a word (`'em`, `'til`) opens a pair like any quote: Backspace removes it while it is still empty. Pasted text is never changed. Set `autopair: false` to turn it off.
+- `autopair: true` (default) closes `"`, `'`, `*` and `(` `[` `{` as you type them, in INSERT mode and in the `/char` window: `"` gives `"|"`, `'` gives `'|'`, `*` gives `*|*`, a second `*` inside an empty pair gives `**|**`. Typing the closing character steps over the one already there, and Backspace between an empty pair removes both. It stays out of the way next to words (`2*3`, `5"`, and apostrophes like `don't` or `Tarpi's`), when the paragraph already has an unclosed one (so the second `"` closes), and when the next character is a letter. Apostrophes inside a word are not counted as quotes, so `'I don't know'` types out as written. An apostrophe at the start of a word (`'em`, `'til`) opens a pair like any quote: Backspace removes it while it is still empty. Pasted text is never changed. Set `autopair: false` to turn it off.
 - `vim.enabled: false` removes the modes and the mode tag under the box; the box is plain text editing. Left/Right arrows move the cursor once the box has a draft (on an empty box they switch swipes), and Home/End and Alt+Left/Right (word jump) move the cursor, and Up/Down move through a multi-line draft (with a one-line draft they scroll the chat as before).
 - `vim.normal_mode_keys` can be any sequence of two or more characters, for example `jk`. It is typed quickly in INSERT mode (within about 0.6 s) and the keys are removed again.
 - `vim.leader` is the `<leader>` key (default `space`; one character that is not a letter or digit, such as `,` or `\`, or the word `space`). See `<leader>y` below.
@@ -564,7 +562,7 @@ The row under the input box shows the totals on the right: the number of message
 | Key | Action |
 | --- | --- |
 | Shift+Enter (also Alt+Enter, Ctrl+J) | new line. Shift+Enter needs a terminal with the kitty keyboard protocol (kitty, WezTerm, foot, Ghostty, Alacritty, recent iTerm2); elsewhere use Alt+Enter or Ctrl+J |
-| Enter, or click **Send** | send. An empty box adds no message; it just asks the character to reply (like the web UI) |
+| Enter, or click **Send** | send. An empty box adds no message; it just asks the character to reply |
 | Esc | hide the menu above the input box when one is open (command, path or spelling menu); otherwise stop generating (partial reply is kept) / cancel an edit |
 | Ctrl+K, `/continue` or `/c` | continue the last reply (appends to it) |
 | Click in the input box | move the cursor there (also while editing a message) |
@@ -574,7 +572,7 @@ The row under the input box shows the totals on the right: the number of message
 | Ctrl+P | edit the character's very last reply (opens in the input box like a click on it; Enter saves, Esc cancels) |
 | Ctrl+O | edit your own very last message the same way |
 | ←/→ | previous / next swipe (→ past the last generates a new one). Only while the input box is empty and no message is being edited; with a draft in the box they move the text cursor. In a new chat, while the greeting is the only message, they switch between the card's alternate greetings instead (wrapping around). Older chats get the card's alternate greetings too |
-| PgUp/PgDn, mouse wheel, ↑/↓ | scroll the chat (↑/↓ move the cursor while editing). The wheel (or a swipe) over the text box scrolls only the box, anywhere else only the chat; typing or moving the cursor snaps the box back to the cursor |
+| PgUp/PgDn, mouse wheel, ↑/↓ | scroll the chat (↑/↓ move the cursor while editing). The wheel over the text box scrolls only the box, anywhere else only the chat; typing or moving the cursor snaps the box back to the cursor |
 | `/undo [n]` or `/u [n]` | delete the last message, or the last `n` (`/undo 3`); stops at the first message of a branched chat |
 | `/new` | new chat with this character (keeps the current one) |
 | `/newchat` or `/nc` | delete this chat and start a new one |
@@ -646,7 +644,7 @@ Everything tarpi needs is its own: cards in `~/.config/tarpi/characters/`, perso
 
 - Only text completion backends are supported, through a standalone connection (`/api`): llama.cpp, any OpenAI-compatible `/v1/completions` server (OpenRouter included) and Ollama's `/api/generate`; the chat completions endpoint is not used. No other server is contacted (apart from `tarpi serve` when you use `tarpi connect`, a SillyTavern server for `import-st`, and the link you give to `/import`).
 - `tarpi connect` syncs whole files: there is no merging inside a chat, no encryption (plain HTTP with a token), and an open chat is not reloaded when another device changes it.
-- No World Info/lorebooks, vector memory, group chats, or tool calling. The prompt is therefore close to, but not byte-identical to, the web UI's when you use those.
+- No World Info/lorebooks, vector memory, group chats, or tool calling.
 - Token counting for trimming history to the context window is an estimate (`chars_per_token`), not a real tokenizer. The totals in the status row are exact once the connection's tokenizer has answered (see Keys); without a tokenizer route (OpenRouter, OpenAI) they are the `usage` the backend reports with each reply (prompt plus reply), exact until the chat changes.
 - Unfinished prose is closed for you while a reply streams: an open `*narration`, `**bold` or `"speech` is shown with its closing marker added, and the model's own closer simply takes its place. Nothing is added for a lone trailing `*`, `2 * 3`, bullets, a `*` inside a word, or past a blank line. When a reply ends with markers still open they are closed in the saved text too (Ctrl+K takes them off again before continuing).
 - Markdown is minimal: `*narration*` is bold and a neutral grey, `**bold**` is bold and "quoted speech" is yellow. Styles end at a blank line, and a `*` that has no partner (`2 * 3`, a `* ` bullet, an unclosed one) is shown as a plain asterisk.

@@ -8,25 +8,26 @@
 ```
 
 **A chat-only terminal client for character cards.**
-One binary. No browser, no SillyTavern server, nothing to run except your model.
+One binary. No browser, no extra server: nothing to run except your model.
 
 ```
- tarpi 0.7.3  Sofia/Sofia01 • User • llamacpp@127.0.0.1:8080
+ tarpi 0.7.3  Tarpi/Tarpi01 • User • llamacpp@127.0.0.1:8080
 ────────────────────────────────────────────────────────────
- Sofia
- *She looks up from the map, rain still dripping off her coat.*
- "You're late."
+ Tarpi
+ *Spins around in the chair.* "Finally. I was about to start
+ narrating my own life."
 
  User
- Traffic. Did you find the pass?
+ *Drops a bag on the desk.* "Can you help me plan a week of dinners?"
 
- Sofia
- *A slow smile.* "Sit down. I found something better."
+ Tarpi
+ *Cracks knuckles.* "Fine. But you're eating a vegetable.
+ Monday: pasta. Yes, tomatoes count."
 ────────────────────────────────────────────────────────────
  ┌ INSERT ──────────────────────────────────────────────────┐
  │ _                                                        │
  └──────────────────────────────────────────────────────────┘
-                                          6 msgs · 1,284 tok
+                                          3 msgs · 412 tok
 ```
 <sub>illustrative</sub>
 
@@ -36,7 +37,7 @@ One binary. No browser, no SillyTavern server, nothing to run except your model.
 
 ```
  characters   card PNG / JSON (V1, V2, V3, Pygmalion); import from a file,
-              chub.ai, pygmalion.chat, any link, or a whole SillyTavern server
+              chub.ai, pygmalion.chat or any link
  backends     llama.cpp · OpenAI-compatible text completion · OpenRouter · Ollama
  prompt       built on your side: context + instruct templates (ChatML, Llama 3,
               Mistral, Gemma, ...), persona, system prompt, Author's Note
@@ -46,7 +47,9 @@ One binary. No browser, no SillyTavern server, nothing to run except your model.
  editing      vim modes, :s find/replace, optional offline spell checker
  sync         tarpi serve / tarpi connect: same chats on every device
  anywhere     desktop terminals, and Termux on a phone (touch)
- files        chats are SillyTavern-format .jsonl, so nothing is locked in
+ files        chats are plain .jsonl, one message per line: nothing is locked in
+ migrate      tarpi import-st copies a SillyTavern server's characters, personas
+              and system prompts
 ```
 
 ## install
@@ -76,10 +79,10 @@ $ tarpi
 
 ```
 tarpi                  # pick a character in a window, then chat
-tarpi sofia            # continue the latest chat with Sofia
-tarpi sofia 3          # open chat number 3 (or by name: Sofia03)
-tarpi sofia -n         # start a new chat
-tarpi -l               # list characters         (tarpi sofia -l: her chats)
+tarpi tarpi            # continue the latest chat with Tarpi
+tarpi tarpi 3          # open chat number 3 (or by name: Tarpi03)
+tarpi tarpi -n         # start a new chat
+tarpi -l               # list characters         (tarpi tarpi -l: its chats)
 tarpi import-st <url>  # copy personas, system prompts, characters from SillyTavern
 tarpi serve            # share everything with other devices    (s)
 tarpi connect [token]  # chat with the data of another machine  (c)
@@ -180,8 +183,7 @@ The full manual is [`docs/REFERENCE.md`](docs/REFERENCE.md). Good places to star
 ## limitations
 
 - Text completion backends only (see above); no tool calling.
-- No World Info / lorebooks, vector memory or group chats, so the prompt is close to,
-  but not byte-identical with, SillyTavern's.
+- No World Info / lorebooks, vector memory or group chats.
 - Token counts used to trim history are an estimate (`chars_per_token`) until the
   backend's tokenizer or a reply's `usage` gives an exact number.
 - Mouse capture is on; hold Shift to select text with the terminal's own selection.

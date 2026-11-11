@@ -573,7 +573,7 @@ const HELP: &[&str] = &[
     "Your unsent draft comes back afterwards.",
     "",
     "PgUp/PgDn, Up/Down, wheel  scroll chat (wheel on box: box)",
-    "Swipe sideways (slanted) / tap bar: other swipes",
+    "Tap the swipe bar: other swipes",
     "Ctrl+A/E/W/U     line start / end / delete word / clear",
     "",
     "Vim: qq (INSERT -> NORMAL), i a I A o O (-> INSERT)",

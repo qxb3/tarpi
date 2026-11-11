@@ -123,7 +123,7 @@ struct Cli {
     /// Leave it out to choose in the character window that opens.
     character: Option<String>,
 
-    /// Chat to open: its number (3) or name (Sofia03). Default: the latest.
+    /// Chat to open: its number (3) or name (Tarpi03). Default: the latest.
     #[arg(requires = "character", conflicts_with = "new")]
     chat: Option<String>,
 
