@@ -1468,9 +1468,28 @@ fn draw_card_modal(
 
     // One column of padding on the left, one spare column on the right so
     // that a cursor at the end of a full row still has a place.
-    let text_w = (body.width as usize).saturating_sub(2).max(1);
+    let live = m.input.command_live();
+    // The `/config` window (one YAML field) shows line numbers in a gutter at
+    // the left; the text, the cursor and clicks are all shifted by its width.
+    let numbered = m.fields.len() == 1 && m.fields[0].key == "config";
+    let base_w = (body.width as usize).saturating_sub(2).max(1);
+    let gutter = if numbered {
+        let n = live
+            .as_ref()
+            .and_then(|l| l.text.as_deref())
+            .unwrap_or(m.fields[0].text.as_str())
+            .split('\n')
+            .count()
+            .max(1);
+        let g = n.to_string().len().max(2) + 1;
+        // Too narrow for the numbers: leave them out.
+        if base_w >= g + 12 { g } else { 0 }
+    } else {
+        0
+    };
+    let text_w = (base_w - gutter).max(1);
     m.text_w = text_w;
-    m.text_x = body.x + 1;
+    m.text_x = body.x + 1 + gutter as u16;
     m.view_h = body.height as usize;
 
     let dim = Style::default().fg(Color::DarkGray);
@@ -1478,7 +1497,6 @@ fn draw_card_modal(
     // replacement has begun, the text as it would look afterwards. It only
     // ever concerns the focused field: that is all the editor holds, so the
     // other fields are never touched.
-    let live = m.input.command_live();
     // The name typed into the Name field counts as spelled right elsewhere.
     if let Some(sp) = spell.as_deref_mut() {
         let name = m.fields.iter().find(|x| x.key == "name").map(|x| x.text.clone());
@@ -1489,6 +1507,7 @@ fn draw_card_modal(
     let mut cursor_line = 0usize;
     let mut cursor_col = 0usize;
     let mut cursor_row0 = false;
+    let mut lineno = 0usize;
 
     for (i, fld) in m.fields.iter().enumerate() {
         let focused = i == m.focus;
@@ -1553,12 +1572,28 @@ fn draw_card_modal(
             } else {
                 Style::default().fg(Color::Gray)
             };
+            let vchars: Vec<char> = if gutter > 0 { view.chars().collect() } else { Vec::new() };
             for (r, row) in rows.iter().enumerate() {
                 if focused && r == crow {
                     cursor_line = lines.len();
                     cursor_col = ccol;
                     cursor_row0 = r == 0;
                 }
+                // Line number on the first row of each line; the rows a long
+                // line wraps onto get a blank gutter.
+                let num: Option<Span<'static>> = if gutter > 0 {
+                    let st = starts[r];
+                    let first = st == 0 || vchars.get(st - 1) == Some(&'\n');
+                    Some(if first {
+                        lineno += 1;
+                        Span::styled(format!("{:>1$} ", lineno, gutter - 1), dim)
+                    } else {
+                        Span::raw(" ".repeat(gutter))
+                    })
+                } else {
+                    None
+                };
+                let before = lines.len();
                 if focused || !misspelled.is_empty() {
                     lines.push(input_row(
                         row,
@@ -1571,6 +1606,9 @@ fn draw_card_modal(
                     ));
                 } else {
                     lines.push(Line::from(Span::styled(row.clone(), style)));
+                }
+                if let Some(n) = num {
+                    lines[before].spans.insert(0, n);
                 }
                 owners.push((i, Some(r)));
             }
