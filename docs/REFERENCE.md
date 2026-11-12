@@ -320,8 +320,8 @@ The Author's Note is a short text that belongs to one chat and is added to the p
 | --- | --- |
 | Author's note | the text; `{{char}}`, `{{user}}` and the other macros work. **Empty = nothing is sent**: there is no switch to turn the note off |
 | Position | *In the chat* (default): into the chat history. *After the card*: with the system prompt and character card, after them. *Before the card*: the same, before them |
-| Depth | only for *In the chat*: how many messages from the end, `0` is after the last one (default `4`). ←/→ step one, PgUp / PgDn ten, or type digits (0-999) |
-| Role | only for *In the chat*: whether the injected message is a `system` (default), `user` or `assistant` message |
+| Depth | used only with *In the chat* (shown always): the note goes before the last N messages, so `4` reads *before the last 4 messages*, `1` *before the last message* and `0` *after the last message* (default `4`). ←/→ step one, PgUp / PgDn ten, or type digits (0-999) |
+| Role | used only with *In the chat* (shown always): whether the injected message is a `system` (default), `user` or `assistant` message |
 | Interval | the note is sent with every N-th message of yours: `1` (default) every reply, `3` every third, `0` never (0-9999, same keys as Depth) |
 
 `before` and `after` fill `{{anchorBefore}}` and `{{anchorAfter}}` of the context template's story string; a template that has neither still gets the note, before or after the story string. The change applies from the next message on (the token count and `/prompt` change at once). The note is per chat: a new chat starts without one, and `/newchat` (`/nc`) does not carry it over.
@@ -361,9 +361,9 @@ While you edit the chat's first message, Ctrl+S (or the **Card save** button) wr
 
 ## Character window
 
-`/char` opens the whole card of the current character in a window, like `/help`: card file, name, description, personality, scenario, first message, example dialogue, system prompt, post-history instructions, every alternate greeting and the depth prompt. The text is the raw card text (`{{char}}` / `{{user}}` stay as they are).
+`/char` opens the whole card of the current character in a window, like `/help`: card file, name, description, personality, scenario, first message, example dialogue, system prompt, post-history instructions, every alternate greeting and the Character's note. The text is the raw card text (`{{char}}` / `{{user}}` stay as they are).
 
-All fields except the card file and the depth prompt (shown read-only) can be edited, including the name: renaming writes the new name to the card (the card file and your chats keep their names). The name is one line and can't be empty. The field with the cursor has a cyan title; the window scrolls to follow it. It opens with the cursor at the very top of the first editable field (Name), in NORMAL mode (with vim modes on; press `i` to type).
+All fields except the card file (shown read-only) can be edited, including the name: renaming writes the new name to the card (the card file and your chats keep their names). The name is one line and can't be empty. The field with the cursor has a cyan title; the window scrolls to follow it. The **Character's note** (SillyTavern's depth prompt, kept in the card as `extensions.depth_prompt`) is a text like the others, with two rows under it that are always shown, **Depth** (*before the last N messages*, `0` is after the last one) and **Role** (`system`, `user` or `assistant`), changed like the rows of `/note`: ←/→ (or `h` / `l`), digits for the depth, ↑/↓ to move, or a click on the left or right half. It is sent with every reply, independently of the chat's Author's Note, and an empty text sends nothing. It opens with the cursor at the very top of the first editable field (Name), in NORMAL mode (with vim modes on; press `i` to type).
 
 | Key / click | Action |
 | --- | --- |

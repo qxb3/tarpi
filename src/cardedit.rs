@@ -161,19 +161,33 @@ impl CardModal {
                 alt: true,
             });
         }
-        if let Some(d) = &ch.depth_prompt {
-            let t = format!("{}\n(depth {}, role {})", norm(&d.prompt), d.depth, d.role);
+        // The Character's Note (SillyTavern's depth prompt): its text, then
+        // rows for the depth and role (always shown).
+        let (cn_text, cn_depth, cn_role) = match &ch.depth_prompt {
+            Some(d) => (norm(&d.prompt), d.depth, d.role.clone()),
+            None => (String::new(), 4, "system".to_string()),
+        };
+        let cn = fields.len();
+        for (key, label, text) in [
+            ("depth_prompt", "Character's note", cn_text),
+            ("cn_depth", "Depth", cn_depth.min(note::MAX_DEPTH).to_string()),
+            ("cn_role", "Role", cn_role),
+        ] {
             fields.push(CardField {
-                key: "",
-                label: "Depth prompt".to_string(),
-                orig: t.clone(),
-                text: t,
-                editable: false,
+                key,
+                label: label.to_string(),
+                orig: text.clone(),
+                text,
+                editable: true,
                 alt: false,
             });
         }
 
         let mut m = CardModal::from_fields(fields, cfg);
+        m.picks = vec![
+            (cn + 1, Pick::Number(note::MAX_DEPTH)),
+            (cn + 2, Pick::Words(ROLES)),
+        ];
         m.title = "character card".to_string();
         // `/char` opens for reading and moving around: NORMAL mode (does
         // nothing when vim modes are off).
@@ -230,7 +244,7 @@ impl CardModal {
 
     /// The form of the chat's Author's Note: the text to type, then rows that
     /// say where and how often it is sent, changed with the arrow keys (depth
-    /// and role only show for the chat position).
+    /// and role are always shown; they only matter for the chat position).
     pub fn note(n: &Note, cfg: &Input) -> CardModal {
         let field = |key: &'static str, label: &str, text: &str| {
             let t = norm(text);
@@ -287,13 +301,6 @@ impl CardModal {
         self.picks.iter().find(|(f, _)| *f == i).map(|(_, p)| *p)
     }
 
-    /// Depth and role mean nothing unless the note goes into the chat.
-    pub fn hidden(&self, i: usize) -> bool {
-        matches!(self.fields.get(i).map(|f| f.key), Some("depth" | "role"))
-            && self.picks.iter().any(|(f, _)| self.fields[*f].key == "position")
-            && self.value("position") != "chat"
-    }
-
     /// The value of a pick row as the window shows it.
     pub fn shown(&self, i: usize) -> String {
         let text = self.fields[i].text.trim();
@@ -306,9 +313,9 @@ impl CardModal {
             Some(Pick::Number(_)) => {
                 let n: usize = text.parse().unwrap_or(0);
                 match (self.fields[i].key, n) {
-                    ("depth", 0) => "after the last message".to_string(),
-                    ("depth", 1) => "1 message from the end".to_string(),
-                    ("depth", n) => format!("{} messages from the end", n),
+                    (k, 0) if k.ends_with("depth") => "after the last message".to_string(),
+                    (k, 1) if k.ends_with("depth") => "before the last message".to_string(),
+                    (k, n) if k.ends_with("depth") => format!("before the last {} messages", n),
                     ("interval", 0) => "never".to_string(),
                     ("interval", 1) => "every message of yours".to_string(),
                     ("interval", n) => format!("every {} messages of yours", n),
@@ -381,6 +388,15 @@ impl CardModal {
         }
     }
 
+    /// The text of the field with this key, as typed.
+    fn value_raw(&self, key: &str) -> String {
+        self.fields
+            .iter()
+            .find(|f| f.key == key)
+            .map(|f| f.text.clone())
+            .unwrap_or_default()
+    }
+
     /// The text of the field with this key, trimmed.
     pub fn value(&self, key: &str) -> String {
         self.fields
@@ -433,6 +449,10 @@ impl CardModal {
         let mut rename: Option<String> = None;
         for f in &self.fields {
             if f.editable && !f.alt && f.text != f.orig {
+                // The Character's Note is written as one object (below).
+                if f.key == "depth_prompt" || f.key.starts_with("cn_") {
+                    continue;
+                }
                 if f.key == "name" {
                     // One line, never empty; written last (see below).
                     let n = f.text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -453,6 +473,19 @@ impl CardModal {
                 .collect();
             out.push(("alternate_greetings", Value::Array(arr)));
         }
+        let cn_changed = self
+            .fields
+            .iter()
+            .any(|f| (f.key == "depth_prompt" || f.key.starts_with("cn_")) && f.text != f.orig);
+        if cn_changed {
+            let text = self.value_raw("depth_prompt");
+            let depth: usize = self.value("cn_depth").parse().unwrap_or(4);
+            let role = self.value("cn_role");
+            out.push((
+                "depth_prompt",
+                serde_json::json!({ "prompt": text, "depth": depth, "role": role }),
+            ));
+        }
         // The name goes last: the other fields are written under the old one.
         if let Some(n) = rename {
             out.push(("name", Value::String(n)));
@@ -463,7 +496,8 @@ impl CardModal {
     /// A field was written to the card: it is the new baseline.
     pub fn mark_saved(&mut self, key: &str) {
         for f in self.fields.iter_mut() {
-            if f.editable && f.key == key {
+            let same = f.key == key || (key == "depth_prompt" && f.key.starts_with("cn_"));
+            if f.editable && same {
                 f.orig = f.text.clone();
             }
         }
@@ -507,7 +541,7 @@ impl CardModal {
     fn step_field(&self, dir: i32) -> Option<usize> {
         let mut i = self.focus as i32 + dir;
         while i >= 0 && (i as usize) < self.fields.len() {
-            if self.fields[i as usize].editable && !self.hidden(i as usize) {
+            if self.fields[i as usize].editable {
                 return Some(i as usize);
             }
             i += dir;
@@ -688,22 +722,6 @@ mod tests {
     }
 
     #[test]
-    fn depth_and_role_only_show_for_the_chat_position() {
-        let mut m = note_form();
-        assert!(!m.hidden(2) && !m.hidden(3));
-        m.focus_field(1, 0, true);
-        m.step_pick(1);
-        assert!(m.hidden(2) && m.hidden(3));
-        // The cursor skips the hidden rows.
-        m.move_row(1);
-        assert_eq!(m.fields[m.focus].key, "interval");
-        m.move_row(-1);
-        assert_eq!(m.fields[m.focus].key, "position");
-        m.step_pick(-1);
-        assert!(!m.hidden(2));
-    }
-
-    #[test]
     fn numbers_stop_at_their_ends_and_take_digits() {
         let mut m = note_form();
         m.focus_field(2, 0, true);
@@ -732,5 +750,54 @@ mod tests {
         m.step_pick(1);
         assert!(m.dirty());
         assert_eq!(m.value("role"), "user");
+    }
+
+    fn card_form(dp: Option<crate::character::DepthPrompt>) -> CardModal {
+        let ch = Character {
+            name: "Al".into(),
+            depth_prompt: dp,
+            ..Character::default()
+        };
+        CardModal::new(&ch, &Input::default())
+    }
+
+    fn at(m: &CardModal, key: &str) -> usize {
+        m.fields.iter().position(|f| f.key == key).unwrap()
+    }
+
+    #[test]
+    fn the_characters_note_rows_start_from_the_card_or_the_defaults() {
+        let m = card_form(None);
+        assert_eq!(m.value("cn_depth"), "4");
+        assert_eq!(m.value("cn_role"), "system");
+        assert!(m.changes().is_empty());
+        let dp = crate::character::DepthPrompt {
+            prompt: "Stay in character.".into(),
+            depth: 6,
+            role: "user".into(),
+        };
+        let m = card_form(Some(dp));
+        assert_eq!(m.value("cn_depth"), "6");
+        assert_eq!(m.shown(at(&m, "cn_depth")), "before the last 6 messages");
+        assert_eq!(m.shown(at(&m, "cn_role")), "user");
+        assert!(m.changes().is_empty());
+    }
+
+    #[test]
+    fn the_characters_note_is_saved_as_one_object() {
+        let mut m = card_form(None);
+        let t = at(&m, "depth_prompt");
+        m.fields[t].text = "Keep it tense.".into();
+        m.focus_field(at(&m, "cn_role"), 0, true);
+        m.step_pick(1);
+        let ch = m.changes();
+        assert_eq!(ch.len(), 1);
+        assert_eq!(ch[0].0, "depth_prompt");
+        assert_eq!(
+            ch[0].1,
+            serde_json::json!({"prompt": "Keep it tense.", "depth": 4, "role": "user"})
+        );
+        m.mark_saved("depth_prompt");
+        assert!(!m.dirty());
     }
 }

@@ -3334,6 +3334,22 @@ impl App {
             "mes_example" => ch.mes_example = text,
             "system_prompt" => ch.system_prompt = text,
             "post_history_instructions" => ch.post_history_instructions = text,
+            "depth_prompt" => {
+                let prompt = value.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+                ch.depth_prompt = if prompt.trim().is_empty() {
+                    None
+                } else {
+                    Some(crate::character::DepthPrompt {
+                        prompt: prompt.to_string(),
+                        depth: value.get("depth").and_then(|v| v.as_u64()).unwrap_or(4) as usize,
+                        role: value
+                            .get("role")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("system")
+                            .to_string(),
+                    })
+                };
+            }
             "alternate_greetings" => {
                 ch.alternate_greetings = value
                     .as_array()

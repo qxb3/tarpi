@@ -1517,9 +1517,6 @@ fn draw_card_modal(
     let mut lineno = 0usize;
 
     for (i, fld) in m.fields.iter().enumerate() {
-        if m.hidden(i) {
-            continue;
-        }
         let focused = i == m.focus;
         let head_style = if focused {
             Style::default()

@@ -443,7 +443,18 @@ pub fn set_field(avatar: &str, field: &str, value: &Value) -> Result<()> {
     let (path, png) = path_for(avatar)?;
     let (raw, had_v3, bytes) = read_card(&path, png)?;
     let mut card = normalize(&raw);
-    if let Some(data) = card.get_mut("data").and_then(|d| d.as_object_mut()) {
+    if field == "depth_prompt" {
+        // The Character's Note lives in `data.extensions.depth_prompt`.
+        if let Some(data) = card.get_mut("data").and_then(|d| d.as_object_mut()) {
+            let ext = data
+                .entry("extensions".to_string())
+                .or_insert_with(|| serde_json::json!({}));
+            if !ext.is_object() {
+                *ext = serde_json::json!({});
+            }
+            ext["depth_prompt"] = value.clone();
+        }
+    } else if let Some(data) = card.get_mut("data").and_then(|d| d.as_object_mut()) {
         data.insert(field.to_string(), value.clone());
     }
     if TOP_FIELDS.contains(&field) {
