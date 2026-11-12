@@ -807,17 +807,9 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
         .iter()
         .filter(|m| !chat::is_system(m) && chat::is_user(m))
         .count();
-    // Turned off in the config (`author_note: false`): no note, and a persona
-    // meant for the note goes into the prompt instead.
-    let note_on = jbool(a.settings, "author_note", true);
-    let persona_position = if !note_on
-        && matches!(a.persona_position, crate::posedit::TOP_NOTE | crate::posedit::BOTTOM_NOTE)
-    {
-        0
-    } else {
-        a.persona_position
-    };
-    let note_text = if note_on && a.note.due(user_msgs) {
+    // No text, nothing sent from the note itself.
+    let persona_position = a.persona_position;
+    let note_text = if a.note.due(user_msgs) {
         subst(&a.note.text, &ctx).trim().to_string()
     } else {
         String::new()

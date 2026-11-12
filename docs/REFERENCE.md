@@ -73,7 +73,7 @@ Everything else happens inside the chat:
 | `/persona` | opens a window to choose who you are in the chat; `+ new persona` creates one, `e` edits, `p` sets where its description goes into the prompt, `d` deletes (see Personas) |
 | `/system` | opens a window to choose the system prompt; `+ new system prompt` creates one, `e` edits, `d` deletes (see *System prompts*) |
 | `/prompt` | opens a window with the whole prompt the next reply would be sent with, as plain text (see *Prompt window*) |
-| `/note` or `/an` | opens this chat's Author's Note in a form: the text and where, how deep and how often it is sent (see *Author's Note*) |
+| `/note` or `/an` | opens this chat's Author's Note: the text, and rows to pick where and how often it is sent (see *Author's Note*) |
 | `/chars` | opens a window with every character (★ = favourite) to switch to someone else, or press `d` on one to delete it with all its chats (asks `y`; see *Deleting characters*) |
 | `/import <card>` | adds a character: a card `.png` / `.json` file, a chub.ai or pygmalion.chat link, a direct link to a card file, or the card's JSON text (see *Importing characters*) |
 | `/api` | open the API settings (server address and every model setting of a llama.cpp or OpenAI-compatible connection) right here; when you quit them (`q` / Esc) you are back in this same chat, and the very next reply uses what you saved |
@@ -314,17 +314,17 @@ Long lines are wrapped to the window; tabs are shown as four spaces. The window 
 
 The Author's Note is a short text that belongs to one chat and is added to the prompt of the replies, to steer the story (`Keep the pace slow.`, `[Style: terse, present tense]`). It is kept in the chat file's metadata (`note_prompt`, `note_position`, `note_depth`, `note_role`, `note_interval`).
 
-`/note` (or `/an`) opens a form with five fields; Ctrl+S saves, Esc cancels (the fields work like those of `/char`, including the vim modes and the spell checker). The settings are typed as words and checked when you save:
+`/note` (or `/an`) opens a window with the note's text and four rows under it. Ctrl+S saves, Esc cancels (the text works like the fields of `/char`, including the vim modes and the spell checker). The rows are never typed: with the cursor on one, ←/→ (or `h` / `l`) change it, ↑/↓ (or `j` / `k`, Tab) move between rows, and a click on the left or right half of a row steps back or on.
 
-| Field | Values |
+| Row | Choices |
 | --- | --- |
-| Author's note | the text; `{{char}}`, `{{user}}` and the other macros work. Empty = nothing is sent |
-| Position | `chat` (default): into the chat history, `depth` messages from the end. `after`: with the system prompt and character card, after them. `before`: the same, before them |
-| Depth | only for `chat`: messages from the end, `0` is after the last message (default `4`) |
-| Role | only for `chat`: whether the injected message is a `system` (default), `user` or `assistant` message |
-| Interval | the note is sent with every N-th message of yours: `1` (default) every reply, `3` every third, `0` never |
+| Author's note | the text; `{{char}}`, `{{user}}` and the other macros work. **Empty = nothing is sent**: there is no switch to turn the note off |
+| Position | *In the chat* (default): into the chat history. *After the card*: with the system prompt and character card, after them. *Before the card*: the same, before them |
+| Depth | only for *In the chat*: how many messages from the end, `0` is after the last one (default `4`). ←/→ step one, PgUp / PgDn ten, or type digits (0-999) |
+| Role | only for *In the chat*: whether the injected message is a `system` (default), `user` or `assistant` message |
+| Interval | the note is sent with every N-th message of yours: `1` (default) every reply, `3` every third, `0` never (0-9999, same keys as Depth) |
 
-`before` and `after` fill `{{anchorBefore}}` and `{{anchorAfter}}` of the context template's story string; a template that has neither still gets the note, before or after the story string. The change applies from the next message on (the token count and `/prompt` change at once). The note is per chat: a new chat starts without one, and `/newchat` does not carry it over.
+`before` and `after` fill `{{anchorBefore}}` and `{{anchorAfter}}` of the context template's story string; a template that has neither still gets the note, before or after the story string. The change applies from the next message on (the token count and `/prompt` change at once). The note is per chat: a new chat starts without one, and `/newchat` (`/nc`) does not carry it over.
 
 A persona whose position is **Top** or **Bottom of the Author's Note** (see *Personas*) is added above or below the note's text, on its own line, and travels with the note: the note's Position, Depth and Role decide where it goes. It is sent even when the note has no text, and also when the Interval says the text is skipped for this reply.
 
@@ -516,9 +516,6 @@ Settings live in `~/.config/tarpi/config.yaml`. The first run creates it with th
 # The menu of /commands above the input box (see "Command menu")
 # command_menu: true
 
-# The Author's Note (see "Author's Note"); false turns it off
-# author_note: true
-
 # Spell checking in the input box (off by default)
 # spellcheck: false
 
@@ -543,7 +540,6 @@ vim:
 ```
 
 - `serve_url` is the address `tarpi connect` uses (`host:port`). `serve_trust_all: true` (read by `tarpi serve` only) means no token is needed (default `false`: the token is required); `tarpi connect` asks the server and adapts. See *Sharing between devices*.
-- `author_note: true` (default) keeps the Author's Note. `author_note: false` turns it off: `/note` is no longer offered in the menu and says it is off when typed, no note is added to any prompt (the notes already saved in your chat files stay there, untouched, and come back if you turn it on again), and a persona whose position is *Top / Bottom of the Author's Note* is sent in the prompt like the default position instead.
 - `command_menu: true` (default) opens the `/command` menu above the input box while you type a slash (see *Command menu*). `command_menu: false` turns it off: nothing opens, Tab / Up / Down / Esc keep their old meaning (Up / Down scroll the chat), and Enter runs exactly what you typed. The command history (Up on a bare `/`) still works.
 - `spellcheck: true` turns on offline spell checking in the chat input box and in the `/char` and persona windows (default `false`; the Name fields are not checked). Misspelled words get a red underline (the red of the terminal's theme, asked from the terminal at start-up like the prose colours; the text keeps its colour); words of one or two letters are checked too (`ho` and `x` are marked, `a`, `I`, `of`, `up` are not). The word you are still typing is not marked until the cursor leaves it. The word list is English and built into the program, so no internet or system dictionary is needed. Extra words go in `~/.config/tarpi/dictionary.txt` (one per line, `#` starts a comment); the character's name and your persona's name are always accepted. Details: `src/spell.rs`.
 - With spell checking on, press **Tab** with the cursor in a marked word to open a **suggestion menu**: above the input box in the chat (like the command menu), and at the text cursor in the `/char` and persona windows. Misspelled words are only underlined (in the theme's red); the menu never opens by itself. It lists up to six spellings, best first (a swapped pair such as `teh` -> `the`, then a missing letter such as `helo` -> `hello`, then other close words), and keeps a capital first letter. It works in INSERT and NORMAL mode. Tab / Down go to the next entry, Shift+Tab / Up to the previous one, Enter puts the highlighted one in, Esc or Ctrl+C hides the menu (and does nothing else), and a click or tap on an entry puts it in; any other key closes it. The Name fields of the windows are not checked.

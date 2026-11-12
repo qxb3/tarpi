@@ -1412,7 +1412,8 @@ fn draw_card_modal(
     };
     // Bottom edge: the vim mode (when vim modes are on) and the main keys.
     let mut bottom: Vec<Span<'static>> = Vec::new();
-    if m.input.vim_enabled() {
+    let on_pick = m.pick_of(m.focus).is_some();
+    if m.input.vim_enabled() && !on_pick {
         let (tag, color) = match m.input.mode {
             Mode::Insert => (" INSERT ", Color::Green),
             Mode::Normal => (" NORMAL ", Color::Magenta),
@@ -1433,7 +1434,13 @@ fn draw_card_modal(
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    bottom.push(Span::raw(" Ctrl+S save \u{b7} :wq save & close \u{b7} Esc cancel "));
+    if on_pick {
+        bottom.push(Span::raw(
+            " \u{2190}/\u{2192} change \u{b7} \u{2191}/\u{2193} move \u{b7} Ctrl+S save \u{b7} Esc cancel ",
+        ));
+    } else {
+        bottom.push(Span::raw(" Ctrl+S save \u{b7} :wq save & close \u{b7} Esc cancel "));
+    }
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
@@ -1510,6 +1517,9 @@ fn draw_card_modal(
     let mut lineno = 0usize;
 
     for (i, fld) in m.fields.iter().enumerate() {
+        if m.hidden(i) {
+            continue;
+        }
         let focused = i == m.focus;
         let head_style = if focused {
             Style::default()
@@ -1521,6 +1531,25 @@ fn draw_card_modal(
         } else {
             dim.add_modifier(Modifier::BOLD)
         };
+        // A row of choices (`/note`): the label and the value between arrows.
+        if m.pick_of(i).is_some() {
+            if focused {
+                cursor_line = lines.len();
+                cursor_row0 = false;
+            }
+            let value_style = if focused {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {:<8} ", fld.label), head_style),
+                Span::raw("  "),
+                Span::styled(format!("\u{2039} {} \u{203a}", m.shown(i)), value_style),
+            ]));
+            owners.push((i, Some(0)));
+            continue;
+        }
         let mut head = vec![Span::styled(format!(" {} ", fld.label), head_style)];
         if !fld.editable {
             head.push(Span::styled("  (read only)".to_string(), dim));
@@ -1546,7 +1575,6 @@ fn draw_card_modal(
         // in the focused field (INSERT mode) is left alone.
         let spell_it = fld.editable
             && fld.key != "name"
-            && !matches!(fld.key, "position" | "depth" | "role" | "interval")
             && preview.is_none() && !(focused && live.is_some());
         let misspelled: Vec<(usize, usize)> = match spell.as_deref_mut() {
             Some(sp) if spell_it => {
@@ -1694,7 +1722,7 @@ fn draw_card_modal(
     m.cursor_xy = None;
     if let Some(pos) = cmd_cursor {
         f.set_cursor_position(pos);
-    } else if cursor_line >= m.scroll && cursor_line < end {
+    } else if !on_pick && cursor_line >= m.scroll && cursor_line < end {
         let pos = (
             m.text_x + cursor_col as u16,
             body.y + (cursor_line - m.scroll) as u16,

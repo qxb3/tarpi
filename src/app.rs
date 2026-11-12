@@ -32,7 +32,7 @@ use crossterm::event::{
 };
 use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
@@ -300,8 +300,6 @@ pub struct App {
     hist_draft: String,
     /// Config `command_menu`: the `/command` menu above the input box.
     pub command_menu: bool,
-    /// Config `author_note`: the Author's Note is on (default) or off.
-    author_note: bool,
     /// Config `spellcheck`: the spell checker for the input box (`None` = off).
     pub spell: Option<crate::spell::Checker>,
     pub spell_menu: Option<SpellMenu>,
@@ -575,7 +573,6 @@ impl App {
             hist_pos: None,
             hist_draft: String::new(),
             command_menu: true,
-            author_note: true,
             spell: None,
             spell_menu: None,
             spell_area: Rect::default(),
@@ -1530,20 +1527,9 @@ impl App {
     /// and holds one `/word` and nothing else. The entries are the commands
     /// that word starts; then the highlighted entry (the top one until Tab /
     /// the arrows move it) and whether it has been filled into the box yet.
-    /// The commands the menu offers for `word` (`/note` only with the Author's
-    /// Note on).
+    /// The commands the menu offers for `word`.
     fn menu_commands(&self, word: &str) -> Vec<&'static cmds::Cmd> {
-        let mut list = cmds::matches(word);
-        if !self.author_note {
-            list.retain(|c| c.name != "note");
-        }
-        list
-    }
-
-    /// Turn the Author's Note on or off (config `author_note`).
-    pub fn set_author_note(&mut self, on: bool) {
-        self.author_note = on;
-        self.apply_settings(config::base_settings());
+        cmds::matches(word)
     }
 
     pub fn completion(&self) -> Option<(Vec<&'static cmds::Cmd>, usize, bool)> {
@@ -2008,15 +1994,7 @@ impl App {
                 }
                 "note" | "an" | "authors-note" | "author" => {
                     self.input.clear();
-                    if self.author_note {
-                        self.open_note().await;
-                    } else {
-                        self.set_status(
-                            "the Author's Note is turned off (author_note: false in config.yaml)"
-                                .to_string(),
-                            true,
-                        );
-                    }
+                    self.open_note().await;
                 }
                 "config" | "settings" => {
                     self.input.clear();
@@ -3169,7 +3147,6 @@ impl App {
         self.input.set_autopair(cfg.autopair.unwrap_or(true));
         self.command_menu = cfg.command_menu.unwrap_or(true);
         self.comp = Comp::default();
-        self.set_author_note(cfg.author_note.unwrap_or(true));
         // The word list is only loaded when spell checking is switched on.
         if cfg.spellcheck.unwrap_or(false) {
             if self.spell.is_none() {
@@ -3189,9 +3166,8 @@ impl App {
         self.settings_ver += 1;
     }
 
-    /// Ctrl+S in the Author's Note form: check the settings, keep the note in
-    /// the chat file and use it from the next reply on. On a mistake the form
-    /// stays open and says what to type.
+    /// Ctrl+S in the Author's Note form: keep the note in the chat file and
+    /// use it from the next reply on.
     async fn save_note_form(&mut self, close: bool) {
         let (text, position, depth, role, interval) = match self.card_modal.as_mut() {
             Some(m) => {
@@ -3206,31 +3182,13 @@ impl App {
             }
             None => return,
         };
-        let Some(position) = note::parse_position(&position) else {
-            self.card_note("position: type before, after or chat", true);
-            return;
-        };
-        let Some(depth) = note::parse_number(&depth, note::MAX_DEPTH) else {
-            self.card_note(
-                format!("depth: type a whole number from 0 to {}", note::MAX_DEPTH),
-                true,
-            );
-            return;
-        };
-        let Some(role) = note::parse_role(&role) else {
-            self.card_note("role: type system, user or assistant", true);
-            return;
-        };
-        let Some(interval) = note::parse_number(&interval, note::MAX_INTERVAL) else {
-            self.card_note(
-                format!(
-                    "interval: type a whole number from 0 to {} (0 = never)",
-                    note::MAX_INTERVAL
-                ),
-                true,
-            );
-            return;
-        };
+        // The rows only hold values they can step to, so these always parse;
+        // the defaults are for a field that somehow does not.
+        let d = Note::default();
+        let position = note::parse_position(&position).unwrap_or(d.position);
+        let depth = note::parse_number(&depth, note::MAX_DEPTH).unwrap_or(d.depth);
+        let role = note::parse_role(&role).unwrap_or(d.role);
+        let interval = note::parse_number(&interval, note::MAX_INTERVAL).unwrap_or(d.interval);
         let n = Note {
             text,
             position,
@@ -3242,10 +3200,10 @@ impl App {
         self.save().await;
         // The prompt (and its token count) is built from the note too.
         self.settings_ver += 1;
-        let msg = if n.text.is_empty() {
+        let msg = if n.text.trim().is_empty() {
             "author's note saved (no text: nothing is sent)"
         } else if n.interval == 0 {
-            "author's note saved (interval 0: it is never sent)"
+            "author's note saved (interval: never)"
         } else {
             "author's note saved"
         };
@@ -3422,6 +3380,11 @@ impl App {
                 _ => {}
             }
         }
+        // A row of choices (`/note`): arrows change it, nothing is typed.
+        if self.card_modal.as_ref().map_or(false, |c| c.pick_of(c.focus).is_some()) {
+            self.on_pick_key(k).await;
+            return;
+        }
         // Tab opens the spelling menu on a misspelled word.
         if self.spell_key(&k) {
             return;
@@ -3568,6 +3531,55 @@ impl App {
                 self.set_status(msg, true);
             }
             _ => {}
+        }
+    }
+
+    /// Keys while the cursor is on a row of choices in the `/note` window:
+    /// left / right (or `h` / `l`) change it, digits type a number, up / down
+    /// (or `j` / `k`, Tab) move between rows, Esc cancels like in a text field.
+    async fn on_pick_key(&mut self, k: KeyEvent) {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = k.modifiers.contains(KeyModifiers::ALT);
+        let big = if k.modifiers.contains(KeyModifiers::SHIFT) { 10 } else { 1 };
+        let mut cancel = false;
+        {
+            let Some(c) = self.card_modal.as_mut() else {
+                return;
+            };
+            c.note.clear();
+            c.note_err = false;
+            let was_armed = std::mem::replace(&mut c.discard_armed, false);
+            c.follow = true;
+            match k.code {
+                KeyCode::Esc => {
+                    if c.dirty() && !was_armed {
+                        c.discard_armed = true;
+                        c.note = "unsaved changes: Esc again discards, Ctrl+S saves".to_string();
+                        c.note_err = true;
+                    } else {
+                        cancel = true;
+                    }
+                }
+                KeyCode::Left => c.step_pick(-big),
+                KeyCode::Right => c.step_pick(big),
+                KeyCode::Char('h') if !ctrl && !alt => c.step_pick(-1),
+                KeyCode::Char('l') if !ctrl && !alt => c.step_pick(1),
+                KeyCode::Char('H') if !ctrl && !alt => c.step_pick(-10),
+                KeyCode::Char('L') if !ctrl && !alt => c.step_pick(10),
+                KeyCode::PageUp => c.step_pick(-10),
+                KeyCode::PageDown => c.step_pick(10),
+                KeyCode::Up | KeyCode::BackTab => c.move_row(-1),
+                KeyCode::Down | KeyCode::Tab | KeyCode::Enter => c.move_row(1),
+                KeyCode::Char('k') if !ctrl && !alt => c.move_row(-1),
+                KeyCode::Char('j') if !ctrl && !alt => c.move_row(1),
+                KeyCode::Char(ch) if ch.is_ascii_digit() && !ctrl && !alt => c.pick_digit(ch),
+                KeyCode::Backspace => c.pick_backspace(),
+                _ => {}
+            }
+            c.sync();
+        }
+        if cancel {
+            self.cancel_card_modal().await;
         }
     }
 
@@ -3759,7 +3771,7 @@ impl App {
         // In the windows the Name fields are not checked.
         if let Some(c) = self.card_modal.as_ref() {
             let f = c.fields.get(c.focus)?;
-            if !f.editable || f.key == "name" {
+            if !f.editable || f.key == "name" || c.pick_of(c.focus).is_some() {
                 return None;
             }
         }
@@ -4256,7 +4268,6 @@ impl App {
         persona::normalize(&mut settings);
         sysprompt::normalize(&mut settings);
         formatting::normalize(&mut settings);
-        settings["author_note"] = json!(self.author_note);
         if let Some(c) = &self.conn {
             conn::overlay(&mut settings, c);
         }

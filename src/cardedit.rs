@@ -30,6 +30,31 @@ pub struct Hit {
     pub row: Option<usize>,
 }
 
+/// A row of the form that is changed with the arrow keys instead of typed:
+/// one of a few words, or a whole number up to the limit. The field's text
+/// holds the value (the word's key, or the digits), so saving, `dirty` and
+/// `value` work as they do for typed fields.
+#[derive(Clone, Copy)]
+pub enum Pick {
+    /// `(key, shown)` pairs; the key is what is stored.
+    Words(&'static [(&'static str, &'static str)]),
+    /// `0..=max`.
+    Number(usize),
+}
+
+/// Where the Author's Note goes (`note::position_word` keys).
+pub const POSITIONS: &[(&str, &str)] = &[
+    ("chat", "In the chat"),
+    ("after", "After the card"),
+    ("before", "Before the card"),
+];
+/// Who the Author's Note says it is from (`note::role_word` keys).
+pub const ROLES: &[(&str, &str)] = &[
+    ("system", "system"),
+    ("user", "user"),
+    ("assistant", "assistant"),
+];
+
 pub struct CardModal {
     /// Window title (`character card`, `persona`).
     pub title: String,
@@ -61,6 +86,11 @@ pub struct CardModal {
     pub cancel_btn: Rect,
     pub save_btn: Rect,
     pub hits: Vec<Hit>,
+    /// Rows changed with the arrow keys (field index, kind); empty in the
+    /// forms that are all text.
+    picks: Vec<(usize, Pick)>,
+    /// The next digit typed replaces a number row's value instead of adding.
+    fresh: bool,
 }
 
 fn norm(s: &str) -> String {
@@ -198,9 +228,9 @@ impl CardModal {
         m
     }
 
-    /// The form of the chat's Author's Note: the note itself and the settings
-    /// that say where and how often it is sent, all typed as text (the words
-    /// each one takes are in its title; `App::save_note_form` checks them).
+    /// The form of the chat's Author's Note: the text to type, then rows that
+    /// say where and how often it is sent, changed with the arrow keys (depth
+    /// and role only show for the chat position).
     pub fn note(n: &Note, cfg: &Input) -> CardModal {
         let field = |key: &'static str, label: &str, text: &str| {
             let t = norm(text);
@@ -215,28 +245,18 @@ impl CardModal {
         };
         let fields = vec![
             field("note", "Author's note", &n.text),
-            field(
-                "position",
-                "Position: before, after or chat",
-                note::position_word(n.position),
-            ),
-            field(
-                "depth",
-                "Depth: messages from the end (chat position only)",
-                &n.depth.to_string(),
-            ),
-            field(
-                "role",
-                "Role: system, user or assistant (chat position only)",
-                note::role_word(n.role),
-            ),
-            field(
-                "interval",
-                "Interval: sent with every N-th message of yours (0 = never)",
-                &n.interval.to_string(),
-            ),
+            field("position", "Position", note::position_word(n.position)),
+            field("depth", "Depth", &n.depth.to_string()),
+            field("role", "Role", note::role_word(n.role)),
+            field("interval", "Interval", &n.interval.to_string()),
         ];
         let mut m = CardModal::from_fields(fields, cfg);
+        m.picks = vec![
+            (1, Pick::Words(POSITIONS)),
+            (2, Pick::Number(note::MAX_DEPTH)),
+            (3, Pick::Words(ROLES)),
+            (4, Pick::Number(note::MAX_INTERVAL)),
+        ];
         m.title = "author's note".to_string();
         m
     }
@@ -260,6 +280,105 @@ impl CardModal {
         m.input.set_autopair(false);
         m.input.enter_normal();
         m
+    }
+
+    /// How the field at `i` is changed, when it is a row of arrow-key choices.
+    pub fn pick_of(&self, i: usize) -> Option<Pick> {
+        self.picks.iter().find(|(f, _)| *f == i).map(|(_, p)| *p)
+    }
+
+    /// Depth and role mean nothing unless the note goes into the chat.
+    pub fn hidden(&self, i: usize) -> bool {
+        matches!(self.fields.get(i).map(|f| f.key), Some("depth" | "role"))
+            && self.picks.iter().any(|(f, _)| self.fields[*f].key == "position")
+            && self.value("position") != "chat"
+    }
+
+    /// The value of a pick row as the window shows it.
+    pub fn shown(&self, i: usize) -> String {
+        let text = self.fields[i].text.trim();
+        match self.pick_of(i) {
+            Some(Pick::Words(w)) => w
+                .iter()
+                .find(|(k, _)| *k == text)
+                .map(|(_, s)| s.to_string())
+                .unwrap_or_else(|| w[0].1.to_string()),
+            Some(Pick::Number(_)) => {
+                let n: usize = text.parse().unwrap_or(0);
+                match (self.fields[i].key, n) {
+                    ("depth", 0) => "after the last message".to_string(),
+                    ("depth", 1) => "1 message from the end".to_string(),
+                    ("depth", n) => format!("{} messages from the end", n),
+                    ("interval", 0) => "never".to_string(),
+                    ("interval", 1) => "every message of yours".to_string(),
+                    ("interval", n) => format!("every {} messages of yours", n),
+                    (_, n) => n.to_string(),
+                }
+            }
+            None => text.to_string(),
+        }
+    }
+
+    fn set_pick_text(&mut self, i: usize, t: String) {
+        self.fields[i].text = t.clone();
+        if i == self.focus {
+            self.input.text = t;
+            self.input.cursor = 0;
+        }
+    }
+
+    /// Change the focused pick row by `d` steps (words wrap around, numbers
+    /// stop at their ends).
+    pub fn step_pick(&mut self, d: i64) {
+        let i = self.focus;
+        match self.pick_of(i) {
+            Some(Pick::Words(w)) => {
+                let now = w
+                    .iter()
+                    .position(|(k, _)| *k == self.fields[i].text.trim())
+                    .unwrap_or(0) as i64;
+                let next = (now + d.signum()).rem_euclid(w.len() as i64) as usize;
+                self.set_pick_text(i, w[next].0.to_string());
+            }
+            Some(Pick::Number(max)) => {
+                let now: i64 = self.fields[i].text.trim().parse().unwrap_or(0);
+                let n = (now + d).clamp(0, max as i64);
+                self.set_pick_text(i, n.to_string());
+                self.fresh = true;
+            }
+            None => {}
+        }
+    }
+
+    /// A digit typed on a number row: the first one replaces the value.
+    pub fn pick_digit(&mut self, c: char) {
+        let i = self.focus;
+        let (Some(Pick::Number(max)), Some(n)) = (self.pick_of(i), c.to_digit(10)) else {
+            return;
+        };
+        let now: usize = self.fields[i].text.trim().parse().unwrap_or(0);
+        let n = n as usize;
+        let next = if self.fresh { n } else { now * 10 + n };
+        self.fresh = false;
+        self.set_pick_text(i, (if next > max { n } else { next }).to_string());
+    }
+
+    /// Backspace on a number row drops its last digit.
+    pub fn pick_backspace(&mut self) {
+        let i = self.focus;
+        if let Some(Pick::Number(_)) = self.pick_of(i) {
+            let now: usize = self.fields[i].text.trim().parse().unwrap_or(0);
+            self.set_pick_text(i, (now / 10).to_string());
+            self.fresh = false;
+        }
+    }
+
+    /// Move the cursor to the next / previous row of the form.
+    pub fn move_row(&mut self, dir: i32) {
+        if let Some(p) = self.step_field(dir) {
+            // Going up into text, land at its end.
+            self.focus_field(p, if dir < 0 { usize::MAX } else { 0 }, true);
+        }
     }
 
     /// The text of the field with this key, trimmed.
@@ -297,6 +416,8 @@ impl CardModal {
             cancel_btn: Rect::default(),
             save_btn: Rect::default(),
             hits: Vec::new(),
+            picks: Vec::new(),
+            fresh: true,
         }
     }
 
@@ -367,6 +488,7 @@ impl CardModal {
             *slot = left;
         }
         self.focus = i;
+        self.fresh = true;
         self.input.text = self.fields[i].text.clone();
         self.input.cursor = cursor.min(self.input.len_chars());
         self.input.reset_vim();
@@ -385,7 +507,7 @@ impl CardModal {
     fn step_field(&self, dir: i32) -> Option<usize> {
         let mut i = self.focus as i32 + dir;
         while i >= 0 && (i as usize) < self.fields.len() {
-            if self.fields[i as usize].editable {
+            if self.fields[i as usize].editable && !self.hidden(i as usize) {
                 return Some(i as usize);
             }
             i += dir;
@@ -395,6 +517,9 @@ impl CardModal {
 
     /// Pasted text goes in at the cursor.
     pub fn paste(&mut self, s: &str) {
+        if self.pick_of(self.focus).is_some() {
+            return;
+        }
         self.input.paste_text(&norm(s));
         self.sync();
     }
@@ -489,6 +614,16 @@ impl CardModal {
         if !self.fields[field].editable {
             return;
         }
+        if self.pick_of(field).is_some() {
+            // A row of choices: the left half steps back, the right half on.
+            if field != self.focus {
+                self.focus_field(field, 0, true);
+            }
+            let half = self.text_x + (self.text_w / 2) as u16;
+            self.step_pick(if x < half { -1 } else { 1 });
+            self.follow = true;
+            return;
+        }
         let idx = match row {
             Some(r) => {
                 let col = x.saturating_sub(self.text_x) as usize;
@@ -532,5 +667,70 @@ mod tests {
         m.input.enter_normal();
         m.input.normal_key('u', 40);
         assert_eq!(m.input.text, "Al");
+    }
+
+    fn note_form() -> CardModal {
+        CardModal::note(&Note::default(), &Input::default())
+    }
+
+    #[test]
+    fn note_rows_step_through_their_choices() {
+        let mut m = note_form();
+        m.focus_field(1, 0, true);
+        m.step_pick(1);
+        assert_eq!(m.value("position"), "after");
+        m.step_pick(1);
+        m.step_pick(1);
+        assert_eq!(m.value("position"), "chat");
+        m.step_pick(-1);
+        assert_eq!(m.value("position"), "before");
+        assert_eq!(m.shown(1), "Before the card");
+    }
+
+    #[test]
+    fn depth_and_role_only_show_for_the_chat_position() {
+        let mut m = note_form();
+        assert!(!m.hidden(2) && !m.hidden(3));
+        m.focus_field(1, 0, true);
+        m.step_pick(1);
+        assert!(m.hidden(2) && m.hidden(3));
+        // The cursor skips the hidden rows.
+        m.move_row(1);
+        assert_eq!(m.fields[m.focus].key, "interval");
+        m.move_row(-1);
+        assert_eq!(m.fields[m.focus].key, "position");
+        m.step_pick(-1);
+        assert!(!m.hidden(2));
+    }
+
+    #[test]
+    fn numbers_stop_at_their_ends_and_take_digits() {
+        let mut m = note_form();
+        m.focus_field(2, 0, true);
+        assert_eq!(m.value("depth"), "4");
+        m.step_pick(-10);
+        assert_eq!(m.value("depth"), "0");
+        assert_eq!(m.shown(2), "after the last message");
+        m.pick_digit('1');
+        m.pick_digit('2');
+        assert_eq!(m.value("depth"), "12");
+        m.pick_backspace();
+        assert_eq!(m.value("depth"), "1");
+        m.focus_field(4, 0, true);
+        m.step_pick(-1);
+        assert_eq!(m.value("interval"), "0");
+        assert_eq!(m.shown(4), "never");
+        m.step_pick(-1);
+        assert_eq!(m.value("interval"), "0");
+    }
+
+    #[test]
+    fn a_stepped_row_makes_the_form_dirty() {
+        let mut m = note_form();
+        assert!(!m.dirty());
+        m.focus_field(3, 0, true);
+        m.step_pick(1);
+        assert!(m.dirty());
+        assert_eq!(m.value("role"), "user");
     }
 }
