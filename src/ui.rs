@@ -299,7 +299,9 @@ pub fn swipe_zone(
     (start.saturating_sub(2), start + counter + 2)
 }
 
-/// Render one chat message: a name header, the wrapped body, and a blank line.
+/// Render one chat message: a name header, the wrapped body, and the row that
+/// separates it from the next message: a faint line of `sep` (config
+/// `msg_seperator`), or an empty row when that is `None`.
 pub fn message_lines(
     name: &str,
     _is_user: bool,
@@ -309,6 +311,7 @@ pub fn message_lines(
     branch: Option<(usize, usize)>,
     streaming: bool,
     highlight: bool,
+    sep: Option<char>,
 ) -> Vec<Line<'static>> {
     let dim = Style::default().fg(Color::DarkGray);
     // Names (yours and the character's) are black on white, bold.
@@ -349,11 +352,18 @@ pub fn message_lines(
             }
         }
     }
-    // Thin, faint dashed rule between messages (one row, same as the old blank line).
-    out.push(Line::from(Span::styled(
-        "\u{254C}".repeat(width.max(1)),
-        Style::default().fg(Color::Rgb(52, 52, 52)),
-    )));
+    // Thin, faint rule between messages (one row), or an empty row.
+    out.push(match sep {
+        Some(c) => {
+            // A wide character takes two columns: fewer of them fill the row.
+            let cols = c.width().unwrap_or(1).max(1);
+            Line::from(Span::styled(
+                c.to_string().repeat((width.max(1) / cols).max(1)),
+                Style::default().fg(Color::Rgb(52, 52, 52)),
+            ))
+        }
+        None => Line::from(""),
+    });
     out
 }
 
@@ -2216,4 +2226,32 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     // The spelling menu goes over everything else.
     draw_spell_menu(f, app, input_area, chunks[1].y);
+}
+
+#[cfg(test)]
+mod separator_tests {
+    use super::*;
+
+    fn last(sep: Option<char>, width: usize) -> String {
+        let lines = message_lines("A", false, "hi", width, None, None, false, false, sep);
+        lines.last().unwrap().spans.iter().map(|s| s.content.to_string()).collect()
+    }
+
+    #[test]
+    fn the_row_under_a_message_is_the_chosen_character_or_empty() {
+        assert_eq!(last(Some('\u{254C}'), 5), "\u{254C}".repeat(5));
+        assert_eq!(last(Some('='), 3), "===");
+        assert_eq!(last(None, 5), "");
+        // A message is the same height either way.
+        let a = message_lines("A", false, "hi", 5, None, None, false, false, Some('-'));
+        let b = message_lines("A", false, "hi", 5, None, None, false, false, None);
+        assert_eq!(a.len(), b.len());
+    }
+
+    #[test]
+    fn a_wide_character_fills_the_row_without_overflowing() {
+        // two columns each: five fit in ten, and four in nine
+        assert_eq!(last(Some('\u{ff5c}'), 10).chars().count(), 5);
+        assert_eq!(last(Some('\u{ff5c}'), 9).chars().count(), 4);
+    }
 }

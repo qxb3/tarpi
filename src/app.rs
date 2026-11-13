@@ -354,6 +354,9 @@ pub struct App {
     pub tap_move_cursor: bool,
     /// Config `mouse.open_keyboard_on_tap` (phones): tapping the input box opens the keyboard.
     pub tap_open_keyboard: bool,
+    /// The character of the line between messages (config `msg_seperator`);
+    /// `None`: an empty row.
+    pub msg_sep: Option<char>,
     wheel_burst: Option<WheelBurst>,
     /// Total text rows and visible text rows of the input box at the last draw.
     pub input_rows: (usize, usize),
@@ -608,6 +611,7 @@ impl App {
             vim: true,
             tap_move_cursor: true,
             tap_open_keyboard: true,
+            msg_sep: Some('\u{254C}'),
             wheel_burst: None,
             input_rows: (0, 0),
             view_start: 0,
@@ -965,6 +969,7 @@ impl App {
                 branch,
                 continuing,
                 editing_idx == Some(idx),
+                self.msg_sep,
             ));
             map.push((idx, start, out.len()));
         }
@@ -989,6 +994,7 @@ impl App {
                     None,
                     true,
                     false,
+                    self.msg_sep,
                 ));
             }
         }
@@ -3195,6 +3201,8 @@ impl App {
         }
         self.tap_move_cursor = cfg.mouse().tap_to_move_cursor;
         self.tap_open_keyboard = cfg.mouse().open_keyboard_on_tap;
+        let sep = cfg.msg_separator();
+        self.msg_sep = if sep.enabled { sep.glyph() } else { None };
         self.chars_per_token = cfg.chars_per_token.unwrap_or(3.2);
         // The token estimate (and so the status row) depends on it.
         self.settings_ver += 1;

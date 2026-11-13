@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+use unicode_width::UnicodeWidthChar;
 
 /// Settings read from `~/.config/tarpi/config.yaml`.
 ///
@@ -32,6 +33,9 @@ pub struct FileConfig {
     pub serve_trust_all: Option<bool>,
     mouse: Option<MouseConfig>,
     vim: Option<VimConfig>,
+    /// `msg_seperator:` section (`msg_separator:` is read too).
+    #[serde(rename = "msg_seperator", alias = "msg_separator")]
+    msg_separator: Option<MsgSeparatorConfig>,
 }
 
 /// `mouse:` section.
@@ -80,6 +84,39 @@ impl Default for VimConfig {
     }
 }
 
+/// `msg_seperator:` section: the rule drawn between two messages.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct MsgSeparatorConfig {
+    /// `true`: a faint line of `char` under every message. `false`: just an
+    /// empty row between messages.
+    pub enabled: bool,
+    /// The character the line is made of (one character).
+    #[serde(rename = "char")]
+    pub ch: String,
+}
+
+impl Default for MsgSeparatorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ch: "\u{254C}".to_string(),
+        }
+    }
+}
+
+impl MsgSeparatorConfig {
+    /// The character of the line: exactly one visible character (not a
+    /// control or zero-width one).
+    pub fn glyph(&self) -> Option<char> {
+        let mut it = self.ch.chars();
+        match (it.next(), it.next()) {
+            (Some(c), None) if !c.is_control() && c.width().unwrap_or(0) > 0 => Some(c),
+            _ => None,
+        }
+    }
+}
+
 impl VimConfig {
     /// The NORMAL-mode key sequence as characters (already validated by `load`).
     pub fn keys(&self) -> Vec<char> {
@@ -109,6 +146,10 @@ impl FileConfig {
 
     pub fn vim(&self) -> VimConfig {
         self.vim.clone().unwrap_or_default()
+    }
+
+    pub fn msg_separator(&self) -> MsgSeparatorConfig {
+        self.msg_separator.clone().unwrap_or_default()
     }
 }
 
@@ -172,6 +213,14 @@ vim:
   # system clipboard (<leader>yy a line, <leader>y{motion}, or on a VISUAL
   # selection); plain y only fills vim's own register.
   leader: space
+
+msg_seperator:
+  # true: a faint line runs under every message, made of the character below.
+  # false: no line, only an empty row between messages.
+  enabled: true
+  # The character the line is made of: exactly one character. Put it in quotes
+  # (YAML reads a bare - # * or ' as something else).
+  char: \"\u{254C}\"
 ";
 
 /// `~/.config/tarpi`: where the settings that belong to this machine live
@@ -313,6 +362,14 @@ fn validate(cfg: &FileConfig, yaml: &std::path::Path) -> Result<()> {
             cfg.vim().normal_mode_keys
         );
     }
+    if cfg.msg_separator().enabled && cfg.msg_separator().glyph().is_none() {
+        bail!(
+            "{}: msg_seperator.char must be exactly one visible character \
+             (for example \u{254C} or -), got '{}'",
+            yaml.display(),
+            cfg.msg_separator().ch
+        );
+    }
     if cfg.vim().enabled && cfg.vim().leader_char().is_none() {
         bail!(
             "{}: vim.leader must be a single character that is not a letter or digit \
@@ -366,4 +423,52 @@ pub fn base_settings() -> serde_json::Value {
         "amount_gen": 350,
         "power_user": {},
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_template_is_valid_and_holds_the_defaults() {
+        let cfg = parse_text(TEMPLATE).unwrap();
+        let sep = cfg.msg_separator();
+        assert!(sep.enabled);
+        assert_eq!(sep.ch, "\u{254C}");
+        assert_eq!(sep.glyph(), Some('\u{254C}'));
+        // Same as leaving the section out.
+        assert_eq!(MsgSeparatorConfig::default().ch, sep.ch);
+    }
+
+    #[test]
+    fn the_separator_defaults_when_missing_or_partly_given() {
+        let cfg = parse_text("autopair: false\n").unwrap();
+        assert!(cfg.msg_separator().enabled);
+        assert_eq!(cfg.msg_separator().glyph(), Some('\u{254C}'));
+        let cfg = parse_text("msg_seperator:\n  enabled: false\n").unwrap();
+        assert!(!cfg.msg_separator().enabled);
+        assert_eq!(cfg.msg_separator().glyph(), Some('\u{254C}'));
+        let cfg = parse_text("msg_seperator:\n  char: \"-\"\n").unwrap();
+        assert!(cfg.msg_separator().enabled);
+        assert_eq!(cfg.msg_separator().glyph(), Some('-'));
+    }
+
+    #[test]
+    fn the_correct_spelling_is_read_too() {
+        let cfg = parse_text("msg_separator:\n  char: \"=\"\n").unwrap();
+        assert_eq!(cfg.msg_separator().glyph(), Some('='));
+    }
+
+    #[test]
+    fn the_separator_char_must_be_one_visible_character() {
+        for bad in ["", "ab", "\\u0007", "\\u200b"] {
+            let text = format!("msg_seperator:\n  char: \"{}\"\n", bad);
+            let err = parse_text(&text).unwrap_err().to_string();
+            assert!(err.contains("msg_seperator.char"), "{:?}: {}", bad, err);
+        }
+        // A wide character is one character.
+        assert!(parse_text("msg_seperator:\n  char: \"\u{ff5c}\"\n").is_ok());
+        // Not checked while the line is off.
+        assert!(parse_text("msg_seperator:\n  enabled: false\n  char: \"ab\"\n").is_ok());
+    }
 }

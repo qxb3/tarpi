@@ -356,7 +356,7 @@ Copies every persona (and every system prompt and character, see System prompts 
 
 The server's system prompts (its system prompt presets, plus the one it has switched on when that is not one of them) go into `system-prompt.jsonl` the same way: an identical one (same name, prompt and post-history instructions) is skipped, so running it again is safe, and `--overwrite` replaces one with the same name instead of adding `name-2`. If you have not chosen a system prompt here yet, the one the server had on becomes yours too.
 
-The chat's top bar reads ` tarpi <version> ` (white badge) `<character>/<chat file> • <persona> (<title>) • <api>@host:port`, e.g. `Tarpi/Tarpi01`. The API type and `host:port` are those of the active connection (`/api`). The connection turns red when the backend does not answer (checked in the background every 5 seconds) or when no connection is set. Message names are black on white, with a grey rule between messages (none under the last one).
+The chat's top bar reads ` tarpi <version> ` (white badge) `<character>/<chat file> • <persona> (<title>) • <api>@host:port`, e.g. `Tarpi/Tarpi01`. The API type and `host:port` are those of the active connection (`/api`). The connection turns red when the backend does not answer (checked in the background every 5 seconds) or when no connection is set. Message names are black on white, with a grey rule between messages (none under the last one; see `msg_seperator` in *Configuration*).
 
 ## Card save
 
@@ -542,6 +542,12 @@ vim:
   normal_mode_keys: qq
   # <leader> key for NORMAL / VISUAL mappings: one character, or the word space
   leader: space
+
+msg_seperator:
+  # true: a faint line under every message. false: only an empty row
+  enabled: true
+  # The character the line is made of: exactly one character, in quotes
+  char: "╌"
 ```
 
 - `serve_url` is the address `tarpi connect` uses (`host:port`). `serve_trust_all: true` (read by `tarpi serve` only) means no token is needed (default `false`: the token is required); `tarpi connect` asks the server and adapts. See *Sharing between devices*.
@@ -552,6 +558,7 @@ vim:
 - `vim.enabled: false` removes the modes and the mode tag under the box; the box is plain text editing. Left/Right arrows move the cursor once the box has a draft (on an empty box they switch swipes), and Home/End and Alt+Left/Right (word jump) move the cursor, and Up/Down move through a multi-line draft (with a one-line draft they scroll the chat as before).
 - `vim.normal_mode_keys` can be any sequence of two or more characters, for example `jk`. It is typed quickly in INSERT mode (within about 0.6 s) and the keys are removed again.
 - `vim.leader` is the `<leader>` key (default `space`; one character that is not a letter or digit, such as `,` or `\`, or the word `space`). See `<leader>y` below.
+- `msg_seperator` (the spelling `msg_separator` works too) is the row between two messages. With `enabled: true` (default) it is a faint line made of `char` (default `╌`); with `enabled: false` it is an empty row, so messages keep the same spacing and only the line goes. `char` must be exactly one visible character (a full-width one such as `｜` is fine and takes two columns); put it in quotes, since YAML reads a bare `-`, `#`, `*` or `'` as something else. It is not checked while `enabled` is `false`. There is no line under the very last message. `/config` applies a change to the open chat at once. An existing `config.yaml` is not rewritten: add the section by hand (the first-run file already has it).
 - `mouse.open_keyboard_on_tap: false` stops tarpi from switching mouse reporting off when you tap the box, so the keyboard does not open by itself on a phone. `mouse.tap_to_move_cursor: false` keeps taps from moving the cursor. The two are independent.
 
 `tarpi import-st` talks to a SillyTavern server that needs no login (the default single-user setup); accounts and basic auth are not supported. It is the only command that contacts one.
