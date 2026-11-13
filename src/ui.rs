@@ -1085,7 +1085,7 @@ fn draw_prompt_modal(f: &mut Frame, area: Rect, v: &mut crate::app::PromptView) 
     let rows = (area.height as usize).saturating_sub(2).max(1);
     if v.wrapped_w != iw || v.wrapped.is_empty() {
         let mut lines: Vec<String> = Vec::new();
-        for l in v.text.split('\n') {
+        for l in v.texts[v.tab.min(1)].split('\n') {
             lines.extend(wrap_rows(l, iw));
         }
         v.wrapped = lines;
@@ -1103,16 +1103,29 @@ fn draw_prompt_modal(f: &mut Frame, area: Rect, v: &mut crate::app::PromptView) 
         .collect();
     let bottom = if max_scroll > 0 {
         format!(
-            " \u{2191}/\u{2193} PgUp/PgDn scroll \u{b7} Esc closes ({}/{}) ",
+            " \u{2191}/\u{2193} PgUp/PgDn scroll \u{b7} Tab page \u{b7} Esc closes ({}/{}) ",
             v.scroll + 1,
             max_scroll + 1
         )
     } else {
-        " Esc closes ".to_string()
+        " Tab page \u{b7} Esc closes ".to_string()
     };
+    // The two pages as tabs in the title; the one showing is highlighted.
+    let on = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let tab_style = |i: usize| if v.tab == i { on } else { Style::default() };
+    let title = Line::from(vec![
+        Span::raw(" prompt "),
+        Span::styled(" 1 pre-prompt ", tab_style(0)),
+        Span::raw(" "),
+        Span::styled(" 2 post-prompt ", tab_style(1)),
+        Span::raw(v.title.clone()),
+    ]);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(v.title.clone())
+        .title(title)
         .title_bottom(Line::from(bottom))
         .border_style(Style::default().fg(Color::Cyan));
     f.render_widget(Paragraph::new(shown).block(block), area);

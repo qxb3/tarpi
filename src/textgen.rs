@@ -727,7 +727,13 @@ pub struct TgArgs<'a> {
 pub struct TgPrompt {
     pub prompt: String,
     pub stop: Vec<String>,
+    /// Byte offset in `prompt` where its last [`POST_MESSAGES`] messages
+    /// start (the `/prompt` window's second page); `0` when not worked out.
+    pub split: usize,
 }
+
+/// How many messages from the end of the prompt make its "post prompt".
+pub const POST_MESSAGES: usize = 5;
 
 pub fn build_prompt(a: &TgArgs) -> TgPrompt {
     let pu = sub(a.settings, "power_user");
@@ -1068,9 +1074,17 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
         prompt.push_str(e);
     }
     prompt.push_str(&chat_start);
-    for m in formatted.iter().skip(start) {
+    // Where the last `POST_MESSAGES` messages of the prompt begin.
+    let post_from = start.max(formatted.len().saturating_sub(POST_MESSAGES));
+    let mut pre_len: Option<usize> = None;
+    for (i, m) in formatted.iter().enumerate().skip(start) {
+        if i == post_from {
+            pre_len = Some(prompt.len());
+        }
         prompt.push_str(m);
     }
+    let pre_len = pre_len.unwrap_or(prompt.len());
+    let pre_raw = prompt[..pre_len].to_string();
     prompt.push_str(&tail);
     if !cont_text.is_empty() {
         if !prompt.ends_with(char::is_whitespace) {
@@ -1078,12 +1092,26 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
         }
         prompt.push_str(&cont_text);
     }
-    let mut prompt = prompt.replace('\r', "");
-    if jbool(pu, "collapse_newlines", false) {
-        while prompt.contains("\n\n") {
-            prompt = prompt.replace("\n\n", "\n");
+    let collapse = jbool(pu, "collapse_newlines", false);
+    let tidy = |t: &str| -> String {
+        let mut t = t.replace('\r', "");
+        if collapse {
+            while t.contains("\n\n") {
+                t = t.replace("\n\n", "\n");
+            }
         }
-    }
+        t
+    };
+    let prompt = tidy(&prompt);
+    // The same cleaning of the first part gives where the second begins (the
+    // text both share, in case collapsing changed the seam).
+    let pre = tidy(&pre_raw);
+    let split = prompt
+        .char_indices()
+        .zip(pre.chars())
+        .find(|((_, a), b)| a != b)
+        .map(|((i, _), _)| i)
+        .unwrap_or_else(|| pre.len().min(prompt.len()));
 
     // ---- stop strings (getStoppingStrings for Text Completion)
     let mut stop: Vec<String> = Vec::new();
@@ -1103,7 +1131,11 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
         }
     }
 
-    TgPrompt { prompt, stop: uniq }
+    TgPrompt {
+        prompt,
+        stop: uniq,
+        split,
+    }
 }
 
 /// The prompt of `/summarize`: `body` (the instructions and the text to
@@ -1141,6 +1173,7 @@ pub fn build_summary_prompt(settings: &Value, user: &str, ch: &str, body: &str) 
     TgPrompt {
         prompt: prompt.replace('\r', ""),
         stop: uniq,
+        split: 0,
     }
 }
 
@@ -1311,6 +1344,53 @@ mod tests {
             nudge: None,
         })
         .prompt
+    }
+
+    #[test]
+    fn the_split_leaves_the_last_five_messages_for_the_post_prompt() {
+        let mut h = Vec::new();
+        for i in 0..7 {
+            if i % 2 == 0 {
+                h.push(chat::user_message("Bob", &format!("m{}", i)));
+            } else {
+                h.push(chat::assistant_message("Sofia", &format!("m{}", i), "m", "t", "t"));
+            }
+        }
+        let settings = settings("{{description}}");
+        let ch = card();
+        let tp = build_prompt(&TgArgs {
+            settings: &settings,
+            ch: &ch,
+            user_name: "Bob",
+            persona: "",
+            persona_position: 0,
+            note: &Note::default(),
+            history: &h,
+            chars_per_token: 3.2,
+            continue_text: None,
+            nudge: None,
+        });
+        let (pre, post) = tp.prompt.split_at(tp.split);
+        assert!(pre.contains("A baker.") && pre.contains("m0") && pre.contains("m1"), "{}", pre);
+        assert!(!pre.contains("m2"), "{}", pre);
+        assert!(post.starts_with("Bob: m2\n"), "{}", post);
+        assert!(post.ends_with("Bob: m6\nSofia:"), "{}", post);
+        // With fewer than five messages they are all in the post-prompt.
+        let tp = build_prompt(&TgArgs {
+            settings: &settings,
+            ch: &ch,
+            user_name: "Bob",
+            persona: "",
+            persona_position: 0,
+            note: &Note::default(),
+            history: &history(),
+            chars_per_token: 3.2,
+            continue_text: None,
+            nudge: None,
+        });
+        let (pre, post) = tp.prompt.split_at(tp.split);
+        assert_eq!(pre, "A baker.\n");
+        assert!(post.starts_with("Bob: Hi\n"), "{}", post);
     }
 
     #[test]

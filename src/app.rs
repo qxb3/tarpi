@@ -118,11 +118,15 @@ struct PersonaEdit {
     avatar: Option<String>,
 }
 
-/// The `/prompt` window: the whole prompt of the next reply, as text.
+/// The `/prompt` window: the whole prompt of the next reply, as text, on two
+/// pages: the pre-prompt (everything before the last few messages) and the
+/// post-prompt (the last `textgen::POST_MESSAGES` messages and the cue).
 pub struct PromptView {
-    /// The prompt, tidied for the screen (no tabs or control characters).
-    pub text: String,
-    /// Window title: size of the prompt.
+    /// The two pages, tidied for the screen (no tabs or control characters).
+    pub texts: [String; 2],
+    /// The page showing (0 pre-prompt, 1 post-prompt).
+    pub tab: usize,
+    /// Window title: size of the whole prompt.
     pub title: String,
     /// First visible row (`ui::draw_prompt_modal` keeps it in range).
     pub scroll: usize,
@@ -131,6 +135,17 @@ pub struct PromptView {
     /// `text` cut into screen rows for the width in `wrapped_w`.
     pub wrapped: Vec<String>,
     pub wrapped_w: usize,
+}
+
+impl PromptView {
+    /// Show page `tab` (from its top); the same page again changes nothing.
+    pub fn set_tab(&mut self, tab: usize) {
+        if self.tab != tab {
+            self.tab = tab;
+            self.scroll = 0;
+            self.wrapped.clear();
+        }
+    }
 }
 
 /// The system prompt form (`App::card_modal`) is open for this prompt.
@@ -2660,20 +2675,30 @@ impl App {
         });
         let chars = tp.prompt.chars().count();
         let tokens = prompt::est_tokens(&tp.prompt, self.chars_per_token);
-        let mut text = String::new();
-        for c in tp.prompt.chars() {
-            match c {
-                '\n' => text.push('\n'),
-                '\t' => text.push_str("    "),
-                '\r' => {}
-                c if c.is_control() => text.push(' '),
-                c => text.push(c),
+        let tidy = |t: &str| -> String {
+            let mut text = String::new();
+            for c in t.chars() {
+                match c {
+                    '\n' => text.push('\n'),
+                    '\t' => text.push_str("    "),
+                    '\r' => {}
+                    c if c.is_control() => text.push(' '),
+                    c => text.push(c),
+                }
             }
-        }
+            text
+        };
+        let split = if tp.prompt.is_char_boundary(tp.split) {
+            tp.split
+        } else {
+            0
+        };
+        let (pre, post) = tp.prompt.split_at(split);
         self.prompt_view = Some(PromptView {
-            text,
+            texts: [tidy(pre), tidy(post)],
+            tab: 0,
             title: format!(
-                " prompt \u{b7} {} characters \u{b7} ~{} tokens ",
+                " \u{b7} {} characters \u{b7} ~{} tokens ",
                 chars,
                 summary::fmt_tokens(tokens)
             ),
@@ -2704,6 +2729,11 @@ impl App {
                 KeyCode::Char('d') if ctrl => v.scroll = v.scroll.saturating_add(half),
                 KeyCode::Home | KeyCode::Char('g') => v.scroll = 0,
                 KeyCode::End | KeyCode::Char('G') => v.scroll = usize::MAX,
+                // The two pages: pre-prompt and post-prompt.
+                KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') if !ctrl => v.set_tab(1),
+                KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') if !ctrl => v.set_tab(0),
+                KeyCode::Char('1') if !ctrl => v.set_tab(0),
+                KeyCode::Char('2') if !ctrl => v.set_tab(1),
                 _ => {}
             }
         }

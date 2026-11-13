@@ -298,7 +298,7 @@ Personas belong to tarpi. Each one is a small YAML file in `~/.config/tarpi/pers
 
 ## Prompt window
 
-`/prompt` shows the prompt exactly as tarpi would send it for the next reply, built right then from the current settings, persona, system prompt, character card and chat: the system prompt and character card (the context template's story string), the example dialogue, the instruct formatting, and the messages that fit into the *Context size* (older ones that would be cut are not shown, like in the real request). It is not changed or sent by opening it, and nothing is saved. The title shows its size in characters and an estimated token count (`~`). On a summary branch it is the prompt of the branch that is showing.
+`/prompt` shows the prompt exactly as tarpi would send it for the next reply, built right then from the current settings, persona, system prompt, character card and chat: the system prompt and character card (the context template's story string), the example dialogue, the instruct formatting, and the messages that fit into the *Context size* (older ones that would be cut are not shown, like in the real request). It is not changed or sent by opening it, and nothing is saved. The window has two pages, shown as tabs in the title: **1 pre-prompt** is everything before the last five messages (system prompt, character card, persona, examples, the older messages) and **2 post-prompt** is the last five messages of the prompt (an Author's Note, post-history instructions or a `/regen` nudge sent among them count as messages) and the character cue at the very end; together they are the whole prompt, in order. When fewer than five messages fit, they are all on page 2. The title shows the size of the whole prompt in characters and an estimated token count (`~`). On a summary branch it is the prompt of the branch that is showing.
 
 | Key / click | Action |
 | --- | --- |
@@ -306,6 +306,7 @@ Personas belong to tarpi. Each one is a small YAML file in `~/.config/tarpi/pers
 | PgUp / PgDn (or Space) | scroll a page |
 | Ctrl+U / Ctrl+D | half a page up / down |
 | Home / End (or `g` / `G`) | top / bottom |
+| Tab / Right / `l`, Shift+Tab / Left / `h`, `1` / `2` | post-prompt page / pre-prompt page (each page opens at its top) |
 | Esc, `q`, Enter, Ctrl+C or a click | close |
 
 Long lines are wrapped to the window; tabs are shown as four spaces. The window is read-only and a typed draft in the box is not part of it (the box holds `/prompt` while the window is open).
