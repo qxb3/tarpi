@@ -10,7 +10,7 @@
 **Roleplay from the command line.**
 
 ```
- tarpi 0.9.0  Tarpi/Tarpi01 • User • llamacpp@127.0.0.1:8080
+ tarpi 0.9.1  Tarpi/Tarpi01 • User • llamacpp@127.0.0.1:8080
 ────────────────────────────────────────────────────────────
  Tarpi
  *Spins around in the chair.* "Finally. I was about to start
@@ -32,7 +32,138 @@
 
 ---
 
-## features
+## what is this?
+
+tarpi is a chat program that runs inside your terminal. You talk to a
+**character** (a "character card", the kind you download from sites like
+chub.ai), and an AI model writes the character's replies.
+
+tarpi does **not** include an AI model. You bring your own: one running on your
+computer (llama.cpp, Ollama, LM Studio, ...) or one you reach over the internet
+(OpenRouter, ...). tarpi just talks to it.
+
+## what you need
+
+1. **A terminal.** Any one works. On a phone, use [Termux](https://termux.dev).
+2. **Rust**, to build the program. Get it from [rustup.rs](https://rustup.rs) (one command, takes a minute).
+3. **An AI model that tarpi can talk to.** The easiest way to start is
+   [llama.cpp](https://github.com/ggml-org/llama.cpp) or [Ollama](https://ollama.com) on your own computer.
+
+> **Important:** tarpi only works with backends that offer *text completion*.
+> A model that is only offered through "chat completions" will not work.
+
+## install
+
+Open a terminal in the tarpi folder and run these two commands:
+
+```
+$ cargo build --release
+$ cp target/release/tarpi ~/.local/bin/
+```
+
+The first one builds the program (it takes a few minutes the first time). The
+second one copies it to a folder where your terminal can find it.
+
+Check that it worked:
+
+```
+$ tarpi --version
+```
+
+If it says `command not found`, `~/.local/bin` is not on your PATH. Either add
+it, or run the program straight from the build folder: `./target/release/tarpi`.
+
+## quick start
+
+**Step 1.** Start your AI model. For example, with llama.cpp:
+
+```
+$ llama-server -m model.gguf
+```
+
+(Using Ollama, LM Studio or OpenRouter instead? Skip to the
+[backends table](#backends).)
+
+**Step 2.** Start tarpi in another terminal window:
+
+```
+$ tarpi
+```
+
+**Step 3.** A window called `choose a character` opens. Press **Enter** on the
+default character, `Tarpi`. A chat opens.
+
+**Step 4.** Tell tarpi where your model is. Type `/api` and press Enter.
+
+- A connection named `local` already exists. It points to `http://127.0.0.1:8080`
+  (where llama.cpp listens by default).
+- If your model is somewhere else, change the address.
+- Press `t` to test the connection. You should see the model's name.
+- Press `s` to save, then `q` to go back to the chat.
+
+**Step 5.** Say something. Type a message and press **Enter**. The reply
+appears word by word.
+
+**Step 6 (optional).** Add your own character:
+
+```
+/import ~/Downloads/card.png
+```
+
+You can also paste a chub.ai link instead of a file path. Press **Tab** after
+`/import ` to browse your folders. When it says `imported`, type `/chars` and
+pick the new character.
+
+## the commands you will use most
+
+Type `/` in the chat and a menu opens. Use Tab or the arrow keys to pick one,
+and Enter to run it.
+
+```
+/api            tell tarpi where your AI model is
+/import <card>  add a character
+/chars          switch to another character
+/chats          open, create or delete chats with this character
+/regen          get a different reply to your last message
+/undo           delete the last message
+/help           every key and command
+/quit           exit
+```
+
+Everything else is in the [full command list](#all-commands) below.
+
+## keys you will use most
+
+```
+Enter             send your message
+Shift+Enter       new line in your message (or Alt+Enter, or Ctrl+J)
+Esc               stop the reply that is being written
+Ctrl+R            get a different reply
+Ctrl+K            keep writing the last reply (continue)
+Left / Right      flip between different replies (when the box is empty)
+click a message   edit it
+F1                help
+Ctrl+C or Ctrl+D  quit
+```
+
+> **Vim fans:** the message box has vim modes. Type `qq` quickly to switch to
+> NORMAL mode. If you don't know vim and this gets in your way, turn it off:
+> put `vim: {enabled: false}` in your config (type `/config` to open it).
+
+## start tarpi from the command line
+
+```
+tarpi                  # open the character window, pick one, then chat
+tarpi tarpi            # continue the latest chat with Tarpi
+tarpi tarpi 3          # open chat number 3 (or by name: Tarpi03)
+tarpi tarpi -n         # start a new chat
+tarpi -l               # list your characters         (tarpi tarpi -l: its chats)
+tarpi import-st <url>  # copy characters from a SillyTavern server
+tarpi serve            # share your data with other devices    (short: s)
+tarpi connect [token]  # use the data of another machine       (short: c)
+```
+
+## what it can do
 
 ```
  characters   card PNG / JSON (V1, V2, V3, Pygmalion); import from a file,
@@ -51,45 +182,9 @@
               and system prompts
 ```
 
-## install
+## all commands
 
-Needs a recent stable [Rust toolchain](https://rustup.rs).
-
-```
-$ cargo build --release
-$ cp target/release/tarpi ~/.local/bin/
-```
-
-## quick start
-
-```
-$ llama-server -m model.gguf      # or Ollama, LM Studio, vLLM, OpenRouter ...
-$ tarpi
-```
-
-1. **Enter** on the default `Tarpi` character to open a chat.
-2. Type `/api`. A connection named `local` (llama.cpp at `http://127.0.0.1:8080`) is
-   created for you. Set the address, press `t` to test it, `s` to save, `q` to go back.
-3. Type `/import ~/Downloads/card.png` (or a chub.ai link) to add a character.
-   Press **Tab** after `/import ` to browse folders.
-4. `/chars` to switch to it. Write a message, press **Enter**.
-
-## usage
-
-```
-tarpi                  # pick a character in a window, then chat
-tarpi tarpi            # continue the latest chat with Tarpi
-tarpi tarpi 3          # open chat number 3 (or by name: Tarpi03)
-tarpi tarpi -n         # start a new chat
-tarpi -l               # list characters         (tarpi tarpi -l: its chats)
-tarpi import-st <url>  # copy personas, system prompts, characters from SillyTavern
-tarpi serve            # share everything with other devices    (s)
-tarpi connect [token]  # chat with the data of another machine  (c)
-```
-
-## commands
-
-Type `/` in the chat for a menu; Tab / arrows pick, Enter runs.
+Type these in the chat box. Type `/` to see the menu.
 
 ```
 /chats          open, create or delete chats
@@ -112,38 +207,33 @@ Type `/` in the chat for a menu; Tab / arrows pick, Enter runs.
 /undo [n]       delete the last message, or the last n  (/u)
 /summarize      summary of the chat as a new branch  (/summ)
 /deletebranch   delete the branch that is showing  (/db)
-/one-shot       lock this chat (permanent)
+/one-shot       lock this chat (permanent!)
 /help           every key and command  (/h)
 /quit           exit  (/q)
 ```
 
-## keys
-
-```
-Enter             send (an empty box asks the character to reply)
-Shift+Enter       new line (also Alt+Enter, Ctrl+J)
-Esc               stop generating / cancel an edit / close a menu
-Ctrl+R            regenerate         Ctrl+K   continue the last reply
-Ctrl+P / Ctrl+O   edit the last reply / your last message
-Left / Right      previous / next swipe (empty box)
-click a message   edit it            F1       help
-qq                INSERT -> NORMAL (vim modes; off with vim.enabled: false)
-Ctrl+C / Ctrl+D   quit
-```
-
 ## backends
 
-| kind | endpoint | notes |
+A "backend" is the program that runs the AI model. Pick the row that matches yours.
+
+| kind | where it talks to | good for |
 | --- | --- | --- |
-| llama.cpp | `/completion` | exact token counts from `/tokenize` |
+| llama.cpp | `/completion` | llama-server on your computer. Gives exact token counts. |
 | OpenAI-compatible | `/v1/completions` | vLLM, LM Studio, KoboldCpp, TabbyAPI, text-generation-webui, ... |
-| OpenRouter | `/v1/completions` | pick a model from a filterable list |
-| Ollama | `/api/generate` | sent raw, so your instruct template is used as is |
+| OpenRouter | `/v1/completions` | models on the internet. You pick from a searchable list. |
+| Ollama | `/api/generate` | Ollama on your computer. Sent raw, so your instruct template is used as is. |
 
-Text completion only: a model offered only through chat completions will not work.
-Samplers, presets (Normal / Creative / Crazy), DRY, XTC, Mirostat and more are in `/api`.
+To set one up: type `/api`, press `n` for a new connection, pick the kind, fill
+in the address (and an API key if the server wants one), press `t` to test it,
+`a` to use it for chats, and `s` to save.
 
-## where things live
+Samplers (temperature and friends), presets (Normal / Creative / Crazy), DRY,
+XTC, Mirostat and more are all in `/api`.
+
+## where tarpi keeps your stuff
+
+Everything is a plain file in `~/.config/tarpi/`. Nothing is locked away, and
+you can back it up by copying the folder.
 
 ```
 ~/.config/tarpi/
@@ -151,25 +241,41 @@ Samplers, presets (Normal / Creative / Crazy), DRY, XTC, Mirostat and more are i
 ├── api.yaml               backend connections
 ├── formatting.yaml        context and instruct templates
 ├── system-prompt.jsonl    system prompts
-├── persona/               personas
+├── persona/               personas (who you are)
 ├── characters/            Name.png / Name.json
+├── lorebooks/             your lorebooks
 └── chats/<Name>/*.jsonl   one folder per character
 ```
 
-## sync between devices
+## use it on more than one device
+
+One computer keeps the data; your other devices connect to it.
 
 ```
-# the machine that keeps the data
+# on the computer that keeps the data
 $ tarpi serve
 
-# another device: put  serve_url: 192.168.1.20:7878  in config.yaml, then
+# on another device: put  serve_url: 192.168.1.20:7878  in config.yaml, then
 $ tarpi connect <token>
 ```
 
-Whole-file sync with a token over plain HTTP, so keep it on a network you trust.
-Newer versions win; the older one is kept as `<file>.conflict-<time>`.
+`tarpi serve` prints the token. Use it on a network you trust: it is plain HTTP
+with a token, not encrypted. Whichever copy of a file is newer wins, and the
+older one is kept as `<file>.conflict-<time>`.
 
-## docs
+## something is wrong?
+
+| what you see | what to do |
+| --- | --- |
+| `no API connection` | Type `/api`, set the address, press `s` to save. |
+| the top bar shows the connection in **red** | tarpi can't reach the model. Is the backend running? Press `t` in `/api` to test. |
+| an error mentioning chat completions | Your model is only offered as a chat model. tarpi needs text completion. |
+| replies are cut short or forget things | Raise *Context size* in `/api` (press `c` to copy the server's size). |
+| `command not found: tarpi` | See [install](#install) above. |
+| can't select text with the mouse | Hold **Shift** while selecting. |
+| Shift+Enter does nothing | Your terminal is old. Use Alt+Enter or Ctrl+J. |
+
+## more help
 
 The full manual is [`docs/REFERENCE.md`](docs/REFERENCE.md). Good places to start:
 
@@ -180,13 +286,12 @@ The full manual is [`docs/REFERENCE.md`](docs/REFERENCE.md). Good places to star
 - [Keys](docs/REFERENCE.md#keys), [Vim motions](docs/REFERENCE.md#vim-motions-in-the-input-box) and [Configuration](docs/REFERENCE.md#configuration)
 - [Phone / Termux](docs/REFERENCE.md#phone--termux-touch) and [Small screens](docs/REFERENCE.md#small-screens)
 
-## limitations
+## limits (things tarpi does not do)
 
-- Text completion backends only (see above); no tool calling.
-- Lorebooks: plain-text keys, no recursion, deliberately minimal (see `/lore` in the reference). No vector memory or group chats.
-- Token counts used to trim history are an estimate (`chars_per_token`) until the
-  backend's tokenizer or a reply's `usage` gives an exact number.
-- Mouse capture is on; hold Shift to select text with the terminal's own selection.
+- Text completion backends only (see above). No tool calling.
+- Lorebooks are simple on purpose: plain-text keys, no recursion. No vector memory, no group chats.
+- Token counts used to trim old messages are an estimate until the backend reports an exact number.
+- Mouse capture is on. Hold Shift to select text with the terminal's own selection.
 
 ## license
 
