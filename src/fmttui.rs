@@ -4,6 +4,8 @@
 //! `formatting::FIELDS`, so a new one needs no changes here.
 
 use crate::formatting::{self, Field, Formatting, Kind, Sec, FIELDS};
+use crate::input::{Input, Mode};
+use crate::ui;
 use anyhow::Result;
 use crossterm::event::{
     Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
@@ -39,14 +41,39 @@ enum Confirm {
 
 enum Modal {
     None,
-    /// Typing a value for the selected row (a line break is typed as `\n`).
-    Edit { buf: Vec<char>, cur: usize },
+    /// Typing a text setting, in the chat box's editor (vim modes when they
+    /// are on). The story string is lines of its own; every other text is one
+    /// line, with a line break typed as `\n`.
+    Multi(Box<MultiEdit>),
     Confirm(Confirm),
     /// Choosing a preset of this template (the one the cursor is in).
     Presets(Sec, usize),
 }
 
+/// A text setting in a window of its own: the chat box's editor, so every vim
+/// motion works (when `vim.enabled`). The story string has real line breaks;
+/// the other texts are one line (`single`) and the window is only as big as
+/// the text needs.
+struct MultiEdit {
+    input: Input,
+    /// A one-line setting: Enter accepts, a line break is typed as `\n`.
+    single: bool,
+    /// The text when the window opened (Esc asks before dropping a change).
+    orig: String,
+    /// First visible row (`draw_multi` keeps the cursor in view).
+    scroll: usize,
+    /// Text width and visible rows, set when drawing.
+    w: usize,
+    h: usize,
+    /// Esc was pressed with unaccepted changes; Esc again drops them.
+    armed: bool,
+    note: Option<(String, bool)>,
+}
+
 struct Tui {
+    /// The chat box: only its vim settings are used (`vim.enabled`, leader,
+    /// the keys that leave INSERT mode).
+    cfg: Input,
     fmt: Formatting,
     /// What the file holds (or the defaults when there is none): "unsaved
     /// changes" means `fmt` differs from this.
@@ -79,6 +106,7 @@ impl Tui {
             rows.push(Row::Field(i));
         }
         Tui {
+            cfg: Input::default(),
             saved: fmt.clone(),
             undo: Vec::new(),
             backup_first: false,
@@ -203,19 +231,57 @@ impl Tui {
             return;
         }
         let v = self.fmt.get(fd);
-        let buf: Vec<char> = formatting::esc(v.as_str().unwrap_or("")).chars().collect();
-        let cur = buf.len();
-        self.modal = Modal::Edit { buf, cur };
+        let single = fd.key != "story_string";
+        let text = if single {
+            // One line: a line break shows as `\n`.
+            formatting::esc(v.as_str().unwrap_or(""))
+        } else {
+            // Several lines: real line breaks.
+            v.as_str().unwrap_or("").replace("\r\n", "\n").replace('\r', "\n")
+        };
+        let mut input = Input::default();
+        input.copy_config(&self.cfg);
+        if single {
+            // Quotes and brackets are typed as they are in these texts.
+            input.set_autopair(false);
+        }
+        // The cursor starts at the very beginning; only a one-line text with
+        // the vim modes off starts at its end (ready to append).
+        input.cursor = if single && !input.vim_enabled() {
+            text.chars().count()
+        } else {
+            0
+        };
+        input.text = text.clone();
+        // The window opens in NORMAL mode (INSERT when the vim modes are off).
+        input.enter_insert();
+        if input.vim_enabled() {
+            input.enter_normal();
+        }
+        self.modal = Modal::Multi(Box::new(MultiEdit {
+            input,
+            single,
+            orig: text,
+            scroll: 0,
+            w: 60,
+            h: 10,
+            armed: false,
+            note: None,
+        }));
     }
 
     /// Store a typed text. `Err` (the editor stays open) when the setting
     /// cannot hold it; things that are accepted but look wrong are said in the
     /// status line.
     fn commit_edit(&mut self, text: &str) -> Result<(), String> {
+        self.commit_value(formatting::unesc(text))
+    }
+
+    /// Like `commit_edit`, for a text that already has its real line breaks.
+    fn commit_value(&mut self, value: String) -> Result<(), String> {
         let Some(fd) = self.field() else {
             return Ok(());
         };
-        let value = formatting::unesc(text);
         formatting::validate(fd, &value)?;
         let warn = formatting::warnings(fd, &value);
         self.set(fd, Value::String(value));
@@ -243,7 +309,14 @@ impl Tui {
     /// `p`: the presets of the template the selected setting belongs to.
     fn open_presets(&mut self) {
         match self.field().map(|fd| fd.sec) {
-            Some(sec) if !formatting::presets(sec).is_empty() => self.modal = Modal::Presets(sec, 0),
+            Some(sec) if !formatting::presets(sec).is_empty() => {
+                // The cursor starts on the preset in use, if there is one.
+                let at = formatting::presets(sec)
+                    .iter()
+                    .position(|p| self.fmt.preset_is_current(p))
+                    .unwrap_or(0);
+                self.modal = Modal::Presets(sec, at);
+            }
             _ => self.say("this part has no presets", true),
         }
     }
@@ -332,56 +405,9 @@ impl Tui {
             return;
         }
         match std::mem::replace(&mut self.modal, Modal::None) {
-            Modal::Edit { mut buf, mut cur } => {
-                self.status = None;
-                let mut keep = true;
-                match k.code {
-                    KeyCode::Esc => keep = false,
-                    KeyCode::Enter => {
-                        let text: String = buf.iter().collect();
-                        self.status = None;
-                        match self.commit_edit(&text) {
-                            Ok(()) => keep = false,
-                            Err(msg) => self.say(msg, true),
-                        }
-                    }
-                    KeyCode::Char('u') if ctrl => {
-                        buf.clear();
-                        cur = 0;
-                    }
-                    KeyCode::Char('a') if ctrl => cur = 0,
-                    KeyCode::Char('e') if ctrl => cur = buf.len(),
-                    KeyCode::Char('k') if ctrl => buf.truncate(cur),
-                    KeyCode::Char('w') if ctrl => {
-                        let to = word_left(&buf, cur);
-                        buf.drain(to..cur);
-                        cur = to;
-                    }
-                    KeyCode::Left if ctrl => cur = word_left(&buf, cur),
-                    KeyCode::Right if ctrl => cur = word_right(&buf, cur),
-                    KeyCode::Char(c) if !ctrl => {
-                        buf.insert(cur, c);
-                        cur += 1;
-                    }
-                    KeyCode::Backspace => {
-                        if cur > 0 {
-                            buf.remove(cur - 1);
-                            cur -= 1;
-                        }
-                    }
-                    KeyCode::Delete => {
-                        if cur < buf.len() {
-                            buf.remove(cur);
-                        }
-                    }
-                    KeyCode::Left => cur = cur.saturating_sub(1),
-                    KeyCode::Right => cur = (cur + 1).min(buf.len()),
-                    KeyCode::Home => cur = 0,
-                    KeyCode::End => cur = buf.len(),
-                    _ => {}
-                }
-                if keep {
-                    self.modal = Modal::Edit { buf, cur };
+            Modal::Multi(m) => {
+                if let Some(m) = self.multi_key(*m, k) {
+                    self.modal = Modal::Multi(Box::new(m));
                 }
             }
             Modal::Confirm(what) => {
@@ -457,21 +483,147 @@ impl Tui {
         }
     }
 
-    fn on_paste(&mut self, s: &str) {
-        if let Modal::Edit { buf, cur } = &mut self.modal {
-            for c in s.chars() {
-                match c {
-                    '\n' => {
-                        buf.insert(*cur, '\\');
-                        buf.insert(*cur + 1, 'n');
-                        *cur += 2;
+    /// A key in the story string window. `None`: the window is closed
+    /// (accepted or cancelled).
+    fn multi_key(&mut self, mut m: MultiEdit, k: KeyEvent) -> Option<MultiEdit> {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = k.modifiers.contains(KeyModifiers::ALT);
+        let w = m.w.max(1);
+        let page = m.h.saturating_sub(1).max(1);
+        let vim = m.input.vim_enabled();
+        let mode = m.input.mode;
+        m.note = None;
+        let was_armed = std::mem::replace(&mut m.armed, false);
+        let (mut accept, mut cancel) = (false, false);
+        self.status = None;
+
+        if ctrl && k.code == KeyCode::Char('s') {
+            accept = true;
+        } else if mode == Mode::Command {
+            // `:` command line (`:%s/find/new/g`, `:w`, `:wq`).
+            match k.code {
+                KeyCode::Char('u') if ctrl => m.input.command_clear(),
+                KeyCode::Char('w') if ctrl => m.input.command_delete_word(),
+                KeyCode::Char(ch) if !ctrl && !alt => m.input.command_push(ch),
+                KeyCode::Backspace => m.input.command_backspace(),
+                KeyCode::Esc => m.input.cancel_command(),
+                KeyCode::Enter => {
+                    match m.input.run_command() {
+                        Ok(msg) if !msg.is_empty() => m.note = Some((msg, false)),
+                        Ok(_) => {}
+                        Err(e) => m.note = Some((e, true)),
                     }
-                    c if c.is_control() => {}
-                    c => {
-                        buf.insert(*cur, c);
-                        *cur += 1;
+                    // `:w` and `:wq` both accept the text and close.
+                    if m.input.take_write_req() | m.input.take_quit_req() {
+                        accept = true;
                     }
                 }
+                _ => {}
+            }
+        } else if vim
+            && ctrl
+            && !alt
+            && matches!(k.code, KeyCode::Char('u') | KeyCode::Char('d'))
+            && matches!(mode, Mode::Normal | Mode::Visual)
+        {
+            let dir = if k.code == KeyCode::Char('u') { -1 } else { 1 };
+            m.input.move_rows(dir, (m.h / 2).max(1), w);
+        } else if matches!(mode, Mode::Normal | Mode::Visual)
+            && !ctrl
+            && !alt
+            && matches!(k.code, KeyCode::Char(_))
+        {
+            // NORMAL / VISUAL mode: letters are vim commands.
+            if let KeyCode::Char(ch) = k.code {
+                m.input.normal_key(ch, w);
+                if let Some(text) = m.input.take_clipboard() {
+                    m.note = Some(crate::app::copy_to_clipboard(&text));
+                }
+            }
+        } else {
+            match k.code {
+                KeyCode::Esc => match mode {
+                    Mode::Visual => m.input.exit_visual(),
+                    // Like vim: Esc leaves INSERT mode.
+                    Mode::Insert if vim => m.input.enter_normal(),
+                    _ => {
+                        m.input.cancel_pending();
+                        if m.input.text != m.orig && !was_armed {
+                            m.armed = true;
+                            m.note = Some((
+                                "changed: Esc again drops it, Ctrl+S accepts".to_string(),
+                                true,
+                            ));
+                        } else {
+                            cancel = true;
+                        }
+                    }
+                },
+                KeyCode::Enter if m.single => accept = true,
+                KeyCode::Enter => match mode {
+                    Mode::Insert => m.input.insert_char('\n'),
+                    Mode::Normal => multi_vertical(&mut m, 1),
+                    _ => {}
+                },
+                KeyCode::Backspace => m.input.backspace(),
+                KeyCode::Delete => m.input.delete(),
+                KeyCode::Left if alt && !ctrl => m.input.word_left(w),
+                KeyCode::Right if alt && !ctrl => m.input.word_right(w),
+                KeyCode::Left => m.input.left(),
+                KeyCode::Right => m.input.right(),
+                KeyCode::Up => multi_vertical(&mut m, -1),
+                KeyCode::Down => multi_vertical(&mut m, 1),
+                KeyCode::Home => m.input.home(),
+                KeyCode::End => m.input.end(),
+                KeyCode::PageUp => (0..page).for_each(|_| multi_vertical(&mut m, -1)),
+                KeyCode::PageDown => (0..page).for_each(|_| multi_vertical(&mut m, 1)),
+                // The Ctrl shortcuts exist only with the vim modes on.
+                KeyCode::Char('a') if ctrl && vim => m.input.home(),
+                KeyCode::Char('e') if ctrl && vim => m.input.end(),
+                KeyCode::Char('w') if ctrl && vim => m.input.delete_word_back(),
+                // INSERT mode; typing the NORMAL-mode keys (`qq`) quickly
+                // switches to NORMAL mode.
+                KeyCode::Char(ch) if (!ctrl && !alt) || (ctrl && alt) => m.input.type_char(ch),
+                _ => {}
+            }
+        }
+        m.input.clamp_normal();
+
+        if accept {
+            let text = m.input.text.replace("\r\n", "\n").replace('\r', "\n");
+            let done = if m.single {
+                self.commit_edit(&text)
+            } else {
+                self.commit_value(text)
+            };
+            match done {
+                Ok(()) => return None,
+                Err(e) => m.note = Some((e, true)),
+            }
+        }
+        if cancel {
+            return None;
+        }
+        Some(m)
+    }
+
+    fn on_paste(&mut self, s: &str) {
+        if let Modal::Multi(m) = &mut self.modal {
+            if m.input.mode == Mode::Command {
+                return;
+            }
+            let text = s.replace("\r\n", "\n").replace('\r', "\n");
+            if m.single {
+                // One line: a pasted line break becomes `\n`, other control
+                // characters are dropped.
+                let one: String = text
+                    .chars()
+                    .filter(|c| *c == '\n' || !c.is_control())
+                    .map(|c| if c == '\n' { "\\n".to_string() } else { c.to_string() })
+                    .collect();
+                m.input.paste_text(&one);
+            } else {
+                m.input.paste_text(&text);
             }
         }
     }
@@ -509,6 +661,12 @@ impl Tui {
     }
 }
 
+/// Up (`dir < 0`) / Down one display row in the story string window.
+fn multi_vertical(m: &mut MultiEdit, dir: i32) {
+    let cur = m.input.cursor.min(m.input.len_chars());
+    m.input.cursor = ui::vertical_target(&m.input.text, cur, m.w.max(1), dir);
+}
+
 // ----------------------------------------------------------------- drawing
 
 /// Columns a character takes on the screen (CJK and full-width forms take 2).
@@ -540,30 +698,6 @@ fn clip(s: &str, w: usize) -> String {
     }
     out.push('\u{2026}');
     out
-}
-
-/// Where the word before `cur` starts.
-fn word_left(buf: &[char], cur: usize) -> usize {
-    let mut i = cur.min(buf.len());
-    while i > 0 && buf[i - 1].is_whitespace() {
-        i -= 1;
-    }
-    while i > 0 && !buf[i - 1].is_whitespace() {
-        i -= 1;
-    }
-    i
-}
-
-/// Where the word after `cur` ends.
-fn word_right(buf: &[char], cur: usize) -> usize {
-    let mut i = cur.min(buf.len());
-    while i < buf.len() && buf[i].is_whitespace() {
-        i += 1;
-    }
-    while i < buf.len() && !buf[i].is_whitespace() {
-        i += 1;
-    }
-    i
 }
 
 /// `buf` cut into screen rows of at most `w` columns, as `(start, end)`
@@ -641,40 +775,118 @@ fn row_line(t: &Tui, idx: usize, width: usize, label_w: usize) -> Line<'static> 
     }
 }
 
-fn draw_edit(f: &mut Frame, area: Rect, title: &str, buf: &[char], cur: usize) {
-    let w = area.width.saturating_sub(4).clamp(20, 100);
-    let iw = (w - 2) as usize;
-    let rows = wrap_rows(buf, iw);
-    let h = rows.len().min(area.height.saturating_sub(5) as usize).max(1);
-    let rect = centered(area, w, h as u16 + 3);
+/// The mode as the chat box shows it: black on a colour, on the bottom edge.
+fn mode_tag(input: &Input) -> Span<'static> {
+    let (tag, color) = match input.mode {
+        Mode::Insert => (" INSERT ", Color::Green),
+        Mode::Normal => (" NORMAL ", Color::Magenta),
+        Mode::Command => (" COMMAND ", Color::LightBlue),
+        Mode::Visual => {
+            if input.visual_linewise() {
+                (" V-LINE ", Color::Yellow)
+            } else {
+                (" VISUAL ", Color::Yellow)
+            }
+        }
+    };
+    Span::styled(
+        tag,
+        Style::default()
+            .fg(Color::Black)
+            .bg(color)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+/// The window of a text setting: the text as lines, the cursor, a VISUAL
+/// selection, the mode on the bottom edge and, in a row below the text, the
+/// `:` command, a message or the keys. A one-line setting gets a small window;
+/// both grow with the text, up to the screen.
+fn draw_multi(f: &mut Frame, area: Rect, title: &str, m: &mut MultiEdit) {
+    let w = if m.single {
+        area.width.saturating_sub(4).clamp(20, 64)
+    } else {
+        area.width.saturating_sub(4).clamp(20, 110)
+    };
+    let iw = (w as usize).saturating_sub(2).max(1);
+    let (lines, (cr, cc), starts) = ui::layout_input(&m.input.text, m.input.cursor, iw);
+    // Text rows: what the text needs, at least one (a few more for the story
+    // string, which is for long texts), at most what the screen has room for
+    // next to the borders (2) and the row below the text (1).
+    let min_rows = if m.single { 1 } else { 12 };
+    let max_rows = (area.height as usize).saturating_sub(5).max(1);
+    let rows = lines.len().max(min_rows).min(max_rows);
+    let rect = centered(area, w, rows as u16 + 3);
     f.render_widget(Clear, rect);
-    // The row the cursor is on (a boundary between two rows belongs to the later one).
-    let cr = rows.iter().rposition(|(a, _)| *a <= cur).unwrap_or(0);
-    let ccol: usize = buf[rows[cr].0..cur.min(buf.len())].iter().map(|c| cw(*c)).sum();
-    let start = if cr >= h { cr + 1 - h } else { 0 };
-    let mut lines: Vec<Line> = rows
-        .iter()
-        .skip(start)
-        .take(h)
-        .map(|(a, b)| Line::from(buf[*a..*b].iter().collect::<String>()))
-        .collect();
-    lines.push(Line::from(Span::styled(
-        clip(" Enter accept  Esc cancel  \\n = line break  Ctrl+A/E/W/K/U edit", iw),
-        Style::default().fg(DIM),
-    )));
-    f.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
-                .title(format!(" {} ", title)),
-        ),
-        rect,
-    );
-    f.set_cursor_position((
-        rect.x + 1 + (ccol.min(iw)) as u16,
-        rect.y + 1 + (cr - start) as u16,
-    ));
+    m.w = iw;
+    m.h = rows;
+    if cr < m.scroll {
+        m.scroll = cr;
+    } else if cr >= m.scroll + rows {
+        m.scroll = cr + 1 - rows;
+    }
+    m.scroll = m.scroll.min(lines.len().saturating_sub(1));
+    let sel = m.input.selection();
+    let hi = Style::default().fg(Color::Black).bg(Color::Cyan);
+    let mut shown: Vec<Line> = Vec::new();
+    for r in m.scroll..(m.scroll + rows).min(lines.len()) {
+        match sel {
+            Some((a, b)) => {
+                let spans: Vec<Span> = lines[r]
+                    .chars()
+                    .enumerate()
+                    .map(|(j, c)| {
+                        let i = starts[r] + j;
+                        let st = if i >= a && i < b { hi } else { Style::default() };
+                        Span::styled(c.to_string(), st)
+                    })
+                    .collect();
+                shown.push(Line::from(spans));
+            }
+            None => shown.push(Line::from(lines[r].clone())),
+        }
+    }
+    while shown.len() < rows {
+        shown.push(Line::from(""));
+    }
+    let vim = m.input.vim_enabled();
+    let command = m.input.mode == Mode::Command;
+    let bottom = if command {
+        format!(":{}", m.input.command_text())
+    } else if let Some((msg, _)) = &m.note {
+        format!(" {}", msg)
+    } else {
+        match (vim, m.single) {
+            (true, true) => " Enter accept \u{b7} Esc cancel \u{b7} \\n = line break".to_string(),
+            (true, false) => " Ctrl+S accept  :w accept  Esc leaves INSERT, then cancels".to_string(),
+            (false, true) => " Enter accept  Esc cancel  \\n = line break".to_string(),
+            (false, false) => " Enter new line  Ctrl+S accept  Esc cancel".to_string(),
+        }
+    };
+    let bstyle = match &m.note {
+        Some((_, true)) if !command => Style::default().fg(Color::Red),
+        Some((_, false)) if !command => Style::default().fg(Color::Green),
+        _ => Style::default().fg(DIM),
+    };
+    shown.push(Line::from(Span::styled(clip(&bottom, iw), bstyle)));
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(format!(" {} ", title));
+    // The mode tag only exists with the vim modes on (config `vim.enabled`).
+    if vim {
+        block = block.title_bottom(Line::from(mode_tag(&m.input)));
+    }
+    f.render_widget(Paragraph::new(shown).block(block), rect);
+    if command {
+        let col = 1 + dwidth(&m.input.command_text().to_string());
+        f.set_cursor_position((rect.x + 1 + col.min(iw) as u16, rect.y + 1 + rows as u16));
+    } else {
+        f.set_cursor_position((
+            rect.x + 1 + cc.min(iw) as u16,
+            rect.y + 1 + (cr - m.scroll.min(cr)) as u16,
+        ));
+    }
 }
 
 fn draw(f: &mut Frame, t: &mut Tui) {
@@ -795,9 +1007,11 @@ fn draw(f: &mut Frame, t: &mut Tui) {
     }
 
     // ---- text editor
-    if let Modal::Edit { buf, cur } = &t.modal {
+    if matches!(t.modal, Modal::Multi(_)) {
         let title = t.field().map(|fd| fd.label).unwrap_or("");
-        draw_edit(f, area, title, buf, *cur);
+        if let Modal::Multi(m) = &mut t.modal {
+            draw_multi(f, area, title, m);
+        }
     }
 
     // ---- preset picker
@@ -820,15 +1034,17 @@ fn draw(f: &mut Frame, t: &mut Tui) {
                 } else {
                     Style::default()
                 };
+                // `*` marks the preset that is in use.
+                let mark = if t.fmt.preset_is_current(p) { "*" } else { " " };
                 Line::from(Span::styled(
-                    clip(&format!(" {:<14} {}", p.name, p.help), inner_w),
+                    clip(&format!(" {}{:<14} {}", mark, p.name, p.help), inner_w),
                     style,
                 ))
             })
             .collect();
         let note = match sec {
-            Sec::Context => " Enter apply  Esc cancel  (only the story string, separator and chat start change)",
-            _ => " Enter apply  Esc cancel  (the story string is kept)",
+            Sec::Context => " Enter apply  Esc cancel  * = in use  (only the story string, separator and chat start change)",
+            _ => " Enter apply  Esc cancel  * = in use  (the story string is kept)",
         };
         lines.push(Line::from(Span::styled(clip(note, inner_w), Style::default().fg(DIM))));
         f.render_widget(
@@ -848,7 +1064,11 @@ fn draw(f: &mut Frame, t: &mut Tui) {
 /// Open the editor in the chat's own terminal and run it until it is quit.
 /// With no `formatting.yaml` yet it starts from the built-in defaults.
 /// Whatever was saved is in `formatting.yaml` when this returns.
-pub async fn manage(term: &mut crate::Term, events: &mut EventStream) -> Result<()> {
+pub async fn manage(
+    term: &mut crate::Term,
+    events: &mut EventStream,
+    cfg: &Input,
+) -> Result<()> {
     // A file that cannot be read still opens the editor (on the defaults), so
     // it can be fixed from here; saving keeps a copy of the old file.
     let (fmt, fresh, broken) = match Formatting::load() {
@@ -857,6 +1077,8 @@ pub async fn manage(term: &mut crate::Term, events: &mut EventStream) -> Result<
         Err(e) => (Formatting::default(), false, Some(format!("{:#}", e))),
     };
     let mut t = Tui::new(fmt);
+    // The same vim settings as the chat box.
+    t.cfg.copy_config(cfg);
     if let Some(e) = broken {
         t.backup_first = true;
         t.say(
@@ -912,17 +1134,6 @@ mod tests {
     }
 
     #[test]
-    fn words_are_skipped_whole() {
-        let t = chars("one two  three");
-        assert_eq!(word_left(&t, 14), 9);
-        assert_eq!(word_left(&t, 9), 4);
-        assert_eq!(word_left(&t, 0), 0);
-        assert_eq!(word_right(&t, 0), 3);
-        assert_eq!(word_right(&t, 3), 7);
-        assert_eq!(word_right(&t, 14), 14);
-    }
-
-    #[test]
     fn a_change_can_be_undone_and_unsaved_follows_the_content() {
         let mut t = Tui::new(Formatting::default());
         let fd = FIELDS.iter().find(|f| f.key == "wrap").unwrap();
@@ -952,6 +1163,173 @@ mod tests {
         t.row = j;
         assert!(t.commit_edit("{{#if description}}x").is_ok());
         assert!(t.status.as_ref().is_some_and(|(m, err)| *err && m.contains("never closed")));
+    }
+
+    fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, mods)
+    }
+
+    fn select(t: &mut Tui, name: &str) {
+        t.row = t
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Field(i) if FIELDS[*i].key == name))
+            .unwrap();
+    }
+
+    #[test]
+    fn the_story_string_is_edited_as_lines_and_ctrl_s_keeps_it() {
+        let mut t = Tui::new(Formatting::default());
+        select(&mut t, "story_string");
+        t.begin_edit();
+        assert!(matches!(t.modal, Modal::Multi(_)));
+        // It opens in NORMAL mode; `i` goes to INSERT mode, where Enter is a
+        // line break and letters are typed.
+        t.on_key(key(KeyCode::Char('i'), KeyModifiers::NONE));
+        t.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
+        t.on_key(key(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(matches!(t.modal, Modal::Multi(_)));
+        t.on_key(key(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(matches!(t.modal, Modal::None));
+        let fd = FIELDS.iter().find(|f| f.key == "story_string").unwrap();
+        assert!(t.fmt.get(fd).as_str().unwrap().starts_with("\nx"));
+        assert!(t.dirty());
+    }
+
+    #[test]
+    fn esc_in_the_story_string_asks_before_dropping_a_change() {
+        let mut t = Tui::new(Formatting::default());
+        t.cfg.configure(false, vec![]);
+        select(&mut t, "story_string");
+        t.begin_edit();
+        t.on_key(key(KeyCode::Char('x'), KeyModifiers::NONE));
+        t.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(t.modal, Modal::Multi(_)));
+        t.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(t.modal, Modal::None));
+        assert!(!t.dirty());
+    }
+
+    fn mode_of(t: &Tui) -> Mode {
+        match &t.modal {
+            Modal::Multi(m) => m.input.mode,
+            _ => panic!("no editor"),
+        }
+    }
+
+    #[test]
+    fn every_text_opens_in_normal_mode_with_vim_and_in_insert_without() {
+        for name in ["story_string", "input_sequence", "story_string_depth", "custom_stopping_strings"] {
+            let mut t = Tui::new(Formatting::default());
+            select(&mut t, name);
+            t.begin_edit();
+            assert_eq!(mode_of(&t), Mode::Normal, "{}", name);
+            let mut t = Tui::new(Formatting::default());
+            t.cfg.configure(false, vec![]);
+            select(&mut t, name);
+            t.begin_edit();
+            assert_eq!(mode_of(&t), Mode::Insert, "{}", name);
+        }
+    }
+
+    #[test]
+    fn a_one_line_text_is_typed_with_vim_and_enter_accepts_it() {
+        let mut t = Tui::new(Formatting::default());
+        select(&mut t, "input_sequence");
+        t.begin_edit();
+        assert!(matches!(&t.modal, Modal::Multi(m) if m.single));
+        t.on_key(key(KeyCode::Char('i'), KeyModifiers::NONE));
+        t.on_key(key(KeyCode::Char('a'), KeyModifiers::NONE));
+        t.on_key(key(KeyCode::Char('b'), KeyModifiers::NONE));
+        t.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(t.modal, Modal::None));
+        let fd = FIELDS.iter().find(|f| f.key == "input_sequence").unwrap();
+        assert_eq!(t.fmt.get(fd).as_str(), Some("ab"));
+        // The same with Enter pressed in NORMAL mode.
+        t.begin_edit();
+        t.on_key(key(KeyCode::Char('x'), KeyModifiers::NONE)); // the cursor is on the `a`
+        t.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(t.modal, Modal::None));
+        assert_eq!(t.fmt.get(fd).as_str(), Some("b"));
+    }
+
+    #[test]
+    fn a_one_line_text_opens_with_the_cursor_at_the_start_or_at_the_end_without_vim() {
+        let cursor = |t: &Tui| match &t.modal {
+            Modal::Multi(m) => m.input.cursor,
+            _ => panic!("no editor"),
+        };
+        let fd = FIELDS.iter().find(|f| f.key == "output_suffix").unwrap();
+        // Vim modes on: the very beginning.
+        let mut t = Tui::new(Formatting::default());
+        t.set(fd, json!("hello"));
+        select(&mut t, "output_suffix");
+        t.begin_edit();
+        assert_eq!(cursor(&t), 0);
+        // Vim modes off: the end.
+        let mut t = Tui::new(Formatting::default());
+        t.cfg.configure(false, vec![]);
+        t.set(fd, json!("hello"));
+        select(&mut t, "output_suffix");
+        t.begin_edit();
+        assert_eq!(cursor(&t), 5);
+    }
+
+    #[test]
+    fn a_one_line_text_shows_line_breaks_as_backslash_n_and_keeps_them() {
+        let mut t = Tui::new(Formatting::default());
+        t.cfg.configure(false, vec![]);
+        let fd = FIELDS.iter().find(|f| f.key == "output_suffix").unwrap();
+        t.set(fd, json!("x\ny"));
+        select(&mut t, "output_suffix");
+        t.begin_edit();
+        match &t.modal {
+            Modal::Multi(m) => assert_eq!(m.input.text, "x\\ny"),
+            _ => panic!("no editor"),
+        }
+        t.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(t.fmt.get(fd).as_str(), Some("x\ny"));
+    }
+
+    #[test]
+    fn a_pasted_line_break_in_a_one_line_text_becomes_backslash_n() {
+        let mut t = Tui::new(Formatting::default());
+        t.cfg.configure(false, vec![]);
+        select(&mut t, "input_sequence");
+        t.begin_edit();
+        t.on_paste("a\r\nb\u{7}");
+        match &t.modal {
+            Modal::Multi(m) => assert_eq!(m.input.text, "a\\nb"),
+            _ => panic!("no editor"),
+        }
+    }
+
+    #[test]
+    fn a_one_line_text_is_checked_before_it_is_accepted() {
+        let mut t = Tui::new(Formatting::default());
+        select(&mut t, "story_string_depth");
+        t.begin_edit();
+        t.on_key(key(KeyCode::Char('A'), KeyModifiers::NONE));
+        t.on_key(key(KeyCode::Char('z'), KeyModifiers::NONE));
+        t.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
+        // Not a number: the window stays open and says why.
+        assert!(matches!(&t.modal, Modal::Multi(m) if matches!(m.note, Some((_, true)))));
+        assert!(!t.dirty());
+    }
+
+    #[test]
+    fn the_mode_tag_has_a_background_colour() {
+        let mut i = Input::default();
+        for (mode, bg) in [
+            (Mode::Insert, Color::Green),
+            (Mode::Normal, Color::Magenta),
+            (Mode::Command, Color::LightBlue),
+        ] {
+            i.mode = mode;
+            let tag = mode_tag(&i);
+            assert_eq!(tag.style.bg, Some(bg));
+            assert_eq!(tag.style.fg, Some(Color::Black));
+        }
     }
 
     #[test]

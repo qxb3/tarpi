@@ -4845,7 +4845,7 @@ impl App {
 
 /// `<leader>y`: put `text` on the system clipboard; the status-line message
 /// and whether it is an error.
-fn copy_to_clipboard(text: &str) -> (String, bool) {
+pub fn copy_to_clipboard(text: &str) -> (String, bool) {
     let n = text.chars().count();
     match crate::clipboard::copy(text) {
         Ok(how) => (format!("yanked {} chars to the clipboard ({})", n, how), false),

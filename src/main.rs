@@ -440,7 +440,7 @@ async fn open_formatting_manager(term: &mut Term, events: &mut EventStream, app:
     if !mouse_was_on {
         let _ = execute!(io::stdout(), EnableMouseCapture);
     }
-    let res = fmttui::manage(term, events).await;
+    let res = fmttui::manage(term, events, &app.input).await;
     if !mouse_was_on {
         let _ = execute!(io::stdout(), DisableMouseCapture);
     }

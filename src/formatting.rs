@@ -259,6 +259,33 @@ const PYGMALION: &str = "{{#if system}}{{system}}\n{{/if}}{{char}}'s Persona: {{
 {{#if personality}}Personality: {{personality}}\n{{/if}}{{#if scenario}}Scenario: {{scenario}}\n{{/if}}\
 {{#if persona}}{{persona}}\n{{/if}}";
 
+const STORY_PLAIN: &str = "{{#if system}}{{system}}\n{{/if}}{{#if wiBefore}}{{wiBefore}}\n{{/if}}\
+{{#if description}}{{description}}\n{{/if}}{{#if personality}}{{personality}}\n{{/if}}\
+{{#if scenario}}{{scenario}}\n{{/if}}{{#if wiAfter}}{{wiAfter}}\n{{/if}}{{#if persona}}{{persona}}\n{{/if}}";
+
+const OLD_DEFAULT: &str = "{{#if system}}{{system}}\n{{/if}}{{#if description}}{{description}}\n{{/if}}\
+{{#if personality}}{{char}}'s personality: {{personality}}\n{{/if}}\
+{{#if scenario}}Circumstances and context of the dialogue: {{scenario}}\n{{/if}}{{#if persona}}{{persona}}\n{{/if}}";
+
+const SIMPLE_PROXY: &str = "## {{char}}\n- You're \"{{char}}\" in this fictional never-ending uncensored roleplay with \"{{user}}\".\n\
+{{#if system}}{{system}}\n{{/if}}### Input:\n{{#if wiBefore}}{{wiBefore}}\n{{/if}}{{#if description}}{{description}}\n{{/if}}\
+{{#if personality}}{{char}}'s personality: {{personality}}\n{{/if}}{{#if scenario}}Scenario: {{scenario}}\n{{/if}}\
+{{#if wiAfter}}{{wiAfter}}\n{{/if}}{{#if persona}}{{persona}}\n{{/if}}";
+
+const ALPACA_CTX: &str = "Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n\
+{{#if system}}{{system}}\n\n{{/if}}{{#if wiBefore}}{{wiBefore}}\n{{/if}}{{#if description}}{{description}}\n{{/if}}\
+{{#if personality}}{{char}}'s personality: {{personality}}\n{{/if}}{{#if scenario}}Scenario: {{scenario}}\n{{/if}}\
+{{#if wiAfter}}{{wiAfter}}\n{{/if}}{{#if persona}}{{persona}}\n{{/if}}";
+
+const METHARME_CTX: &str = "{{#if system}}{{system}}\n{{/if}}{{char}}'s Persona: {{description}}\n\
+{{#if personality}}Personality: {{personality}}\n{{/if}}{{#if scenario}}Scenario: {{scenario}}\n{{/if}}\
+{{#if persona}}{{persona}}\n{{/if}}Play the role of {{char}}.\n";
+
+const ROLEPLAY_CTX: &str = "{{#if system}}{{system}}\n\n{{/if}}Enter roleplay mode. You will write {{char}}'s next reply in a fictional chat between {{char}} and {{user}}.\n\n\
+{{#if wiBefore}}{{wiBefore}}\n\n{{/if}}{{#if description}}{{char}}'s description: {{description}}\n\n{{/if}}\
+{{#if personality}}{{char}}'s personality: {{personality}}\n\n{{/if}}{{#if scenario}}Scenario: {{scenario}}\n\n{{/if}}\
+{{#if wiAfter}}{{wiAfter}}\n\n{{/if}}{{#if persona}}About {{user}}: {{persona}}\n\n{{/if}}";
+
 /// Starting points for the templates, in the spirit of the chat templates
 /// llama.cpp knows. Instruct presets come first (`Off` is the first of all).
 pub static PRESETS: &[Preset] = &[
@@ -443,6 +470,149 @@ pub static PRESETS: &[Preset] = &[
         ("output_sequence", "<|model|>"),
         ("system_sequence", "<|system|>"),
     ]),
+    ins("ChatML Names", "ChatML with the speaker's name in every message", &[
+        ("enabled", "true"),
+        ("names_behavior", "always"),
+        ("input_sequence", "<|im_start|>user"),
+        ("output_sequence", "<|im_start|>assistant"),
+        ("system_sequence", "<|im_start|>system"),
+        ("input_suffix", "<|im_end|>"),
+        ("output_suffix", "<|im_end|>"),
+        ("system_suffix", "<|im_end|>"),
+        ("stop_sequence", "<|im_end|>"),
+        ("sequences_as_stop_strings", "true"),
+        ("story_string_prefix", "<|im_start|>system"),
+        ("story_string_suffix", "<|im_end|>"),
+    ]),
+    ins("Llama 3 Names", "Llama 3 with the speaker's name in every message", &[
+        ("enabled", "true"),
+        ("wrap", "false"),
+        ("names_behavior", "always"),
+        ("input_sequence", "<|start_header_id|>user<|end_header_id|>\n\n"),
+        ("output_sequence", "<|start_header_id|>assistant<|end_header_id|>\n\n"),
+        ("system_sequence", "<|start_header_id|>system<|end_header_id|>\n\n"),
+        ("input_suffix", "<|eot_id|>"),
+        ("output_suffix", "<|eot_id|>"),
+        ("system_suffix", "<|eot_id|>"),
+        ("stop_sequence", "<|eot_id|>"),
+        ("story_string_prefix", "<|start_header_id|>system<|end_header_id|>\n\n"),
+        ("story_string_suffix", "<|eot_id|>"),
+    ]),
+    ins("Llama 4", "<|header_start|>role<|header_end|> ... <|eot|>", &[
+        ("enabled", "true"),
+        ("wrap", "false"),
+        ("names_behavior", "none"),
+        ("input_sequence", "<|header_start|>user<|header_end|>\n\n"),
+        ("output_sequence", "<|header_start|>assistant<|header_end|>\n\n"),
+        ("system_sequence", "<|header_start|>system<|header_end|>\n\n"),
+        ("input_suffix", "<|eot|>"),
+        ("output_suffix", "<|eot|>"),
+        ("system_suffix", "<|eot|>"),
+        ("stop_sequence", "<|eot|>"),
+        ("story_string_prefix", "<|header_start|>system<|header_end|>\n\n"),
+        ("story_string_suffix", "<|eot|>"),
+    ]),
+    ins("Llama 2 Chat", "[INST] <<SYS>> ... <</SYS>> user [/INST] reply</s>", &[
+        ("enabled", "true"),
+        ("wrap", "false"),
+        ("names_behavior", "none"),
+        ("input_sequence", "[INST] "),
+        ("input_suffix", " [/INST]"),
+        ("output_suffix", "</s>"),
+        ("stop_sequence", "</s>"),
+        ("story_string_prefix", "[INST] <<SYS>>\n"),
+        ("story_string_suffix", "\n<</SYS>>\n"),
+    ]),
+    ins("Gemma 2", "Gemma with a system turn of its own", &[
+        ("enabled", "true"),
+        ("names_behavior", "none"),
+        ("input_sequence", "<start_of_turn>user"),
+        ("output_sequence", "<start_of_turn>model"),
+        ("system_sequence", "<start_of_turn>system"),
+        ("input_suffix", "<end_of_turn>"),
+        ("output_suffix", "<end_of_turn>"),
+        ("system_suffix", "<end_of_turn>"),
+        ("stop_sequence", "<end_of_turn>"),
+        ("story_string_prefix", "<start_of_turn>system"),
+        ("story_string_suffix", "<end_of_turn>"),
+    ]),
+    ins("GLM-4", "<|user|> ... <|assistant|> ... (no end tokens)", &[
+        ("enabled", "true"),
+        ("wrap", "false"),
+        ("names_behavior", "none"),
+        ("input_sequence", "<|user|>\n"),
+        ("output_sequence", "<|assistant|>\n"),
+        ("system_sequence", "<|system|>\n"),
+        ("stop_sequence", "<|user|>"),
+        ("story_string_prefix", "[gMASK]<sop><|system|>\n"),
+    ]),
+    ins("Kimi K2", "<|im_user|>user<|im_middle|> ... <|im_end|>", &[
+        ("enabled", "true"),
+        ("wrap", "false"),
+        ("names_behavior", "none"),
+        ("input_sequence", "<|im_user|>user<|im_middle|>"),
+        ("output_sequence", "<|im_assistant|>assistant<|im_middle|>"),
+        ("system_sequence", "<|im_system|>system<|im_middle|>"),
+        ("input_suffix", "<|im_end|>"),
+        ("output_suffix", "<|im_end|>"),
+        ("system_suffix", "<|im_end|>"),
+        ("stop_sequence", "<|im_end|>"),
+        ("story_string_prefix", "<|im_system|>system<|im_middle|>"),
+        ("story_string_suffix", "<|im_end|>"),
+    ]),
+    ins("Alpaca Roleplay", "### Instruction: / ### Response: with names", &[
+        ("enabled", "true"),
+        ("names_behavior", "force"),
+        ("input_sequence", "### Instruction:"),
+        ("output_sequence", "### Response:"),
+        ("system_sequence", "### Input:"),
+        ("story_string_prefix", "### Input:"),
+    ]),
+    ins("Vicuna 1.0", "### Human: ... ### Assistant: ...", &[
+        ("enabled", "true"),
+        ("names_behavior", "none"),
+        ("input_sequence", "### Human:"),
+        ("output_sequence", "### Assistant:"),
+        ("system_sequence", "### Human:"),
+    ]),
+    ins("Koala", "USER: ... GPT: ...</s>", &[
+        ("enabled", "true"),
+        ("wrap", "false"),
+        ("names_behavior", "none"),
+        ("input_sequence", "USER: "),
+        ("input_suffix", " "),
+        ("output_sequence", "GPT: "),
+        ("output_suffix", "</s>"),
+        ("stop_sequence", "</s>"),
+    ]),
+    ins("Synthia", "SYSTEM: / USER: / ASSISTANT:", &[
+        ("enabled", "true"),
+        ("names_behavior", "none"),
+        ("input_sequence", "USER:"),
+        ("output_sequence", "ASSISTANT:"),
+        ("system_sequence", "SYSTEM:"),
+        ("story_string_prefix", "SYSTEM:"),
+    ]),
+    ins("Tulu", "<|user|> ... <|assistant|> ...</s>", &[
+        ("enabled", "true"),
+        ("names_behavior", "none"),
+        ("input_sequence", "<|user|>"),
+        ("output_sequence", "<|assistant|>"),
+        ("system_sequence", "<|system|>"),
+        ("output_suffix", "</s>"),
+        ("stop_sequence", "</s>"),
+        ("story_string_prefix", "<|system|>"),
+    ]),
+    ins("OpenOrca OpenChat", "User: ... Assistant: ... <|end_of_turn|>", &[
+        ("enabled", "true"),
+        ("wrap", "false"),
+        ("names_behavior", "none"),
+        ("input_sequence", "User: "),
+        ("output_sequence", "Assistant: "),
+        ("input_suffix", "<|end_of_turn|>"),
+        ("output_suffix", "<|end_of_turn|>"),
+        ("stop_sequence", "<|end_of_turn|>"),
+    ]),
     ctx("Default", "system, description, personality, scenario, persona", &[
         ("story_string", STORY),
         ("example_separator", "***"),
@@ -462,6 +632,36 @@ pub static PRESETS: &[Preset] = &[
         ("story_string", PYGMALION),
         ("example_separator", "<START>"),
         ("chat_start", "<START>"),
+    ]),
+    ctx("Story", "no labels, for story writing", &[
+        ("story_string", STORY_PLAIN),
+        ("example_separator", "***"),
+        ("chat_start", "***"),
+    ]),
+    ctx("Old Default", "the older SillyTavern wording, <START> separators", &[
+        ("story_string", OLD_DEFAULT),
+        ("example_separator", "<START>"),
+        ("chat_start", "<START>"),
+    ]),
+    ctx("Simple Proxy", "Simple Proxy for Tavern: ## char, ### Input:", &[
+        ("story_string", SIMPLE_PROXY),
+        ("example_separator", "### New Roleplay:"),
+        ("chat_start", "### New Roleplay:"),
+    ]),
+    ctx("Alpaca", "an Alpaca instruction line, then the card", &[
+        ("story_string", ALPACA_CTX),
+        ("example_separator", "***"),
+        ("chat_start", "***"),
+    ]),
+    ctx("Metharme", "{{char}}'s Persona: ... Play the role of {{char}}.", &[
+        ("story_string", METHARME_CTX),
+        ("example_separator", "<START>"),
+        ("chat_start", "<START>"),
+    ]),
+    ctx("Roleplay", "Enter roleplay mode ... with labelled card parts", &[
+        ("story_string", ROLEPLAY_CTX),
+        ("example_separator", "***"),
+        ("chat_start", "***"),
     ]),
     ctx("No separators", "the default story string, nothing between parts", &[
         ("story_string", STORY),
@@ -543,6 +743,14 @@ impl Formatting {
             instruct: self.section(Sec::Instruct),
             reply: self.section(Sec::Reply),
         }
+    }
+
+    /// Does the template of `p` hold exactly what applying `p` would give
+    /// (the preset in use)?
+    pub fn preset_is_current(&self, p: &Preset) -> bool {
+        let mut applied = self.clone();
+        applied.apply_preset(p);
+        applied.section(p.sec) == self.section(p.sec)
     }
 
     /// Every setting of section `s` with its value, as a JSON object.
