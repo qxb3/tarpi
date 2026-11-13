@@ -272,6 +272,9 @@ impl CardModal {
             (4, Pick::Number(note::MAX_INTERVAL)),
         ];
         m.title = "author's note".to_string();
+        // Like `/char` and `/config`: opens in NORMAL mode (does nothing when
+        // vim modes are off).
+        m.input.enter_normal();
         m
     }
 
@@ -745,6 +748,15 @@ mod tests {
 
     fn note_form() -> CardModal {
         CardModal::note(&Note::default(), &Input::default())
+    }
+
+    #[test]
+    fn the_note_opens_in_normal_mode_with_vim_and_insert_without() {
+        assert_eq!(note_form().input.mode, Mode::Normal);
+        let mut cfg = Input::default();
+        cfg.configure(false, vec![]);
+        let m = CardModal::note(&Note::default(), &cfg);
+        assert_eq!(m.input.mode, Mode::Insert);
     }
 
     #[test]

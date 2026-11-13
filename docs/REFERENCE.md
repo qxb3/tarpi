@@ -317,7 +317,7 @@ Long lines are wrapped to the window; tabs are shown as four spaces. The window 
 
 The Author's Note is a short text that belongs to one chat and is added to the prompt of the replies, to steer the story (`Keep the pace slow.`, `[Style: terse, present tense]`). It is kept in the chat file's metadata (`note_prompt`, `note_position`, `note_depth`, `note_role`, `note_interval`).
 
-`/note` (or `/an`) opens a window with the note's text and four rows under it. Ctrl+S saves, Esc cancels (the text works like the fields of `/char`, including the vim modes and the spell checker). The rows are never typed: with the cursor on one, ←/→ (or `h` / `l`) change it, ↑/↓ (or `j` / `k`, Tab) move between rows, and a click on the left or right half of a row steps back or on.
+`/note` (or `/an`) opens a window with the note's text and four rows under it, in NORMAL mode when the vim modes are on (press `i`, `a`, ... to type). Ctrl+S saves, Esc cancels (the text works like the fields of `/char`, including the vim modes and the spell checker). The rows are never typed: with the cursor on one, ←/→ (or `h` / `l`) change it, ↑/↓ (or `j` / `k`, Tab) move between rows, and a click on the left or right half of a row steps back or on.
 
 | Row | Choices |
 | --- | --- |
