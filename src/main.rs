@@ -738,6 +738,12 @@ async fn main() -> Result<()> {
                 break;
             }
             Some(app::Exit::NewChat) => want = Want::New,
+            Some(app::Exit::Pick) => {
+                // The last chat is gone: the `choose a character` window again.
+                arrival = Arrival::Start;
+                startup_pick = true;
+                pending_new = false;
+            }
             Some(app::Exit::Chat(file)) => {
                 arrival = Arrival::Chat;
                 want = Want::File(file);

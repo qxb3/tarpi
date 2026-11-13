@@ -90,6 +90,9 @@ pub enum Exit {
     NewChat,
     /// Chat with another character (its card file name).
     Character(String),
+    /// The `choose a character` window, as at start-up (the last chat of the
+    /// character was deleted).
+    Pick,
 }
 
 /// What the choose-one window (`App::picker`) is choosing.
@@ -3005,7 +3008,7 @@ impl App {
     /// Delete a chat file chosen in the `/chats` window; the window stays open.
     async fn picker_delete(&mut self, key: &str) {
         // The open chat is the only one left: delete it (and its hidden
-        // `_before-summary` copies) and leave the program.
+        // `_before-summary` copies) and go back to the `choose a character` window.
         let only_one = self
             .picker
             .as_ref()
@@ -3014,6 +3017,7 @@ impl App {
         if key == self.chat.file && only_one {
             // Stop first: finishing a generation would save the chat again.
             self.picker = None;
+            self.exit_to = Some(Exit::Pick);
             self.quit().await;
             let avatar = self.chat.avatar.clone();
             let mut names = vec![key.to_string()];
