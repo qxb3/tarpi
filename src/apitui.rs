@@ -1238,7 +1238,8 @@ fn row_line(t: &Tui, idx: usize, width: usize, cols: &Cols) -> Line<'static> {
             };
             (d.label.to_string(), shown, changed, frac)
         }
-        Row::Header(_) => unreachable!(),
+        // Headers are drawn above and never get here.
+        Row::Header(_) => return Line::from(""),
     };
 
     let value_style = if changed {

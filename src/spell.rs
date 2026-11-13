@@ -182,7 +182,10 @@ fn find(text: &[char], is_known: impl Fn(&str) -> bool) -> Vec<(usize, usize)> {
             // but `aaaa` -> `a` is only the same letter over and over.
             let two = squeeze(&lc, 2);
             let one = squeeze(&lc, 1);
-            let real = |s: &str| known(s) && s.chars().any(|c| c != s.chars().next().unwrap());
+            let real = |s: &str| {
+                let first = s.chars().next();
+                known(s) && s.chars().any(|c| Some(c) != first)
+            };
             if (two != lc && real(&two)) || (one != lc && real(&one)) {
                 continue;
             }

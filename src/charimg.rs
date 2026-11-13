@@ -127,19 +127,24 @@ impl ImageModal {
     fn square(&mut self, n: u32) -> &RgbImage {
         let n = n.max(2);
         if self.cache.as_ref().map(|c| c.0) != Some(n) {
-            let (w, h) = self.src.dimensions();
-            let scale = (n as f32 / w as f32).min(n as f32 / h as f32);
-            let nw = ((w as f32 * scale).round() as u32).clamp(1, n);
-            let nh = ((h as f32 * scale).round() as u32).clamp(1, n);
-            let small = image::imageops::resize(&self.src, nw, nh, FilterType::Lanczos3);
-            let mut sq = RgbImage::new(n, n);
-            let (ox, oy) = ((n - nw) / 2, (n - nh) / 2);
-            for (x, y, p) in small.enumerate_pixels() {
-                sq.put_pixel(x + ox, y + oy, *p);
-            }
-            self.cache = Some((n, sq));
+            self.cache = None;
         }
-        &self.cache.as_ref().unwrap().1
+        &self
+            .cache
+            .get_or_insert_with(|| {
+                let (w, h) = self.src.dimensions();
+                let scale = (n as f32 / w as f32).min(n as f32 / h as f32);
+                let nw = ((w as f32 * scale).round() as u32).clamp(1, n);
+                let nh = ((h as f32 * scale).round() as u32).clamp(1, n);
+                let small = image::imageops::resize(&self.src, nw, nh, FilterType::Lanczos3);
+                let mut sq = RgbImage::new(n, n);
+                let (ox, oy) = ((n - nw) / 2, (n - nh) / 2);
+                for (x, y, p) in small.enumerate_pixels() {
+                    sq.put_pixel(x + ox, y + oy, *p);
+                }
+                (n, sq)
+            })
+            .1
     }
 
     /// Half-block cells for a square of `side` x `side` points (`side` even):

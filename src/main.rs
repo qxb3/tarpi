@@ -158,9 +158,10 @@ enum Commands {
 
 /// Everything after a command's name, passed on unchanged (`--help` included).
 #[derive(Args, Debug)]
-#[allow(dead_code)]
 struct Rest {
+    // Only here so clap accepts the arguments; the modules re-read them from argv.
     #[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
+    #[allow(dead_code)]
     args: Vec<String>,
 }
 

@@ -152,7 +152,7 @@ fn analyze(text: &str) -> (bool, String) {
 
 /// The markers that are still open at the end of `text`, as the string that
 /// closes them. Empty when nothing needs closing.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn closers(text: &str) -> String {
     analyze(text).1
 }

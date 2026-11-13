@@ -10,7 +10,7 @@
 **Roleplay from the command line.**
 
 ```
- tarpi 0.7.4  Tarpi/Tarpi01 • User • llamacpp@127.0.0.1:8080
+ tarpi 0.9.0  Tarpi/Tarpi01 • User • llamacpp@127.0.0.1:8080
 ────────────────────────────────────────────────────────────
  Tarpi
  *Spins around in the chair.* "Finally. I was about to start

@@ -3893,8 +3893,10 @@ impl App {
         if self.spell_menu.is_none() {
             return k.code == KeyCode::Tab && self.spell_open();
         }
-        let n = self.spell_menu.as_ref().map_or(0, |m| m.sugg.len());
-        let m = self.spell_menu.as_mut().unwrap();
+        let Some(m) = self.spell_menu.as_mut() else {
+            return false;
+        };
+        let n = m.sugg.len().max(1);
         match k.code {
             KeyCode::Tab | KeyCode::Down => m.sel = (m.sel + 1) % n,
             KeyCode::BackTab | KeyCode::Up => m.sel = (m.sel + n - 1) % n,
