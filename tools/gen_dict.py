@@ -28,6 +28,55 @@ café cafés cliché clichés résumé résumés naïve naïvely fiancé fiancé
 touché déjà entrée crème brûlée señor señora jalapeño piñata mañana über
 """.split()
 
+# Roleplay and chat vocabulary: anime / manga terms, character types, fantasy
+# creatures, weapons and magic, and the verbs of narration (`smirked`).
+# Add words here and run this script again.
+RP = """
+yandere yanderes tsundere tsunderes kuudere dandere himedere deredere yangire sadodere
+waifu waifus husbando husbandos senpai sempai kouhai kohai sensei sama kawaii sugoi baka
+onee oneechan onii oniichan oniisan oneesan imouto otouto uwu owo nya nyaa nyan kya kyaa
+isekai shounen shonen shoujo shojo seinen josei harem ecchi hentai yaoi yuri smut kink
+kinky bdsm otaku weeb weeaboo cosplay cosplays cosplayer cosplayers cosplaying chibi
+bishounen bishonen bishoujo mecha kaiju shinobi kunoichi samurai ronin katana kimono
+yukata onigiri bento mochi matcha tatami senbei ahoge kemonomimi nekomimi catgirl
+catgirls foxgirl foxgirls bunnygirl bunnygirls wolfgirl wolfgirls dogboy catboy catboys
+foxboy roleplay roleplays roleplayed roleplaying roleplayer roleplayers ooc ocs npc npcs
+pcs lorebook lorebooks worldbuilding worldbuilder worldbuilders worldbuild backstory
+backstories playthrough playthroughs godmode godmoding godmodding metagame metagaming
+powergaming retcon retcons retconned retconning fanfic fanfics fanfiction oneshot
+oneshots headcanon headcanons shipper shippers slowburn afk irl idk imo imho brb tbh smh
+lmao lmfao rofl asap mmm mmhm mmmm pfft pfff tch welp yikes tiefling tieflings
+dragonborn halfling halflings dwarven elven elvish drow gnoll gnolls kobolds orcish lich
+liches wyvern wyverns gryphon gryphons hippogriff basilisk chimera manticore minotaur
+minotaurs centaur centaurs satyr satyrs dryad dryads nymph nymphs naiad sylph undine
+pixie pixies kelpie banshee banshees wraith wraiths revenant revenants ghoul ghouls
+wight wights golem golems homunculus homunculi familiar familiars arcana arcane runic
+rune runes sigil sigils grimoire grimoires spellbook spellbooks spellcaster spellcasters
+spellcasting cantrip cantrips thaumaturgy necromancy necromantic necromancers alchemy
+alchemist alchemists warlock warlocks sorcerer sorcerers sorceress sorceresses
+enchantress enchanter druid druids druidic barbarian barbarians artificer artificers
+mage mages archmage archmages battlemage runemaster fae faerie faeries feywild
+shadowfell underdark aether leyline leylines otherworldly mythril mithril adamantine
+orichalcum elixir elixirs tincture tinctures ichor vampiric vampirism lycanthrope
+lycanthropes lycanthropy werewolf werewolves werecat werebear shapeshifter shapeshifters
+shapeshifting shapeshift skinwalker doppelganger doppelgangers changeling changelings
+succubi incubi demonkin demoness demonesses nephilim seraph seraphim cherubim archangel
+archangels hellhound hellhounds hellfire abyssal infernal celestial ethereal umbral
+sanctum citadel citadels bastion bastions ramparts portcullis gauntlets vambrace
+vambraces pauldron pauldrons greaves cuirass gambeson hauberk chainmail sabatons
+bascinet rapier rapiers scimitar scimitars falchion falchions claymore claymores glaive
+glaives halberd halberds poleaxe quarterstaff warhammer warhammers flail flails
+morningstar estoc kunai shuriken tanto wakizashi naginata nodachi kusarigama buckler
+longsword longswords shortsword shortswords greatsword greatswords broadsword
+broadswords longbow longbows crossbow crossbows arbalest quiver quivers dirk dirks
+stiletto stilettos smirking smirked blushed flustered bashful coyly teasingly playfully
+wryly sheepishly sultry smoldering smouldering huskily breathless shuddered lilting
+purrs purring purred growls snarls hisses murmurs murmured whimpers whimpered mewls
+mewled keens moans moaned nuzzles nuzzled nuzzling cuddles cuddled cuddling snuggles
+snuggled snuggling pouting pouted smirkingly giggled giggling chuckled chuckling
+sniffled sniffling scoffed huffed
+""".split()
+
 # ---- affix rules
 rules = {"PFX": {}, "SFX": {}}  # kind -> flag -> (cross, [(strip, add, regex)])
 only_compound = None
@@ -94,6 +143,7 @@ with open(dic_path, encoding="utf-8") as f:
         words.update(forms)
 
 words.update(EXTRA)
+words.update(RP)
 ok = re.compile(r"^[^\W\d_]+(?:'[^\W\d_]+)*$")
 clean = set()
 for w in words:
@@ -110,7 +160,7 @@ TWO = set(
     "ma me mm mr ms my no of oh ok on or ow ox pa pi pm re so to tv uh um up "
     "us we ya ye yo".split()
 )
-NO_VOWEL_3 = set("hmm shh brr tsk nth pst psh".split())
+NO_VOWEL_3 = set("hmm mmm shh brr tsk tch nth pst psh afk tbh brb smh npc".split())
 
 def keep(w):
     if "'" in w:
