@@ -462,7 +462,8 @@ async fn open_lore_manager(term: &mut Term, events: &mut EventStream, app: &mut 
     }
     let avatar = app.character.avatar.clone();
     let name = app.character.name.clone();
-    let res = loretui::manage(term, events, &app.input, &avatar, &name).await;
+    let spellcheck = app.spell.is_some();
+    let res = loretui::manage(term, events, &app.input, &avatar, &name, spellcheck).await;
     if !mouse_was_on {
         let _ = execute!(io::stdout(), DisableMouseCapture);
     }

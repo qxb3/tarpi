@@ -10,12 +10,23 @@
 //! What a book is and how it is stored and imported is in `lorestore`; what a
 //! book does in a prompt is in `lorebook` and `textgen`. The text windows are
 //! the ones of `/formatting` (`fmttui::MultiEdit`), vim modes included.
+//!
+//! With `spellcheck: true` the book's description and an entry's text are
+//! spell checked like the chat box: misspelled words are underlined and Tab
+//! on one opens the suggestions (see `LoreSpell`). Titles and keys are not
+//! checked, and their words (and the character's and personas' names) count
+//! as spelled right.
 
-use crate::fmttui::{centered, clip, draw_multi, dwidth, multi_edit_key, EditEnd, MultiEdit};
+use crate::app::SpellMenu;
+use crate::fmttui::{
+    centered, clip, draw_multi, draw_multi_marked, dwidth, multi_edit_key, EditEnd, MultiEdit,
+};
 use crate::input::{Input, Mode};
 use crate::jv::*;
 use crate::lorestore::{self, Book, Item, AFTER, BEFORE, DEPTH};
 use crate::pathcomp;
+use crate::spell::Checker;
+use crate::ui::{place_spell_menu, SpellPlace};
 use anyhow::Result;
 use crossterm::event::{
     Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
@@ -23,6 +34,9 @@ use crossterm::event::{
 };
 use futures_util::StreamExt;
 use serde_json::Value;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::time::{Duration, Instant};
 use ratatui::{
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style},
@@ -110,6 +124,147 @@ enum Modal {
     Toggle(Vec<(String, String)>, usize),
 }
 
+/// The windows that are spell checked: prose, not names or keywords.
+fn spell_target(t: Target) -> bool {
+    matches!(t, Target::Book(BF::Description) | Target::Item(EF::Content))
+}
+
+/// Spell checking of the text windows (config `spellcheck`): the checker, the
+/// suggestion menu and the timer that keeps the word being typed from being
+/// underlined before it is finished. The same logic as the chat box's, on the
+/// `Input` of the open window (see `App::spell_key`).
+struct LoreSpell {
+    checker: Checker,
+    menu: Option<SpellMenu>,
+    /// Hash of the text, cursor and mode the timer was started for.
+    key: u64,
+    since: Instant,
+    /// Where the menu was drawn and the screen row of each entry.
+    area: Rect,
+    rows: Vec<(u16, usize)>,
+}
+
+impl LoreSpell {
+    fn new() -> LoreSpell {
+        LoreSpell {
+            checker: Checker::new(),
+            menu: None,
+            key: 0,
+            since: Instant::now(),
+            area: Rect::default(),
+            rows: Vec::new(),
+        }
+    }
+
+    /// Note a change of text, cursor or mode: the menu closes and the rest
+    /// timer starts again.
+    fn touch(&mut self, inp: &Input) {
+        let mut h = DefaultHasher::new();
+        inp.text.hash(&mut h);
+        inp.cursor.hash(&mut h);
+        (inp.mode as u8).hash(&mut h);
+        let key = h.finish();
+        if key != self.key {
+            self.key = key;
+            self.since = Instant::now();
+            self.menu = None;
+        }
+    }
+
+    fn rested(&self) -> bool {
+        self.since.elapsed() >= crate::app::SPELL_DELAY
+    }
+
+    /// Misspelled words of the window's text. The word the cursor is in is
+    /// left alone while typing (INSERT mode): it is not finished yet.
+    fn marks(&mut self, inp: &Input) -> Vec<(usize, usize)> {
+        self.touch(inp);
+        let typing = (inp.mode == Mode::Insert && !self.rested()).then_some(inp.cursor);
+        self.checker.marks_typing(&inp.text, typing)
+    }
+
+    /// The misspelled word the cursor is in (or right behind), if any.
+    fn word_at_cursor(&mut self, inp: &Input) -> Option<((usize, usize), String)> {
+        if !matches!(inp.mode, Mode::Insert | Mode::Normal) {
+            return None;
+        }
+        let cur = inp.cursor;
+        let (s, e) = self
+            .checker
+            .marks(&inp.text)
+            .into_iter()
+            .find(|&(s, e)| cur >= s && cur <= e)?;
+        let word: String = inp.text.chars().skip(s).take(e - s).collect();
+        Some(((s, e), word))
+    }
+
+    /// Open the menu for the word at the cursor.
+    fn open(&mut self, inp: &Input) -> bool {
+        let Some((range, word)) = self.word_at_cursor(inp) else {
+            return false;
+        };
+        let sugg = self.checker.suggest(&word, 6);
+        if sugg.is_empty() {
+            return false;
+        }
+        self.menu = Some(SpellMenu {
+            range,
+            word,
+            sugg,
+            sel: 0,
+        });
+        true
+    }
+
+    /// Replace the misspelled word with suggestion `i`.
+    fn accept(&mut self, inp: &mut Input, i: usize) {
+        let Some(m) = self.menu.take() else {
+            return;
+        };
+        let Some(new) = m.sugg.get(i) else {
+            return;
+        };
+        // One undo step of its own: `u` puts the misspelled word back.
+        inp.replace_chars(m.range.0, m.range.1, new);
+        // In NORMAL mode the cursor sits on a letter, not after the last one.
+        inp.clamp_normal();
+    }
+
+    /// A key in the window: Tab opens the menu on a misspelled word (and,
+    /// open, moves down); Shift+Tab / Up / Down move; Enter puts the
+    /// highlighted entry in; Esc closes it. Returns false when the key is not
+    /// for the menu (which then closes).
+    fn key(&mut self, inp: &mut Input, k: &KeyEvent) -> bool {
+        if k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            || !matches!(inp.mode, Mode::Insert | Mode::Normal)
+        {
+            self.menu = None;
+            return false;
+        }
+        if self.menu.is_none() {
+            return k.code == KeyCode::Tab && self.open(inp);
+        }
+        let Some(menu) = self.menu.as_mut() else {
+            return false;
+        };
+        let n = menu.sugg.len().max(1);
+        match k.code {
+            KeyCode::Tab | KeyCode::Down => menu.sel = (menu.sel + 1) % n,
+            KeyCode::BackTab | KeyCode::Up => menu.sel = (menu.sel + n - 1) % n,
+            KeyCode::Enter => {
+                let i = menu.sel;
+                self.accept(inp, i);
+            }
+            KeyCode::Esc => self.menu = None,
+            _ => {
+                self.menu = None;
+                return false;
+            }
+        }
+        true
+    }
+}
+
 struct Tui {
     /// The chat box: only its vim settings are used.
     cfg: Input,
@@ -140,6 +295,8 @@ struct Tui {
     /// The character of the chat `/lore` was opened from.
     avatar: String,
     char_name: String,
+    /// Spell checking of the text windows (`None`: switched off).
+    spell: Option<LoreSpell>,
 }
 
 fn split_list(text: &str) -> Vec<String> {
@@ -217,6 +374,7 @@ impl Tui {
             rows_rect: Rect::default(),
             avatar: avatar.to_string(),
             char_name: char_name.to_string(),
+            spell: None,
         };
         t.cfg.copy_config(cfg);
         t.reload();
@@ -683,7 +841,55 @@ impl Tui {
             m.input.enter_insert();
         }
         self.comp = None;
+        if spell_target(target) {
+            self.spell_names();
+        }
+        if let Some(sp) = self.spell.as_mut() {
+            sp.menu = None;
+        }
         self.modal = Modal::Edit(Box::new(m), target);
+    }
+
+    /// Words the spell checker must accept: the character and the personas,
+    /// and what the book itself is about (its name, the titles and the keys
+    /// of its entries).
+    fn spell_names(&mut self) {
+        if self.spell.is_none() {
+            return;
+        }
+        let mut names: Vec<String> = vec![
+            self.char_name.clone(),
+            self.avatar.trim_end_matches(".png").to_string(),
+        ];
+        for p in crate::persona::list() {
+            names.push(p.name);
+            names.push(p.title);
+        }
+        if let Some(b) = &self.cur {
+            names.push(b.name.clone());
+            for e in &b.entries {
+                names.push(e.name.clone());
+                names.extend(e.keys.iter().cloned());
+                names.extend(e.secondary.iter().cloned());
+            }
+        }
+        let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        if let Some(sp) = self.spell.as_mut() {
+            sp.checker.set_names(&refs);
+        }
+    }
+
+    /// How long until the word being typed in a spell-checked window counts
+    /// as finished (and gets underlined), when that is still to come.
+    fn spell_wait(&self) -> Option<Duration> {
+        let sp = self.spell.as_ref()?;
+        let Modal::Edit(m, target) = &self.modal else {
+            return None;
+        };
+        if !spell_target(*target) || m.input.mode != Mode::Insert {
+            return None;
+        }
+        crate::app::SPELL_DELAY.checked_sub(sp.since.elapsed())
     }
 
     fn begin_import(&mut self) {
@@ -1091,6 +1297,15 @@ impl Tui {
 
     fn edit_key(&mut self, mut m: MultiEdit, target: Target, k: KeyEvent) -> Option<MultiEdit> {
         self.status = None;
+        // Tab opens the spelling menu on a misspelled word; with it open the
+        // arrows, Tab, Enter and Esc are the menu's.
+        if spell_target(target) {
+            if let Some(sp) = self.spell.as_mut() {
+                if sp.key(&mut m.input, &k) {
+                    return Some(m);
+                }
+            }
+        }
         if target == Target::ImportPath && m.input.mode != Mode::Command {
             match k.code {
                 KeyCode::Tab => {
@@ -1362,6 +1577,23 @@ impl Tui {
     }
 
     fn on_mouse(&mut self, m: MouseEvent) {
+        // A click on a suggestion of the spelling menu picks it.
+        if let (Modal::Edit(w, _), Some(sp)) = (&mut self.modal, self.spell.as_mut()) {
+            if sp.menu.is_some() {
+                if let MouseEventKind::Down(MouseButton::Left) = m.kind {
+                    let hit = if sp.area.contains(Position::new(m.column, m.row)) {
+                        sp.rows.iter().find(|(y, _)| *y == m.row).map(|&(_, i)| i)
+                    } else {
+                        None
+                    };
+                    match hit {
+                        Some(i) => sp.accept(&mut w.input, i),
+                        None if !sp.area.contains(Position::new(m.column, m.row)) => sp.menu = None,
+                        None => {}
+                    }
+                }
+            }
+        }
         if !matches!(self.modal, Modal::None) {
             return;
         }
@@ -1929,7 +2161,22 @@ fn draw(f: &mut Frame, t: &mut Tui) {
     if let Some(tg) = target {
         let title = t.target_title(tg);
         if let Modal::Edit(m, _) = &mut t.modal {
-            draw_multi(f, area, title, m);
+            match t.spell.as_mut() {
+                Some(sp) if spell_target(tg) => {
+                    sp.area = Rect::default();
+                    sp.rows.clear();
+                    let marks = sp.marks(&m.input);
+                    let cursor = draw_multi_marked(f, area, title, m, &marks);
+                    // The suggestions sit at the text cursor.
+                    if let (Some(menu), Some((cx, cy))) = (sp.menu.as_ref(), cursor) {
+                        if let Some((rect, hits)) = place_spell_menu(f, menu, SpellPlace::At(cx, cy)) {
+                            sp.area = rect;
+                            sp.rows = hits;
+                        }
+                    }
+                }
+                _ => draw_multi(f, area, title, m),
+            }
         }
     }
 
@@ -2027,8 +2274,10 @@ pub async fn manage(
     cfg: &Input,
     avatar: &str,
     char_name: &str,
+    spellcheck: bool,
 ) -> Result<()> {
     let mut t = Tui::new(cfg, avatar, char_name);
+    t.spell = spellcheck.then(LoreSpell::new);
     if !t.problems.is_empty() {
         let msg = format!("could not read: {}", t.problems.join("; "));
         t.say(msg, true);
@@ -2037,7 +2286,16 @@ pub async fn manage(
     }
     loop {
         term.draw(|f| draw(f, &mut t))?;
-        match events.next().await {
+        // While a word is being typed in a spell-checked window, wake up when
+        // it counts as finished, so it is underlined without another key.
+        let ev = match t.spell_wait() {
+            Some(left) => match tokio::time::timeout(left, events.next()).await {
+                Ok(ev) => ev,
+                Err(_) => continue,
+            },
+            None => events.next().await,
+        };
+        match ev {
             Some(Ok(Event::Key(k))) if k.kind != KeyEventKind::Release => t.on_key(k),
             Some(Ok(Event::Mouse(m))) => t.on_mouse(m),
             Some(Ok(Event::Paste(s))) => t.on_paste(&s),
@@ -2243,5 +2501,69 @@ mod tests {
         assert_eq!(split_list("a, b ,, c"), vec!["a", "b", "c"]);
         assert!(split_list(" , ").is_empty());
         assert_eq!(split_list("  red   dragon ,\tgold  "), vec!["red dragon", "gold"]);
+    }
+
+    /// A window's text with the cursor at its end, in INSERT mode.
+    fn typed(text: &str) -> Input {
+        let mut i = Input::default();
+        i.text = text.to_string();
+        i.cursor = text.chars().count();
+        i.enter_insert();
+        i
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn only_the_prose_windows_are_spell_checked() {
+        assert!(spell_target(Target::Item(EF::Content)));
+        assert!(spell_target(Target::Book(BF::Description)));
+        assert!(!spell_target(Target::Item(EF::Keys)));
+        assert!(!spell_target(Target::Item(EF::Secondary)));
+        assert!(!spell_target(Target::Item(EF::Title)));
+        assert!(!spell_target(Target::Book(BF::Name)));
+        assert!(!spell_target(Target::ImportPath));
+    }
+
+    #[test]
+    fn tab_on_a_misspelled_word_opens_the_menu_and_enter_fixes_it() {
+        let mut sp = LoreSpell::new();
+        let mut inp = typed("Say teh");
+        assert!(sp.key(&mut inp, &key(KeyCode::Tab)));
+        assert_eq!(sp.menu.as_ref().map(|m| m.word.as_str()), Some("teh"));
+        assert!(sp.key(&mut inp, &key(KeyCode::Enter)));
+        assert_eq!(inp.text, "Say the");
+        assert!(sp.menu.is_none());
+    }
+
+    #[test]
+    fn tab_on_a_correct_word_is_not_the_menus_and_other_keys_close_it() {
+        let mut sp = LoreSpell::new();
+        let mut inp = typed("Say the");
+        assert!(!sp.key(&mut inp, &key(KeyCode::Tab)));
+        assert!(sp.menu.is_none());
+        let mut inp = typed("teh");
+        assert!(sp.key(&mut inp, &key(KeyCode::Tab)));
+        assert!(sp.menu.is_some());
+        // Esc only closes the menu; any other key closes it and is not taken.
+        assert!(sp.key(&mut inp, &key(KeyCode::Esc)));
+        assert!(sp.menu.is_none());
+        assert!(sp.key(&mut inp, &key(KeyCode::Tab)));
+        assert!(!sp.key(&mut inp, &key(KeyCode::Char('x'))));
+        assert!(sp.menu.is_none());
+    }
+
+    #[test]
+    fn the_word_being_typed_is_marked_only_once_it_rests() {
+        let mut sp = LoreSpell::new();
+        let inp = typed("teh");
+        assert!(sp.marks(&inp).is_empty());
+        sp.since = sp
+            .since
+            .checked_sub(crate::app::SPELL_DELAY)
+            .unwrap_or(sp.since);
+        assert_eq!(sp.marks(&inp), vec![(0, 3)]);
     }
 }

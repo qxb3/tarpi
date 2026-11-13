@@ -849,6 +849,19 @@ pub(crate) fn mode_tag(input: &Input) -> Span<'static> {
 /// `:` command, a message or the keys. A one-line setting gets a small window;
 /// both grow with the text, up to the screen.
 pub(crate) fn draw_multi(f: &mut Frame, area: Rect, title: &str, m: &mut MultiEdit) {
+    draw_multi_marked(f, area, title, m, &[]);
+}
+
+/// `draw_multi` with the char ranges `marks` underlined in the terminal's red
+/// (misspelled words). Returns the screen cell of the text cursor, `None`
+/// while the `:` command line has it.
+pub(crate) fn draw_multi_marked(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    m: &mut MultiEdit,
+    marks: &[(usize, usize)],
+) -> Option<(u16, u16)> {
     let w = if m.single {
         area.width.saturating_sub(4).clamp(20, 64)
     } else {
@@ -874,22 +887,31 @@ pub(crate) fn draw_multi(f: &mut Frame, area: Rect, title: &str, m: &mut MultiEd
     m.scroll = m.scroll.min(lines.len().saturating_sub(1));
     let sel = m.input.selection();
     let hi = Style::default().fg(Color::Black).bg(Color::Cyan);
+    let red = crate::termcolors::palette().red_color();
+    let wrong = Style::default()
+        .add_modifier(Modifier::UNDERLINED)
+        .underline_color(red);
     let mut shown: Vec<Line> = Vec::new();
     for r in m.scroll..(m.scroll + rows).min(lines.len()) {
-        match sel {
-            Some((a, b)) => {
-                let spans: Vec<Span> = lines[r]
-                    .chars()
-                    .enumerate()
-                    .map(|(j, c)| {
-                        let i = starts[r] + j;
-                        let st = if i >= a && i < b { hi } else { Style::default() };
-                        Span::styled(c.to_string(), st)
-                    })
-                    .collect();
-                shown.push(Line::from(spans));
-            }
-            None => shown.push(Line::from(lines[r].clone())),
+        if sel.is_some() || !marks.is_empty() {
+            let spans: Vec<Span> = lines[r]
+                .chars()
+                .enumerate()
+                .map(|(j, c)| {
+                    let i = starts[r] + j;
+                    let st = if sel.map_or(false, |(a, b)| i >= a && i < b) {
+                        hi
+                    } else if marks.iter().any(|&(a, b)| i >= a && i < b) {
+                        wrong
+                    } else {
+                        Style::default()
+                    };
+                    Span::styled(c.to_string(), st)
+                })
+                .collect();
+            shown.push(Line::from(spans));
+        } else {
+            shown.push(Line::from(lines[r].clone()));
         }
     }
     while shown.len() < rows {
@@ -929,11 +951,14 @@ pub(crate) fn draw_multi(f: &mut Frame, area: Rect, title: &str, m: &mut MultiEd
     if command {
         let col = 1 + dwidth(&m.input.command_text().to_string());
         f.set_cursor_position((rect.x + 1 + col.min(iw) as u16, rect.y + 1 + rows as u16));
+        None
     } else {
-        f.set_cursor_position((
+        let at = (
             rect.x + 1 + cc.min(iw) as u16,
             rect.y + 1 + (cr - m.scroll.min(cr)) as u16,
-        ));
+        );
+        f.set_cursor_position(at);
+        Some(at)
     }
 }
 

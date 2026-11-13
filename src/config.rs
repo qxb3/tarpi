@@ -20,8 +20,9 @@ pub struct FileConfig {
     /// The menu of `/commands` that opens above the input box while a command
     /// is typed (Tab / arrows / Enter pick from it). Default true.
     pub command_menu: Option<bool>,
-    /// Offline spell checking in the chat input box: misspelled words get a
-    /// red underline. Default false (off).
+    /// Offline spell checking in the chat input box and the text windows
+    /// (`/char`, `/persona`, `/lore`): misspelled words get a red underline.
+    /// Default false (off).
     pub spellcheck: Option<bool>,
     /// Address of the machine that runs `tarpi serve`, e.g. "192.168.1.20:7878"
     /// (port 7878 if left out). `tarpi connect` uses it. Default: none.
@@ -174,7 +175,8 @@ const TEMPLATE: &str = "\
 # menu, and Enter runs exactly what you typed.
 # command_menu: true
 
-# Spell checking in the input box: misspelled words get a red underline (the
+# Spell checking in the input box and the /char, /persona and /lore windows:
+# misspelled words get a red underline (the
 # red of your terminal's theme). Works offline with a built-in English word
 # list; your own words can go in ~/.config/tarpi/dictionary.txt (one per
 # line), and the character's and your persona's names are always accepted.

@@ -575,7 +575,7 @@ const HELP: &[&str] = &[
     "Left/Right       previous / next swipe (or greeting), empty box",
     "Ctrl+Left/Right  previous / next summary branch (wraps)",
     "Tab              spelling suggestions for the word under the cursor",
-    "                 (spellcheck: true; also in /char and /persona)",
+    "                 (spellcheck: true; also in /char, /persona and /lore)",
     "Esc              stop generating / cancel an edit",
     "",
     "Edit any message: click it. It opens in INSERT mode.",
@@ -960,6 +960,15 @@ fn draw_path_menu(
     app.comp_area = rect;
 }
 
+/// Where the spelling menu goes.
+#[derive(Clone, Copy)]
+pub(crate) enum SpellPlace {
+    /// Next to the text cursor, at this screen cell (the windows).
+    At(u16, u16),
+    /// Just above the input box (the chat).
+    Above { input_area: Rect, top: u16 },
+}
+
 /// The spelling menu: suggestions for the misspelled word the cursor is in.
 /// In the chat it is drawn like the command menu, just above the input box;
 /// in the `/char` and persona windows it sits at the text cursor.
@@ -983,16 +992,32 @@ fn draw_spell_menu(f: &mut Frame, app: &mut App, input_area: Rect, top: u16) {
     let Some(menu) = app.spell_menu.as_ref() else {
         return;
     };
+    let place = match anchor {
+        Some(Some((cx, cy))) => SpellPlace::At(cx, cy),
+        _ => SpellPlace::Above { input_area, top },
+    };
+    if let Some((rect, hits)) = place_spell_menu(f, menu, place) {
+        app.spell_area = rect;
+        app.spell_rows = hits;
+    }
+}
+
+/// Draw `menu` at `place`. Returns where it went and the screen row of each
+/// entry (for clicks), or `None` when there is no room for it.
+pub(crate) fn place_spell_menu(
+    f: &mut Frame,
+    menu: &crate::app::SpellMenu,
+    place: SpellPlace,
+) -> Option<(Rect, Vec<(u16, usize)>)> {
     let screen = f.area();
     // In a window the menu may go above or below the cursor's row: the
     // larger side is the room it has.
-    let avail = match anchor {
-        Some(Some((_, cy))) => (cy as usize).max(screen.height.saturating_sub(cy + 1) as usize),
-        Some(None) => 0,
-        None => input_area.y.saturating_sub(top) as usize,
+    let avail = match place {
+        SpellPlace::At(_, cy) => (cy as usize).max(screen.height.saturating_sub(cy + 1) as usize),
+        SpellPlace::Above { input_area, top } => input_area.y.saturating_sub(top) as usize,
     };
     if avail < 3 || screen.width < 8 {
-        return;
+        return None;
     }
     let shown = menu.sugg.len().min(8).min(avail - 2);
     let first = if menu.sel >= shown { menu.sel + 1 - shown } else { 0 };
@@ -1004,8 +1029,8 @@ fn draw_spell_menu(f: &mut Frame, app: &mut App, input_area: Rect, top: u16) {
         .max(4);
     let iw = (w - 2) as usize;
     let h = shown as u16 + 2;
-    let rect = match anchor {
-        Some(Some((cx, cy))) => {
+    let rect = match place {
+        SpellPlace::At(cx, cy) => {
             // Below the cursor's row when it is in the top half of the
             // screen, above it when in the bottom half; the other side when
             // the menu does not fit where it would go.
@@ -1016,7 +1041,9 @@ fn draw_spell_menu(f: &mut Frame, app: &mut App, input_area: Rect, top: u16) {
             let y = (if below { cy + 1 } else { cy - h }).min(screen.height.saturating_sub(h));
             Rect::new(x, y, w, h)
         }
-        _ => Rect::new(input_area.x, input_area.y - h, w.min(input_area.width), h),
+        SpellPlace::Above { input_area, .. } => {
+            Rect::new(input_area.x, input_area.y - h, w.min(input_area.width), h)
+        }
     };
     let iw = iw.min(rect.width.saturating_sub(2) as usize);
     let red = termcolors::palette().red_color();
@@ -1052,8 +1079,7 @@ fn draw_spell_menu(f: &mut Frame, app: &mut App, input_area: Rect, top: u16) {
         )));
     f.render_widget(Clear, rect);
     f.render_widget(Paragraph::new(rows).block(block), rect);
-    app.spell_area = rect;
-    app.spell_rows = hits;
+    Some((rect, hits))
 }
 
 /// Cut `line` into rows of at most `width` columns, at a space when there is

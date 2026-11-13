@@ -192,7 +192,7 @@ pub struct SpellMenu {
 }
 
 /// How long the cursor rests in a misspelled word before it is underlined.
-const SPELL_DELAY: Duration = Duration::from_millis(1000);
+pub(crate) const SPELL_DELAY: Duration = Duration::from_millis(1000);
 
 pub struct App {
     /// The user's full settings.json.
