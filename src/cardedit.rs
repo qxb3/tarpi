@@ -383,8 +383,9 @@ impl CardModal {
     /// Move the cursor to the next / previous row of the form.
     pub fn move_row(&mut self, dir: i32) {
         if let Some(p) = self.step_field(dir) {
-            // Going up into text, land at its end.
-            self.focus_field(p, if dir < 0 { usize::MAX } else { 0 }, true);
+            // Going up into text, land at its end. The mode stays: leaving a
+            // row of choices does not start typing.
+            self.focus_field(p, if dir < 0 { usize::MAX } else { 0 }, false);
         }
     }
 
@@ -619,6 +620,18 @@ impl CardModal {
     /// chat box's own vim code.
     pub fn normal_key(&mut self, c: char) {
         let w = self.text_w.max(1);
+        if self.input.mode == Mode::Normal && !self.input.leader_waiting() {
+            // `G` / `gg` go to the very end / start of the whole form, not
+            // just of the field being edited.
+            if c == 'G' && !self.input.has_pending() {
+                self.jump_end(false);
+                return;
+            }
+            if c == 'g' && self.input.pending_g() {
+                self.jump_end(true);
+                return;
+            }
+        }
         if self.input.mode == Mode::Normal && !self.input.leader_waiting() && (c == 'j' || c == 'k') {
             let (lines, (row, _), _) =
                 ui::layout_input(&self.input.text, self.input.cursor, w);
@@ -632,6 +645,32 @@ impl CardModal {
             }
         }
         self.input.normal_key(c, w);
+    }
+
+    /// `gg` (`top`) / `G`: the first / last line of the first / last editable
+    /// field of the form.
+    fn jump_end(&mut self, top: bool) {
+        let w = self.text_w.max(1);
+        let target = if top {
+            self.fields.iter().position(|f| f.editable)
+        } else {
+            self.fields.iter().rposition(|f| f.editable)
+        };
+        let Some(t) = target else {
+            return;
+        };
+        self.input.cancel_pending();
+        if t != self.focus {
+            self.focus_field(t, 0, false);
+        }
+        // Plain `gg` / `G` inside the field now reach its first / last line.
+        if top {
+            self.input.normal_key('g', w);
+            self.input.normal_key('g', w);
+            self.scroll = 0;
+        } else {
+            self.input.normal_key('G', w);
+        }
     }
 
     /// A click on screen row `y`, column `x`: focus that field and put the
@@ -651,7 +690,7 @@ impl CardModal {
         if self.pick_of(field).is_some() {
             // A row of choices: the left half steps back, the right half on.
             if field != self.focus {
-                self.focus_field(field, 0, true);
+                self.focus_field(field, 0, false);
             }
             let half = self.text_x + (self.text_w / 2) as u16;
             self.step_pick(if x < half { -1 } else { 1 });
@@ -670,7 +709,8 @@ impl CardModal {
             self.input.cancel_pending();
             self.input.clamp_normal();
         } else {
-            self.focus_field(field, idx, true);
+            // The mode stays: a click in NORMAL mode does not start typing.
+            self.focus_field(field, idx, false);
         }
         self.follow = true;
     }

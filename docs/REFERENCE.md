@@ -370,6 +370,8 @@ All fields except the card file (shown read-only) can be edited, including the n
 | Tab | with `spellcheck: true`: spelling suggestions for the misspelled word at the cursor (see *Configuration*); it no longer jumps to the next field. Move between fields with Up / Down past the first / last row, or click |
 | Up / Down | move a row; past the first / last row of a field they go on to the previous / next field |
 | Enter | new line inside the field |
+| click / tap on a field | puts the cursor there; the vim mode stays as it was (NORMAL mode does not switch to INSERT) |
+| `gg` / `G` (NORMAL mode) | first line of the first field / last line of the last field of the whole window |
 | Left, Right, Home, End, Ctrl+A / Ctrl+E, Backspace, Delete, PgUp / PgDn | as in a text box |
 | Ctrl+U / Ctrl+D (NORMAL / VISUAL mode) | half a window up / down; on reaching the edge of a field, move into the previous / next field |
 | click | put the cursor in that field |
@@ -587,6 +589,7 @@ The box starts in INSERT mode, also when you open a message to edit. Type `qq` (
 | `dd` `cc` `yy` `D` `C` `S` `s` | line and to-end-of-line operations |
 | `d` `c` `y` + `w` `W` `e` `E` `b` `B` `$` `0` `^` `h` `l` | operator + motion (`dw`, `cW`, `y$`, ...) |
 | `Y` | yank the line (same as `yy`) |
+| `gg` `G` (in the `/char`, persona, system prompt and note windows) | first line of the first field / last line of the last field of the whole window, not just of the field being edited |
 | `<leader>y` + motion, `<leader>yy`, `<leader>Y` | the same yanks, but the text also goes to the **system clipboard** (a count goes before the leader: `3<leader>yy`) |
 | `v` `V` | VISUAL mode (characters / whole lines) |
 | `p` `P` | paste after / before |

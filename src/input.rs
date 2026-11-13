@@ -715,6 +715,16 @@ impl Input {
         self.leader = Some(leader);
     }
 
+    /// An operator or `g` / `r` was typed and waits for its next key.
+    pub fn has_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// `g` was typed and the next key finishes the command (`gg`).
+    pub fn pending_g(&self) -> bool {
+        self.pending == Some('g')
+    }
+
     /// The leader key was typed and the next key finishes the mapping.
     pub fn leader_waiting(&self) -> bool {
         self.leader_wait
