@@ -301,6 +301,11 @@ pub fn persona_dir() -> Option<PathBuf> {
     data().map(|d| d.join("persona"))
 }
 
+/// `~/.config/tarpi/lorebooks/`: one `<id>.json` per standalone lorebook (see `lorestore`).
+pub fn lorebooks_dir() -> Option<PathBuf> {
+    data().map(|d| d.join("lorebooks"))
+}
+
 /// `~/.config/tarpi/system-prompt.jsonl`: the system prompts, one JSON object per line (see `sysprompt`).
 pub fn sysprompt_path() -> Option<PathBuf> {
     data().map(|d| d.join("system-prompt.jsonl"))

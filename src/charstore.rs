@@ -178,6 +178,18 @@ fn read_png_card(bytes: &[u8]) -> Result<(Value, bool)> {
     Ok((v, had_v3))
 }
 
+/// The card of a card file as it is written, not yet normalized: the JSON
+/// embedded in a PNG, or the JSON of a `.json` card. (`/lore` imports the
+/// lorebook of a card with it.)
+pub fn raw_card(bytes: &[u8]) -> Result<Value> {
+    if bytes.starts_with(&PNG_SIG) {
+        return Ok(read_png_card(bytes)?.0);
+    }
+    let text = String::from_utf8_lossy(bytes);
+    serde_json::from_str(text.trim_start_matches('\u{feff}'))
+        .map_err(|e| anyhow!("not a PNG, and not valid JSON either ({})", e))
+}
+
 /// Check that `bytes` is a PNG with a usable card inside (the same reading
 /// `save` does), for `tarpi import` to refuse a plain picture early.
 pub fn check_png_card(bytes: &[u8]) -> Result<()> {

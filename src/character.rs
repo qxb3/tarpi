@@ -1,4 +1,5 @@
 use crate::jv::*;
+use crate::lorebook::Lorebook;
 use serde_json::Value;
 
 #[derive(Debug, Clone, Default)]
@@ -22,6 +23,8 @@ pub struct Character {
     pub post_history_instructions: String,
     pub alternate_greetings: Vec<String>,
     pub depth_prompt: Option<DepthPrompt>,
+    /// The card's `character_book`, if it has one that can do anything.
+    pub lorebook: Option<Lorebook>,
 }
 
 impl Character {
@@ -87,6 +90,7 @@ impl Character {
             post_history_instructions: jstr(&data, "post_history_instructions"),
             alternate_greetings,
             depth_prompt,
+            lorebook: Lorebook::from_card_data(&data),
         }
     }
 }

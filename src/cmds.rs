@@ -56,6 +56,7 @@ pub const COMMANDS: &[Cmd] = &[
     cmd("note", "an", "edit the Author's Note of this chat"),
     cmd("api", "", "API connection and sampler settings"),
     cmd("formatting", "", "context and instruct templates"),
+    cmd("lore", "", "lorebooks: write, import, switch on"),
     cmd("config", "", "edit config.yaml (applied when saved)"),
     cmd("new", "", "new chat with this character"),
     cmd("newchat", "nc", "delete this chat, start a new one"),

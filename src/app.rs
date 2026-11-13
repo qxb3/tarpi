@@ -271,6 +271,8 @@ pub struct App {
     pub open_api: bool,
     /// Set by `/formatting`: the main loop then opens the formatting editor.
     pub open_formatting: bool,
+    /// Set by `/lore`: the main loop then opens the lorebook manager.
+    pub open_lore: bool,
     pub show_help: bool,
     /// The `/prompt` window (the whole prompt of the next reply), if open.
     pub prompt_view: Option<PromptView>,
@@ -558,6 +560,7 @@ impl App {
             exit_to: None,
             open_api: false,
             open_formatting: false,
+            open_lore: false,
             show_help: false,
             prompt_view: None,
             card_modal: None,
@@ -2035,6 +2038,10 @@ impl App {
                 "formatting" | "format" => {
                     self.input.clear();
                     self.open_formatting = true;
+                }
+                "lore" | "lorebook" | "lorebooks" | "world-info" | "worldinfo" => {
+                    self.input.clear();
+                    self.open_lore = true;
                 }
                 "regen" | "regenerate" | "reroll" => {
                     // Anything after the command is a nudge for this reply.
@@ -4260,6 +4267,17 @@ impl App {
         match res {
             Err(e) => self.set_status(format!("formatting: {:#}", e), true),
             Ok(()) => self.set_status("back in the chat, using your formatting".to_string(), false),
+        }
+    }
+
+    /// The lorebook manager (`/lore`) was closed: the books it saved are used
+    /// from now on (prompt token counts too), not only from the next reply.
+    pub fn lore_closed(&mut self, res: anyhow::Result<()>, rows: u16) {
+        self.on_resize(rows);
+        self.settings_ver += 1;
+        match res {
+            Err(e) => self.set_status(format!("lorebooks: {:#}", e), true),
+            Ok(()) => self.set_status("back in the chat, using your lorebooks".to_string(), false),
         }
     }
 

@@ -21,6 +21,9 @@ mod import;
 mod import_st;
 mod input;
 mod jv;
+mod lorebook;
+mod lorestore;
+mod loretui;
 mod mirror;
 mod note;
 mod pathcomp;
@@ -98,6 +101,7 @@ enum Arrival {
         "  /one-shot       lock this chat: no editing, undo, regen, swipes, branches\n",
         "  /api            API settings (address, model and sampler); back to the chat on quit\n",
         "  /formatting     context and instruct templates (story string, prefixes, suffixes)\n",
+        "  /lore           lorebooks: write, import, edit and switch them on (a window)\n",
         "  /config         edit config.yaml in a window; applied as soon as you save\n",
         "  /char           view and edit this character's card\n",
         "  /char-img       show the card's picture in a square window\n",
@@ -449,6 +453,23 @@ async fn open_formatting_manager(term: &mut Term, events: &mut EventStream, app:
     app.formatting_closed(res, rows);
 }
 
+/// `/lore`: the same as `/api`, for the lorebooks.
+async fn open_lore_manager(term: &mut Term, events: &mut EventStream, app: &mut App) {
+    let mouse_was_on = app.mouse;
+    if !mouse_was_on {
+        let _ = execute!(io::stdout(), EnableMouseCapture);
+    }
+    let avatar = app.character.avatar.clone();
+    let name = app.character.name.clone();
+    let res = loretui::manage(term, events, &app.input, &avatar, &name).await;
+    if !mouse_was_on {
+        let _ = execute!(io::stdout(), DisableMouseCapture);
+    }
+    let _ = term.clear();
+    let rows = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(0);
+    app.lore_closed(res, rows);
+}
+
 async fn run_tui(
     term: &mut Term,
     app: &mut App,
@@ -523,6 +544,11 @@ async fn run_tui(
         if app.open_formatting {
             app.open_formatting = false;
             open_formatting_manager(term, &mut events, app).await;
+            tick.reset();
+        }
+        if app.open_lore {
+            app.open_lore = false;
+            open_lore_manager(term, &mut events, app).await;
             tick.reset();
         }
         if app.should_quit {

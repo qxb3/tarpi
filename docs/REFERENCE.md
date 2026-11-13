@@ -29,6 +29,8 @@ The full manual. For a short introduction see the [README](../README.md).
 - [Placeholders and tidy text](#placeholders-and-tidy-text)
 - [Chats](#chats)
 - [Characters](#characters)
+- [Lorebooks](#lorebooks)
+  - [Your own lorebooks (`/lore`)](#your-own-lorebooks-lore)
 - [Importing characters](#importing-characters)
   - [Importing and deleting while connected](#importing-and-deleting-while-connected)
   - [Copying everything from SillyTavern](#copying-everything-from-sillytavern)
@@ -70,6 +72,7 @@ Everything else happens inside the chat:
 | --- | --- |
 | `/chats` | opens a window over the chat with this character's chats: pick one (↑/↓ + Enter, or click / tap), choose `+ new chat`, or press `d` on one to delete it (asks `y`). Esc closes. The `_before-summary` copies are not listed. The chat that is open can't be deleted here (use `/newchat`), except when it is the last one: then it is deleted and tarpi goes back to the `choose a character` window |
 | `/one-shot` | locks **this chat file** as it is: editing, `/undo`, regenerating, `/continue`, swipes (and greeting switching) and summary branches are turned off. The status row asks you to type `/one-shot` a second time; typing anything else cancels. A grey `ONE SHOT MODE` tag stays at the start of the status row below the input box for as long as the chat is open; other status messages follow it after a `·`. A reply that is being written can't be stopped either (no Esc, no Stop button, and `/quit`, `/chats` and `/chars` wait until it is done). Sending new messages still works, and other chats are not affected. It is stored in the chat file's metadata (`tarpi_one_shot`); there is no command to undo it |
+| `/lore` | opens the lorebook manager: write, import and export lorebooks and choose which characters each is on for (see *Lorebooks*) |
 | `/persona` | opens a window to choose who you are in the chat; `+ new persona` creates one, `e` edits, `p` sets where its description goes into the prompt, `d` deletes (see Personas) |
 | `/system` | opens a window to choose the system prompt; `+ new system prompt` creates one, `e` edits, `d` deletes (see *System prompts*) |
 | `/prompt` | opens a window with the whole prompt the next reply would be sent with, as plain text (see *Prompt window*) |
@@ -450,6 +453,33 @@ Characters belong to tarpi. Each card is a file in `~/.config/tarpi/characters/`
 
 A character is identified by `Name.png` whichever of the two it is stored as; that name is also the folder its chats live in (see Chats). `/char` and Card save edit the card file right here (a PNG keeps its picture; only the embedded card data is rewritten). Cards you drop into the folder by hand are picked up the next time the list is read.
 
+## Lorebooks
+
+A card's own lorebook (the `character_book` that SillyTavern and chub.ai put in V2 / V3 cards) works as it does there, in the small part of it that cards use. Nothing to set up: import the card and the entries are used. Before every reply the latest messages (the book's `scan_depth`, 4 when it has none) are searched for each entry's keys, and the entries that match are added to the prompt.
+
+- **Keys.** An entry is on when one of its `keys` is in those messages, ignoring case unless the entry is case sensitive. A `constant` entry is always on. A selective entry (`selective`) with `secondary_keys` also needs one of those. Keys are plain text: `/regex/` keys are not evaluated.
+- **Where it goes.** `before_char` fills `{{wiBefore}}` of the story string and `after_char` fills `{{wiAfter}}` (the default templates have both; a template without them leaves lore out, as in SillyTavern). An entry set to "at depth" goes into the chat like the Author's Note, with its depth and role. The Author's Note and example-message positions of SillyTavern count as before / after.
+- **Order.** Entries go in by `insertion_order`, lowest first. With a `token_budget` the highest orders are kept until it is used up (token counts are the `chars_per_token` estimate).
+- **Text.** `{{char}}`, `{{user}}` and the other macros work inside an entry.
+- **Seeing it.** `/prompt` shows what was added to the next reply.
+- **Editing a card's book.** `/lore` does not change a card: edit the card in SillyTavern, or the `character_book` in the card's file. The card is read when the chat is opened. `/char` and Card save keep the book as it is. To work on it in tarpi, copy it into a lorebook of your own with `c` in `/lore` (below).
+
+### Your own lorebooks (`/lore`)
+
+`/lore` opens the lorebook manager: books of tarpi's own, kept as one file each in `~/.config/tarpi/lorebooks/` (a V2 `character_book` plus a small `extensions.tarpi` block, so other tools can read them). They work like a card's book, with the same keys, positions, order and budget as above, and they are used in the prompt together with the card's. Saved books apply from the next reply.
+
+Three screens: the list of books, a book (its settings and entries), and an entry.
+
+- **Books.** `n` new, `i` import (SillyTavern World Info, a V2 lorebook, or a card's `.json` / `.png`; Tab completes the path), `c` copy the lorebook inside one of your characters, `a` / Space switch it on for every chat, `D` copy, `x` / `X` export (V2 / SillyTavern), `d` delete.
+- **Book settings.** *On for every chat*, *Also on for*, *Scan depth* and *Token budget*. **Also on for**: Enter opens a list of all your characters with a switch each (Enter or Space switches, Esc closes), so a book can be on for chosen characters only; Left / Right adds or removes the character of the current chat. A character that no longer has a card stays in the list ("no such card") so it can be removed.
+- **Entries.** `n` adds one (it opens empty: Enter on *Keys* or *Text* fills them in), Space switches it on / off, `D` copies, `d` deletes. An entry has a Title, Keys, Secondary keys, *Needs a secondary key*, *Always on*, *Match case*, Position, Depth and Role (only for an entry in the chat), Order and Text.
+- **Changing a value.** Rows shown as `‹ value ›` (Scan depth, Token budget, Position, Depth, Role, Order) change with Left / Right (Scan depth and Depth by 1, Token budget by 100, Order by 10). Enter on a number lets you type one instead.
+- **Saving.** `s` saves, `u` undoes the last change, `q` goes back (asking about unsaved changes).
+
+**Intentionally minimal.** The number fields (Scan depth, Token budget, Depth, Order) only take digits, and Order a leading `-`: any other character you type or paste is dropped, so there is no way to type a wrong value. The same limits as a card's book apply on purpose: keys are plain text, one scan depth and token budget for the whole book, no per-entry scan depth, and no regex, recursion, probability, sticky / cooldown / delay or inclusion groups. These are left out to keep the manager small, not forgotten.
+
+Not supported: regex keys, recursive scanning, probability, sticky / cooldown / delay, inclusion groups, and per-entry scan depth.
+
 ## Importing characters
 
 `/import` adds a character card. Type it in the input box of a chat, followed by what to import:
@@ -653,7 +683,7 @@ Everything tarpi needs is its own: cards in `~/.config/tarpi/characters/`, perso
 
 - Only text completion backends are supported, through a standalone connection (`/api`): llama.cpp, any OpenAI-compatible `/v1/completions` server (OpenRouter included) and Ollama's `/api/generate`; the chat completions endpoint is not used. No other server is contacted (apart from `tarpi serve` when you use `tarpi connect`, a SillyTavern server for `import-st`, and the link you give to `/import`).
 - `tarpi connect` syncs whole files: there is no merging inside a chat, no encryption (plain HTTP with a token), and an open chat is not reloaded when another device changes it.
-- No World Info/lorebooks, vector memory, group chats, or tool calling.
+- Lorebooks (a card's own, or your own in `/lore`) use plain-text keys and are deliberately minimal (see *Lorebooks*). No vector memory, group chats, or tool calling.
 - Token counting for trimming history to the context window is an estimate (`chars_per_token`), not a real tokenizer. The totals in the status row are exact once the connection's tokenizer has answered (see Keys); without a tokenizer route (OpenRouter, OpenAI) they are the `usage` the backend reports with each reply (prompt plus reply), exact until the chat changes.
 - Unfinished prose is closed for you while a reply streams: an open `*narration`, `**bold` or `"speech` is shown with its closing marker added, and the model's own closer simply takes its place. Nothing is added for a lone trailing `*`, `2 * 3`, bullets, a `*` inside a word, or past a blank line. When a reply ends with markers still open they are closed in the saved text too (Ctrl+K takes them off again before continuing).
 - Markdown is minimal: `*narration*` is bold and a neutral grey, `**bold**` is bold and "quoted speech" is yellow. Styles end at a blank line, and a `*` that has no partner (`2 * 3`, a `* ` bullet, an unclosed one) is shown as a plain asterisk.

@@ -3,7 +3,7 @@
 //! do with each one.
 //!
 //! The shared files are the ones in `~/.config/tarpi/` that hold your data:
-//! `characters/`, `chats/`, `persona/`, `system-prompt.jsonl`,
+//! `characters/`, `chats/`, `persona/`, `lorebooks/`, `system-prompt.jsonl`,
 //! and `api.yaml`. `config.yaml`, `formatting.yaml`, `command_history`,
 //! `dictionary.txt` and `serve-token` belong to the machine and are never
 //! shared.
@@ -24,7 +24,7 @@ pub const PROTO: u32 = 1;
 pub const DEFAULT_PORT: u16 = 7878;
 
 /// Folders that are shared, whole.
-const DIRS: &[&str] = &["characters", "chats", "persona"];
+const DIRS: &[&str] = &["characters", "chats", "persona", "lorebooks"];
 /// Single files that are shared.
 const FILES: &[&str] = &["system-prompt.jsonl", "api.yaml"];
 const API_FILE: &str = "api.yaml";
@@ -99,6 +99,7 @@ pub fn describe(path: &str) -> String {
         ["chats", who, .., file] => format!("chat {} with {}", stem(file), who),
         ["characters", .., file] => format!("character {}", stem(file)),
         ["persona", .., file] => format!("persona {}", stem(file)),
+        ["lorebooks", .., file] => format!("lorebook {}", stem(file)),
         ["system-prompt.jsonl"] => "the system prompts".to_string(),
         ["api.yaml"] => "the API connections".to_string(),
         _ => path.to_string(),

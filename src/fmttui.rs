@@ -54,10 +54,10 @@ enum Modal {
 /// motion works (when `vim.enabled`). The story string has real line breaks;
 /// the other texts are one line (`single`) and the window is only as big as
 /// the text needs.
-struct MultiEdit {
-    input: Input,
+pub(crate) struct MultiEdit {
+    pub(crate) input: Input,
     /// A one-line setting: Enter accepts, a line break is typed as `\n`.
-    single: bool,
+    pub(crate) single: bool,
     /// The text when the window opened (Esc asks before dropping a change).
     orig: String,
     /// First visible row (`draw_multi` keeps the cursor in view).
@@ -67,7 +67,57 @@ struct MultiEdit {
     h: usize,
     /// Esc was pressed with unaccepted changes; Esc again drops them.
     armed: bool,
-    note: Option<(String, bool)>,
+    pub(crate) note: Option<(String, bool)>,
+    /// Shown on the bottom row instead of the usual keys, when there is no
+    /// message and no `:` command.
+    pub(crate) hint: Option<&'static str>,
+}
+
+/// How a key left the text window (see `multi_edit_key`).
+pub(crate) enum EditEnd {
+    /// Still open.
+    Keep,
+    /// Accepted: this is the text.
+    Accept(String),
+    /// Cancelled.
+    Cancel,
+}
+
+impl MultiEdit {
+    /// A text window on `text`, with the vim settings of `cfg` (the chat box).
+    /// `single`: one line (Enter accepts); otherwise real line breaks.
+    pub(crate) fn open(cfg: &Input, text: String, single: bool) -> MultiEdit {
+        let mut input = Input::default();
+        input.copy_config(cfg);
+        if single {
+            // Quotes and brackets are typed as they are in these texts.
+            input.set_autopair(false);
+        }
+        // The cursor starts at the very beginning; only a one-line text with
+        // the vim modes off starts at its end (ready to append).
+        input.cursor = if single && !input.vim_enabled() {
+            text.chars().count()
+        } else {
+            0
+        };
+        input.text = text.clone();
+        // The window opens in NORMAL mode (INSERT when the vim modes are off).
+        input.enter_insert();
+        if input.vim_enabled() {
+            input.enter_normal();
+        }
+        MultiEdit {
+            input,
+            single,
+            orig: text,
+            scroll: 0,
+            w: 60,
+            h: 10,
+            armed: false,
+            note: None,
+            hint: None,
+        }
+    }
 }
 
 struct Tui {
@@ -239,35 +289,7 @@ impl Tui {
             // Several lines: real line breaks.
             v.as_str().unwrap_or("").replace("\r\n", "\n").replace('\r', "\n")
         };
-        let mut input = Input::default();
-        input.copy_config(&self.cfg);
-        if single {
-            // Quotes and brackets are typed as they are in these texts.
-            input.set_autopair(false);
-        }
-        // The cursor starts at the very beginning; only a one-line text with
-        // the vim modes off starts at its end (ready to append).
-        input.cursor = if single && !input.vim_enabled() {
-            text.chars().count()
-        } else {
-            0
-        };
-        input.text = text.clone();
-        // The window opens in NORMAL mode (INSERT when the vim modes are off).
-        input.enter_insert();
-        if input.vim_enabled() {
-            input.enter_normal();
-        }
-        self.modal = Modal::Multi(Box::new(MultiEdit {
-            input,
-            single,
-            orig: text,
-            scroll: 0,
-            w: 60,
-            h: 10,
-            armed: false,
-            note: None,
-        }));
+        self.modal = Modal::Multi(Box::new(MultiEdit::open(&self.cfg, text, single)));
     }
 
     /// Store a typed text. `Err` (the editor stays open) when the setting
@@ -483,128 +505,28 @@ impl Tui {
         }
     }
 
-    /// A key in the story string window. `None`: the window is closed
-    /// (accepted or cancelled).
+    /// A key in the text window. `None`: the window is closed (accepted or
+    /// cancelled).
     fn multi_key(&mut self, mut m: MultiEdit, k: KeyEvent) -> Option<MultiEdit> {
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        let alt = k.modifiers.contains(KeyModifiers::ALT);
-        let w = m.w.max(1);
-        let page = m.h.saturating_sub(1).max(1);
-        let vim = m.input.vim_enabled();
-        let mode = m.input.mode;
-        m.note = None;
-        let was_armed = std::mem::replace(&mut m.armed, false);
-        let (mut accept, mut cancel) = (false, false);
         self.status = None;
-
-        if ctrl && k.code == KeyCode::Char('s') {
-            accept = true;
-        } else if mode == Mode::Command {
-            // `:` command line (`:%s/find/new/g`, `:w`, `:wq`).
-            match k.code {
-                KeyCode::Char('u') if ctrl => m.input.command_clear(),
-                KeyCode::Char('w') if ctrl => m.input.command_delete_word(),
-                KeyCode::Char(ch) if !ctrl && !alt => m.input.command_push(ch),
-                KeyCode::Backspace => m.input.command_backspace(),
-                KeyCode::Esc => m.input.cancel_command(),
-                KeyCode::Enter => {
-                    match m.input.run_command() {
-                        Ok(msg) if !msg.is_empty() => m.note = Some((msg, false)),
-                        Ok(_) => {}
-                        Err(e) => m.note = Some((e, true)),
-                    }
-                    // `:w` and `:wq` both accept the text and close.
-                    if m.input.take_write_req() | m.input.take_quit_req() {
-                        accept = true;
+        match multi_edit_key(&mut m, k) {
+            EditEnd::Keep => Some(m),
+            EditEnd::Cancel => None,
+            EditEnd::Accept(text) => {
+                let done = if m.single {
+                    self.commit_edit(&text)
+                } else {
+                    self.commit_value(text)
+                };
+                match done {
+                    Ok(()) => None,
+                    Err(e) => {
+                        m.note = Some((e, true));
+                        Some(m)
                     }
                 }
-                _ => {}
-            }
-        } else if vim
-            && ctrl
-            && !alt
-            && matches!(k.code, KeyCode::Char('u') | KeyCode::Char('d'))
-            && matches!(mode, Mode::Normal | Mode::Visual)
-        {
-            let dir = if k.code == KeyCode::Char('u') { -1 } else { 1 };
-            m.input.move_rows(dir, (m.h / 2).max(1), w);
-        } else if matches!(mode, Mode::Normal | Mode::Visual)
-            && !ctrl
-            && !alt
-            && matches!(k.code, KeyCode::Char(_))
-        {
-            // NORMAL / VISUAL mode: letters are vim commands.
-            if let KeyCode::Char(ch) = k.code {
-                m.input.normal_key(ch, w);
-                if let Some(text) = m.input.take_clipboard() {
-                    m.note = Some(crate::app::copy_to_clipboard(&text));
-                }
-            }
-        } else {
-            match k.code {
-                KeyCode::Esc => match mode {
-                    Mode::Visual => m.input.exit_visual(),
-                    // Like vim: Esc leaves INSERT mode.
-                    Mode::Insert if vim => m.input.enter_normal(),
-                    _ => {
-                        m.input.cancel_pending();
-                        if m.input.text != m.orig && !was_armed {
-                            m.armed = true;
-                            m.note = Some((
-                                "changed: Esc again drops it, Ctrl+S accepts".to_string(),
-                                true,
-                            ));
-                        } else {
-                            cancel = true;
-                        }
-                    }
-                },
-                KeyCode::Enter if m.single => accept = true,
-                KeyCode::Enter => match mode {
-                    Mode::Insert => m.input.insert_char('\n'),
-                    Mode::Normal => multi_vertical(&mut m, 1),
-                    _ => {}
-                },
-                KeyCode::Backspace => m.input.backspace(),
-                KeyCode::Delete => m.input.delete(),
-                KeyCode::Left if alt && !ctrl => m.input.word_left(w),
-                KeyCode::Right if alt && !ctrl => m.input.word_right(w),
-                KeyCode::Left => m.input.left(),
-                KeyCode::Right => m.input.right(),
-                KeyCode::Up => multi_vertical(&mut m, -1),
-                KeyCode::Down => multi_vertical(&mut m, 1),
-                KeyCode::Home => m.input.home(),
-                KeyCode::End => m.input.end(),
-                KeyCode::PageUp => (0..page).for_each(|_| multi_vertical(&mut m, -1)),
-                KeyCode::PageDown => (0..page).for_each(|_| multi_vertical(&mut m, 1)),
-                // The Ctrl shortcuts exist only with the vim modes on.
-                KeyCode::Char('a') if ctrl && vim => m.input.home(),
-                KeyCode::Char('e') if ctrl && vim => m.input.end(),
-                KeyCode::Char('w') if ctrl && vim => m.input.delete_word_back(),
-                // INSERT mode; typing the NORMAL-mode keys (`qq`) quickly
-                // switches to NORMAL mode.
-                KeyCode::Char(ch) if (!ctrl && !alt) || (ctrl && alt) => m.input.type_char(ch),
-                _ => {}
             }
         }
-        m.input.clamp_normal();
-
-        if accept {
-            let text = m.input.text.replace("\r\n", "\n").replace('\r', "\n");
-            let done = if m.single {
-                self.commit_edit(&text)
-            } else {
-                self.commit_value(text)
-            };
-            match done {
-                Ok(()) => return None,
-                Err(e) => m.note = Some((e, true)),
-            }
-        }
-        if cancel {
-            return None;
-        }
-        Some(m)
     }
 
     fn on_paste(&mut self, s: &str) {
@@ -667,19 +589,143 @@ fn multi_vertical(m: &mut MultiEdit, dir: i32) {
     m.input.cursor = ui::vertical_target(&m.input.text, cur, m.w.max(1), dir);
 }
 
+/// One key in a text window (the chat box's editor, vim modes and `:` line
+/// included). Shared by every window of this kind; the caller decides what
+/// accepting the text means (and can keep the window open with a note).
+pub(crate) fn multi_edit_key(m: &mut MultiEdit, k: KeyEvent) -> EditEnd {
+    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = k.modifiers.contains(KeyModifiers::ALT);
+    let w = m.w.max(1);
+    let page = m.h.saturating_sub(1).max(1);
+    let vim = m.input.vim_enabled();
+    let mode = m.input.mode;
+    m.note = None;
+    let was_armed = std::mem::replace(&mut m.armed, false);
+    let (mut accept, mut cancel) = (false, false);
+
+    if ctrl && k.code == KeyCode::Char('s') {
+        accept = true;
+    } else if mode == Mode::Command {
+        // `:` command line (`:%s/find/new/g`, `:w`, `:wq`).
+        match k.code {
+            KeyCode::Char('u') if ctrl => m.input.command_clear(),
+            KeyCode::Char('w') if ctrl => m.input.command_delete_word(),
+            KeyCode::Char(ch) if !ctrl && !alt => m.input.command_push(ch),
+            KeyCode::Backspace => m.input.command_backspace(),
+            KeyCode::Esc => m.input.cancel_command(),
+            KeyCode::Enter => {
+                match m.input.run_command() {
+                    Ok(msg) if !msg.is_empty() => m.note = Some((msg, false)),
+                    Ok(_) => {}
+                    Err(e) => m.note = Some((e, true)),
+                }
+                // `:w` and `:wq` both accept the text and close.
+                if m.input.take_write_req() | m.input.take_quit_req() {
+                    accept = true;
+                }
+            }
+            _ => {}
+        }
+    } else if vim
+        && ctrl
+        && !alt
+        && matches!(k.code, KeyCode::Char('u') | KeyCode::Char('d'))
+        && matches!(mode, Mode::Normal | Mode::Visual)
+    {
+        let dir = if k.code == KeyCode::Char('u') { -1 } else { 1 };
+        m.input.move_rows(dir, (m.h / 2).max(1), w);
+    } else if matches!(mode, Mode::Normal | Mode::Visual)
+        && !ctrl
+        && !alt
+        && matches!(k.code, KeyCode::Char(_))
+    {
+        // NORMAL / VISUAL mode: letters are vim commands.
+        if let KeyCode::Char(ch) = k.code {
+            m.input.normal_key(ch, w);
+            if let Some(text) = m.input.take_clipboard() {
+                m.note = Some(crate::app::copy_to_clipboard(&text));
+            }
+        }
+    } else {
+        match k.code {
+            KeyCode::Esc => match mode {
+                Mode::Visual => m.input.exit_visual(),
+                // Like vim: Esc leaves INSERT mode.
+                Mode::Insert if vim => m.input.enter_normal(),
+                _ => {
+                    m.input.cancel_pending();
+                    if m.input.text != m.orig && !was_armed {
+                        m.armed = true;
+                        m.note = Some((
+                            "changed: Esc again drops it, Ctrl+S accepts".to_string(),
+                            true,
+                        ));
+                    } else {
+                        cancel = true;
+                    }
+                }
+            },
+            KeyCode::Enter if m.single => accept = true,
+            KeyCode::Enter => match mode {
+                Mode::Insert => m.input.insert_char('\n'),
+                Mode::Normal => multi_vertical(m, 1),
+                _ => {}
+            },
+            KeyCode::Backspace => m.input.backspace(),
+            KeyCode::Delete => m.input.delete(),
+            KeyCode::Left if alt && !ctrl => m.input.word_left(w),
+            KeyCode::Right if alt && !ctrl => m.input.word_right(w),
+            KeyCode::Left => m.input.left(),
+            KeyCode::Right => m.input.right(),
+            KeyCode::Up => multi_vertical(m, -1),
+            KeyCode::Down => multi_vertical(m, 1),
+            KeyCode::Home => m.input.home(),
+            KeyCode::End => m.input.end(),
+            KeyCode::PageUp => {
+                for _ in 0..page {
+                    multi_vertical(m, -1);
+                }
+            }
+            KeyCode::PageDown => {
+                for _ in 0..page {
+                    multi_vertical(m, 1);
+                }
+            }
+            // The Ctrl shortcuts exist only with the vim modes on.
+            KeyCode::Char('a') if ctrl && vim => m.input.home(),
+            KeyCode::Char('e') if ctrl && vim => m.input.end(),
+            KeyCode::Char('w') if ctrl && vim => m.input.delete_word_back(),
+            // INSERT mode; typing the NORMAL-mode keys (`qq`) quickly
+            // switches to NORMAL mode.
+            KeyCode::Char(ch) if (!ctrl && !alt) || (ctrl && alt) => m.input.type_char(ch),
+            _ => {}
+        }
+    }
+    m.input.clamp_normal();
+
+    if accept {
+        return EditEnd::Accept(m.input.text.replace("\r\n", "\n").replace('\r', "\n"));
+    }
+    if cancel {
+        EditEnd::Cancel
+    } else {
+        EditEnd::Keep
+    }
+}
+
 // ----------------------------------------------------------------- drawing
 
 /// Columns a character takes on the screen (CJK and full-width forms take 2).
-fn cw(c: char) -> usize {
+pub(crate) fn cw(c: char) -> usize {
     UnicodeWidthChar::width(c).unwrap_or(0)
 }
 
-fn dwidth(s: &str) -> usize {
+pub(crate) fn dwidth(s: &str) -> usize {
     s.chars().map(cw).sum()
 }
 
 /// `s` cut to `w` columns, with an ellipsis when something is left out.
-fn clip(s: &str, w: usize) -> String {
+pub(crate) fn clip(s: &str, w: usize) -> String {
     if dwidth(s) <= w {
         return s.to_string();
     }
@@ -724,7 +770,7 @@ fn wrap_rows(buf: &[char], w: usize) -> Vec<(usize, usize)> {
     rows
 }
 
-fn centered(area: Rect, w: u16, h: u16) -> Rect {
+pub(crate) fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.width);
     let h = h.min(area.height);
     Rect::new(
@@ -776,7 +822,7 @@ fn row_line(t: &Tui, idx: usize, width: usize, label_w: usize) -> Line<'static> 
 }
 
 /// The mode as the chat box shows it: black on a colour, on the bottom edge.
-fn mode_tag(input: &Input) -> Span<'static> {
+pub(crate) fn mode_tag(input: &Input) -> Span<'static> {
     let (tag, color) = match input.mode {
         Mode::Insert => (" INSERT ", Color::Green),
         Mode::Normal => (" NORMAL ", Color::Magenta),
@@ -802,7 +848,7 @@ fn mode_tag(input: &Input) -> Span<'static> {
 /// selection, the mode on the bottom edge and, in a row below the text, the
 /// `:` command, a message or the keys. A one-line setting gets a small window;
 /// both grow with the text, up to the screen.
-fn draw_multi(f: &mut Frame, area: Rect, title: &str, m: &mut MultiEdit) {
+pub(crate) fn draw_multi(f: &mut Frame, area: Rect, title: &str, m: &mut MultiEdit) {
     let w = if m.single {
         area.width.saturating_sub(4).clamp(20, 64)
     } else {
@@ -855,6 +901,8 @@ fn draw_multi(f: &mut Frame, area: Rect, title: &str, m: &mut MultiEdit) {
         format!(":{}", m.input.command_text())
     } else if let Some((msg, _)) = &m.note {
         format!(" {}", msg)
+    } else if let Some(h) = m.hint {
+        format!(" {}", h)
     } else {
         match (vim, m.single) {
             (true, true) => " Enter accept \u{b7} Esc cancel \u{b7} \\n = line break".to_string(),

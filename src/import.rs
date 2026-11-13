@@ -101,7 +101,7 @@ async fn fetch(arg: &str) -> Result<(Vec<u8>, String)> {
 /// A path as typed or pasted into the chat box: it may be in quotes, have
 /// `\ ` for its spaces (how terminals paste a dragged file), be a `file://`
 /// link or start with `~` (the shell does none of that here).
-fn expand_path(t: &str) -> PathBuf {
+pub(crate) fn expand_path(t: &str) -> PathBuf {
     let mut s = t.trim().to_string();
     let quoted = s.len() >= 2
         && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')));

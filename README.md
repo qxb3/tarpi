@@ -36,7 +36,7 @@
 
 ```
  characters   card PNG / JSON (V1, V2, V3, Pygmalion); import from a file,
-              chub.ai, pygmalion.chat or any link
+              chub.ai, pygmalion.chat or any link; the card's lorebook is used
  backends     llama.cpp · OpenAI-compatible text completion · OpenRouter · Ollama
  prompt       built on your side: context + instruct templates (ChatML, Llama 3,
               Mistral, Gemma, ...), persona, system prompt, Author's Note
@@ -99,6 +99,7 @@ Type `/` in the chat for a menu; Tab / arrows pick, Enter runs.
 /import <card>  add a character: file, chub.ai / pygmalion.chat link
 /persona        choose who you are in the chat
 /system         choose, create or edit the system prompt
+/lore           lorebooks: write, import, choose which characters use them
 /prompt         the exact prompt of the next reply
 /note           this chat's Author's Note  (/an)
 /api            backend address, model and sampler settings
@@ -173,7 +174,7 @@ Newer versions win; the older one is kept as `<file>.conflict-<time>`.
 The full manual is [`docs/REFERENCE.md`](docs/REFERENCE.md). Good places to start:
 
 - [API connection](docs/REFERENCE.md#api-connection-api) and its [OpenAI-compatible](docs/REFERENCE.md#openai-compatible-connections), [OpenRouter](docs/REFERENCE.md#openrouter-connections) and [Ollama](docs/REFERENCE.md#ollama-connections) kinds
-- [Formatting](docs/REFERENCE.md#formatting), [Personas](docs/REFERENCE.md#personas), [Author's Note](docs/REFERENCE.md#authors-note), [System prompts](docs/REFERENCE.md#system-prompts)
+- [Lorebooks](docs/REFERENCE.md#lorebooks), [Formatting](docs/REFERENCE.md#formatting), [Personas](docs/REFERENCE.md#personas), [Author's Note](docs/REFERENCE.md#authors-note), [System prompts](docs/REFERENCE.md#system-prompts)
 - [Importing characters](docs/REFERENCE.md#importing-characters) and [Summarizing a long chat](docs/REFERENCE.md#summarizing-a-long-chat)
 - [Sharing between devices](docs/REFERENCE.md#sharing-between-devices-serve-and-connect)
 - [Keys](docs/REFERENCE.md#keys), [Vim motions](docs/REFERENCE.md#vim-motions-in-the-input-box) and [Configuration](docs/REFERENCE.md#configuration)
@@ -182,7 +183,7 @@ The full manual is [`docs/REFERENCE.md`](docs/REFERENCE.md). Good places to star
 ## limitations
 
 - Text completion backends only (see above); no tool calling.
-- No World Info / lorebooks, vector memory or group chats.
+- Lorebooks: plain-text keys, no recursion, deliberately minimal (see `/lore` in the reference). No vector memory or group chats.
 - Token counts used to trim history are an estimate (`chars_per_token`) until the
   backend's tokenizer or a reply's `usage` gives an exact number.
 - Mouse capture is on; hold Shift to select text with the terminal's own selection.

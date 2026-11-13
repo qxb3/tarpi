@@ -10,6 +10,7 @@
 use crate::character::Character;
 use crate::chat;
 use crate::jv::*;
+use crate::lorebook::Place;
 use crate::note::{self, Note};
 use crate::prompt::{subst, Ctx};
 use serde_json::Value;
@@ -829,6 +830,45 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
         _ => {}
     }
 
+    // ---- lorebooks: the card's own, then the standalone ones (`/lore`) that
+    // are on for this character; the entries whose keys are in the latest
+    // messages
+    let mut wi_before: Vec<String> = Vec::new();
+    let mut wi_after: Vec<String> = Vec::new();
+    let mut lore_injects: Vec<Inject> = Vec::new();
+    let standalone = crate::lorestore::active_books(&a.ch.avatar);
+    let mut books: Vec<&crate::lorebook::Lorebook> = Vec::new();
+    if let Some(book) = &a.ch.lorebook {
+        books.push(book);
+    }
+    books.extend(standalone.iter());
+    if !books.is_empty() {
+        let mut scanned: Vec<String> = a
+            .history
+            .iter()
+            .filter(|m| !chat::is_system(m))
+            .map(|m| chat::mes(m).to_string())
+            .collect();
+        if let Some(t) = a.continue_text {
+            scanned.push(t.to_string());
+        }
+        for book in books {
+            for e in book.activate(&scanned, a.chars_per_token) {
+                let text = subst(&e.content, &ctx).trim().to_string();
+                if text.is_empty() {
+                    continue;
+                }
+                match e.place {
+                    Place::Before => wi_before.push(text),
+                    Place::After => wi_after.push(text),
+                    Place::Depth { depth, role } => lore_injects.push(Inject { depth, role, text }),
+                }
+            }
+        }
+    }
+    let wi_before = wi_before.join("\n");
+    let wi_after = wi_after.join("\n");
+
     // ---- story string
     let persona_in_prompt = persona_position == 0;
     let mut vars: HashMap<&str, String> = HashMap::new();
@@ -846,9 +886,10 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
     vars.insert("system", system);
     vars.insert("char", chn.to_string());
     vars.insert("user", user.to_string());
-    for k in ["wiBefore", "wiAfter", "loreBefore", "loreAfter"] {
-        vars.insert(k, String::new());
-    }
+    vars.insert("wiBefore", wi_before.clone());
+    vars.insert("loreBefore", wi_before);
+    vars.insert("wiAfter", wi_after.clone());
+    vars.insert("loreAfter", wi_after);
     vars.insert("anchorBefore", anchor_before.clone());
     vars.insert("anchorAfter", anchor_after.clone());
     vars.insert("mesExamples", examples.join(""));
@@ -923,6 +964,7 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
             text: note_full.clone(),
         });
     }
+    injects.extend(lore_injects);
 
     // ---- history
     let mut msgs: Vec<HMsg> = Vec::new();
@@ -1465,5 +1507,66 @@ mod tests {
         let n = note("", note::IN_CHAT, 1);
         let p = build("{{description}}", &n, "Bob is tall.", TOP_NOTE, &history());
         assert!(p.contains("Hello\nBob is tall.\nBob: Go on"), "{}", p);
+    }
+
+    // ---- lorebook
+
+    fn lore_prompt(entries: Value, story: &str, history: &[Value]) -> String {
+        let mut ch = card();
+        ch.lorebook = crate::lorebook::Lorebook::from_card_data(
+            &json!({ "character_book": { "entries": entries } }),
+        );
+        let settings = settings(story);
+        let n = note("", note::IN_CHAT, 1);
+        build_prompt(&TgArgs {
+            settings: &settings,
+            ch: &ch,
+            user_name: "Bob",
+            persona: "",
+            persona_position: 0,
+            note: &n,
+            history,
+            chars_per_token: 3.2,
+            continue_text: None,
+            nudge: None,
+        })
+        .prompt
+    }
+
+    #[test]
+    fn a_lore_entry_fills_its_story_string_slot_when_its_key_is_said() {
+        let entries = json!([
+            { "keys": ["dragon"], "content": "Dragons hoard gold.", "position": "before_char" },
+            { "keys": ["dragon"], "content": "Sofia fears them.", "position": "after_char" },
+            { "keys": ["unicorn"], "content": "Never shown." },
+        ]);
+        let story = "{{wiBefore}}|{{description}}|{{wiAfter}}";
+        let h = vec![chat::user_message("Bob", "Tell me about the dragon")];
+        let p = lore_prompt(entries, story, &h);
+        assert!(p.contains("Dragons hoard gold.|A baker.|Sofia fears them."), "{}", p);
+        assert!(!p.contains("Never shown."), "{}", p);
+    }
+
+    #[test]
+    fn lore_stays_out_until_a_key_shows_up() {
+        let entries = json!([{ "keys": ["dragon"], "content": "Dragons hoard gold." }]);
+        let story = "{{wiBefore}}|{{description}}";
+        let p = lore_prompt(entries, story, &history());
+        assert!(!p.contains("Dragons hoard gold."), "{}", p);
+    }
+
+    #[test]
+    fn a_lore_entry_at_a_depth_goes_into_the_chat() {
+        let entries = json!([{ "keys": ["hello"], "content": "The oven is magic.",
+            "extensions": { "position": 4, "depth": 1, "role": 0 } }]);
+        let p = lore_prompt(entries, "{{description}}", &history());
+        assert!(p.contains("Hello\nThe oven is magic.\nBob: Go on"), "{}", p);
+    }
+
+    #[test]
+    fn lore_text_gets_its_macros_filled_in() {
+        let entries = json!([{ "keys": [], "constant": true, "content": "{{char}} knows {{user}}." }]);
+        let p = lore_prompt(entries, "{{wiBefore}}", &history());
+        assert!(p.contains("Sofia knows Bob."), "{}", p);
     }
 }
