@@ -23,6 +23,7 @@ mod input;
 mod jv;
 mod lorebook;
 mod lorestore;
+mod loreask;
 mod loretui;
 mod mirror;
 mod note;

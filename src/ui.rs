@@ -1406,6 +1406,73 @@ pub fn draw_pos_edit(f: &mut Frame, area: Rect, e: &mut PosEdit) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+/// The question after `/import` when the card has a lorebook: copy it into
+/// `/lore` and link it to the character (Yes / No).
+pub fn draw_lore_ask(f: &mut Frame, area: Rect, a: &mut crate::loreask::LoreAsk) {
+    let w = area.width.min(60);
+    // Borders (2), three lines of text, an empty row and the buttons.
+    let h = 7u16.min(area.height).max(3).min(area.height);
+    let rect = centered(area, w, h);
+    f.render_widget(Clear, rect);
+
+    let bottom: Line<'static> = if let Some(msg) = &a.note {
+        Line::from(Span::styled(format!(" {} ", msg), Style::default().fg(Color::Red)))
+    } else {
+        Line::from(" y yes \u{b7} n / Esc no \u{b7} \u{2190}/\u{2192} choose \u{b7} Enter ")
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" lorebook ")
+        .title_bottom(bottom)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    if inner.height < 1 || inner.width < 4 {
+        return;
+    }
+    a.window = rect;
+    let cols = inner.width as usize;
+    let entries = format!(
+        "{} entr{}",
+        a.entries,
+        if a.entries == 1 { "y" } else { "ies" }
+    );
+    let mut lines: Vec<Line<'static>> = vec![
+        Line::from(fit_cols(&format!(" {} comes with a lorebook:", a.character), cols)),
+        Line::from(Span::styled(
+            fit_cols(&format!(" {} ({})", a.book, entries), cols),
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from(fit_cols(&format!(" Import it and link it to {}?", a.character), cols)),
+    ];
+    // The buttons go on the last row of the window.
+    let button_row = inner.height.saturating_sub(1);
+    while (lines.len() as u16) < button_row {
+        lines.push(Line::from(""));
+    }
+    lines.truncate(button_row as usize);
+    let yes = "  Yes  ";
+    let no = "  No  ";
+    let lit = Style::default().add_modifier(Modifier::REVERSED);
+    let (ys, ns) = if a.yes {
+        (lit, Style::default())
+    } else {
+        (Style::default(), lit)
+    };
+    let total = (yes.len() + 2 + no.len()) as u16;
+    let x0 = inner.x + inner.width.saturating_sub(total) / 2;
+    let y = inner.y + button_row;
+    a.yes_area = Rect::new(x0, y, yes.len() as u16, 1).intersection(inner);
+    a.no_area = Rect::new(x0 + yes.len() as u16 + 2, y, no.len() as u16, 1).intersection(inner);
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat((x0 - inner.x) as usize)),
+        Span::styled(yes, ys),
+        Span::raw("  "),
+        Span::styled(no, ns),
+    ]));
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 /// The `/character` window: every field of the card as a scrollable form,
 /// the focused field editable, with Cancel and Save buttons at the bottom.
 /// The `/char-img` window: a square (as seen on screen) with the card picture.
@@ -2228,6 +2295,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             .block(block)
             .scroll((app.help_scroll as u16, 0));
         f.render_widget(popup, rect);
+    } else if let Some(a) = app.lore_ask.as_mut() {
+        draw_lore_ask(f, modal_area, a);
     } else if let Some(v) = app.prompt_view.as_mut() {
         draw_prompt_modal(f, modal_area, v);
     } else if let Some(m) = app.image_modal.as_mut() {

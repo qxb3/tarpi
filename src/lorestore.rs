@@ -585,6 +585,31 @@ pub fn active_books(avatar: &str) -> Vec<Lorebook> {
         .collect()
 }
 
+/// Is a copy of this character's own card lorebook (a book whose `source` is
+/// the character) on for it? Then the card's book is left out of the prompt,
+/// so its entries are not sent twice.
+pub fn replaces_card_book(avatar: &str) -> bool {
+    if cfg!(test) || avatar.trim().is_empty() {
+        return false;
+    }
+    let Ok(d) = dir() else {
+        return false;
+    };
+    let Ok(rd) = std::fs::read_dir(&d) else {
+        return false;
+    };
+    rd.flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
+        .filter_map(|p| cached(&p))
+        .any(|b| {
+            !b.source.is_empty()
+                && char_key(&b.source) == char_key(avatar)
+                && b.applies_to(avatar)
+                && b.engine().is_some()
+        })
+}
+
 // ----------------------------------------------------------------- import
 
 /// A book read from somewhere else, and what was lost on the way.

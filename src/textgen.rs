@@ -838,8 +838,12 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
     let mut lore_injects: Vec<Inject> = Vec::new();
     let standalone = crate::lorestore::active_books(&a.ch.avatar);
     let mut books: Vec<&crate::lorebook::Lorebook> = Vec::new();
+    // A copy of the card's own book that is on for this character (made with
+    // `/lore` or after `/import`) takes its place, so nothing is sent twice.
     if let Some(book) = &a.ch.lorebook {
-        books.push(book);
+        if !crate::lorestore::replaces_card_book(&a.ch.avatar) {
+            books.push(book);
+        }
     }
     books.extend(standalone.iter());
     if !books.is_empty() {

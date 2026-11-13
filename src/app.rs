@@ -12,6 +12,7 @@ use crate::gen::{self, GenEvent, GenMsg};
 use crate::health::Health;
 use crate::history::History;
 use crate::input::{Input, Mode};
+use crate::loreask::{Action as LoreAskAction, LoreAsk};
 use crate::picker::{Action as PickAction, Item as PickItem, Picker};
 use crate::posedit::{Action as PosAction, PosEdit};
 use crate::jv::*;
@@ -256,6 +257,12 @@ pub struct App {
     pub startup_pick: bool,
     /// The position window of the `/persona` window's `p` key, if open.
     pub pos_edit: Option<PosEdit>,
+    /// The question asked after `/import` when the new card has a lorebook:
+    /// copy it into `/lore` and link it to the character?
+    pub lore_ask: Option<LoreAsk>,
+    /// Questions that came up while another window was open; asked one at a
+    /// time, as soon as nothing else is in the way.
+    lore_pending: Vec<LoreAsk>,
     /// Set while `card_modal` is the persona form, not the character card.
     persona_edit: Option<PersonaEdit>,
     /// Set while `card_modal` is the system prompt form.
@@ -568,6 +575,8 @@ impl App {
             picker: None,
             startup_pick: false,
             pos_edit: None,
+            lore_ask: None,
+            lore_pending: Vec::new(),
             persona_edit: None,
             sys_edit: None,
             note_edit: false,
@@ -869,6 +878,7 @@ impl App {
             }
         }
         self.collect_import();
+        self.promote_lore_ask();
         if let Some((_, _, when)) = &self.status {
             if when.elapsed() >= Duration::from_secs(10) {
                 self.status = None;
@@ -909,8 +919,34 @@ impl App {
         match job.now_or_never() {
             Some(Ok(Ok(saved))) => {
                 let name = if saved.name.is_empty() { saved.avatar.clone() } else { saved.name.clone() };
+                // A card with a lorebook: ask whether to copy it into /lore
+                // and link it to this character.
+                let ask = charstore::get(&saved.avatar)
+                    .and_then(|card| crate::lorestore::from_card(&card, &saved.avatar))
+                    .ok()
+                    // Not again when a book of that name (or from this very
+                    // card) is already among the user's lorebooks.
+                    .filter(|imp| {
+                        !crate::lorestore::list().0.iter().any(|b| {
+                            b.name.trim().eq_ignore_ascii_case(imp.book.name.trim())
+                                || (!b.source.is_empty() && b.source == imp.book.source)
+                        })
+                    })
+                    .map(|imp| {
+                        LoreAsk::new(saved.avatar.clone(), name.clone(), imp.book.name.clone(), imp.book.entries.len())
+                    });
+                let asking = ask.is_some();
+                if let Some(a) = ask {
+                    self.lore_pending.push(a);
+                    self.promote_lore_ask();
+                }
                 self.set_status(
-                    format!("imported \"{}\" ({}) \u{2014} switch to it with /chars", name, saved.avatar),
+                    format!(
+                        "imported \"{}\" ({}) \u{2014} {}",
+                        name,
+                        saved.avatar,
+                        if asking { "it has a lorebook" } else { "switch to it with /chars" }
+                    ),
                     false,
                 );
             }
@@ -921,6 +957,77 @@ impl App {
             }
             Some(Err(_)) => self.set_status("import failed (stopped)", true),
             None => {}
+        }
+    }
+
+    /// Is a window open that the lorebook question must not cover?
+    fn other_window_open(&self) -> bool {
+        self.show_help
+            || self.prompt_view.is_some()
+            || self.image_modal.is_some()
+            || self.card_modal.is_some()
+            || self.pos_edit.is_some()
+            || self.picker.is_some()
+    }
+
+    /// Show the next waiting lorebook question when nothing else is open.
+    fn promote_lore_ask(&mut self) {
+        if self.lore_ask.is_none() && !self.lore_pending.is_empty() && !self.other_window_open() {
+            self.lore_ask = Some(self.lore_pending.remove(0));
+        }
+    }
+
+    /// The answer to the lorebook question: *Yes* copies the card's lorebook
+    /// into `/lore` and puts the character in its *On for* list, *No* leaves
+    /// it (it can still be copied later with `c` in `/lore`).
+    fn lore_ask_action(&mut self, act: LoreAskAction) {
+        match act {
+            LoreAskAction::None => {}
+            LoreAskAction::No => {
+                if let Some(a) = self.lore_ask.take() {
+                    self.set_status(
+                        format!(
+                            "lorebook of {} not copied \u{2014} /lore, then c, copies it later",
+                            a.character
+                        ),
+                        false,
+                    );
+                }
+                self.promote_lore_ask();
+            }
+            LoreAskAction::Yes => {
+                let Some(a) = self.lore_ask.as_ref() else {
+                    return;
+                };
+                let (avatar, character) = (a.avatar.clone(), a.character.clone());
+                let result = charstore::get(&avatar)
+                    .and_then(|card| crate::lorestore::from_card(&card, &avatar))
+                    .map(|mut imp| {
+                        imp.book.characters.push(avatar.trim_end_matches(".png").to_string());
+                        imp
+                    })
+                    .and_then(crate::lorestore::add);
+                match result {
+                    Ok(b) => {
+                        self.lore_ask = None;
+                        self.set_status(
+                            format!(
+                                "lorebook '{}' ({} entries) copied and linked to {}",
+                                b.name,
+                                b.entries.len(),
+                                character
+                            ),
+                            false,
+                        );
+                        self.promote_lore_ask();
+                    }
+                    Err(e) => {
+                        if let Some(a) = self.lore_ask.as_mut() {
+                            a.note = Some(format!("could not copy: {:#}", e));
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1022,7 +1129,11 @@ impl App {
                     c.follow = true;
                     return;
                 }
-                if self.picker.is_some() || self.pos_edit.is_some() || self.prompt_view.is_some() {
+                if self.picker.is_some()
+                    || self.pos_edit.is_some()
+                    || self.prompt_view.is_some()
+                    || self.lore_ask.is_some()
+                {
                     return;
                 }
                 self.input_scroll = None;
@@ -1039,6 +1150,11 @@ impl App {
     }
 
     async fn on_mouse(&mut self, m: MouseEvent) {
+        if let Some(a) = self.lore_ask.as_mut() {
+            let act = a.on_mouse(m);
+            self.lore_ask_action(act);
+            return;
+        }
         if self.image_modal.is_some() {
             if matches!(m.kind, MouseEventKind::Down(_)) {
                 self.image_modal = None;
@@ -1320,6 +1436,11 @@ impl App {
         // The path menu only lives while the box holds an `/import` path.
         if self.path_open && crate::pathcomp::typed_arg(&self.input.text).is_none() {
             self.path_open = false;
+        }
+        if let Some(a) = self.lore_ask.as_mut() {
+            let act = a.handle_key(k);
+            self.lore_ask_action(act);
+            return;
         }
         if self.image_modal.is_some() {
             // Any key closes the picture.

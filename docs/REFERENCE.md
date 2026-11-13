@@ -465,6 +465,8 @@ A card's own lorebook (the `character_book` that SillyTavern and chub.ai put in 
 - **Seeing it.** `/prompt` shows what was added to the next reply.
 - **Editing a card's book.** `/lore` does not change a card: edit the card in SillyTavern, or the `character_book` in the card's file. The card is read when the chat is opened. `/char` and Card save keep the book as it is. To work on it in tarpi, copy it into a lorebook of your own with `c` in `/lore` (below).
 
+**Asked on import.** When `/import` adds a card that has a lorebook, a small window asks whether to import it and link it to the character: **Yes** (Enter or `y`) copies the book into your own lorebooks (`/lore`) and puts the character in its *On for* list, so it is on for that character right away; **No** (Esc, `n` or `q`) leaves it, and `c` in `/lore` copies it later. Left / Right, Tab or `h` / `l` move between the buttons, and a click on a button answers. It is not asked when you already have a lorebook of that name. If another window is open when the import finishes, the question waits until it is closed. While a copy of a character's own book (one made this way or with `c`) is on for that character, the card's own copy is left out of the prompt, so the entries are not sent twice.
+
 ### Your own lorebooks (`/lore`)
 
 `/lore` opens the lorebook manager: books of tarpi's own, kept as one file each in `~/.config/tarpi/lorebooks/` (a V2 `character_book` plus a small `extensions.tarpi` block, so other tools can read them). They work like a card's book, with the same keys, positions, order and budget as above, and they are used in the prompt together with the card's. Saved books apply from the next reply.
