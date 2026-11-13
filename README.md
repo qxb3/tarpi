@@ -44,7 +44,7 @@
               click any message to edit it
  long chats   /summarize writes a summary branch; the original is kept
  editing      vim modes, :s find/replace, optional offline spell checker
- sync         tarpi serve / tarpi connect: same chats on every device
+ sync         tarpi serve / tarpi connect: same chats, characters and lorebooks on every device
  anywhere     desktop terminals, and Termux on a phone (touch)
  files        chats are plain .jsonl, one message per line: nothing is locked in
  migrate      tarpi import-st copies a SillyTavern server's characters, personas

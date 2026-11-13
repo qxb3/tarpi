@@ -392,6 +392,7 @@ mod tests {
         assert_eq!(describe("chats/Sofia/Sofia03.jsonl"), "chat Sofia03 with Sofia");
         assert_eq!(describe("characters/Sofia.png"), "character Sofia");
         assert_eq!(describe("persona/Me.json"), "persona Me");
+        assert_eq!(describe("lorebooks/dragons-3fa9c1.json"), "lorebook dragons-3fa9c1");
         assert_eq!(describe("system-prompt.jsonl"), "the system prompts");
         assert_eq!(describe("api.yaml"), "the API connections");
     }
@@ -425,6 +426,9 @@ mod tests {
     fn only_shared_paths_are_valid() {
         assert!(valid_path("chats/Sofia/Sofia01.jsonl"));
         assert!(valid_path("characters/Sofia.png"));
+        assert!(valid_path("lorebooks/dragons-3fa9c1.json"));
+        // a conflict copy of a lorebook is never shared
+        assert!(!valid_path("lorebooks/dragons-3fa9c1.json.conflict-5"));
         assert!(valid_path("persona/active"));
         assert!(valid_path("system-prompt.jsonl"));
         assert!(!valid_path("formatting.yaml"));

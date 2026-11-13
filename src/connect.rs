@@ -1,5 +1,5 @@
-//! `tarpi connect [token]`: use the chats, characters, personas, system
-//! prompts and API connection of the machine that runs `tarpi
+//! `tarpi connect [token]`: use the chats, characters, personas, lorebooks,
+//! system prompts and API connection of the machine that runs `tarpi
 //! serve` (`serve_url` in `config.yaml`), from this device. It first asks the
 //! server whether it wants a token (that is the server's `serve_trust_all`),
 //! and only asks for one when it does.
@@ -48,7 +48,7 @@ const SYNC_EVERY: u64 = 3;
     about = "Chat with the characters and chats of the machine named by `serve_url` in config.yaml",
     long_about = "Connect to the machine that runs `tarpi serve` (its address is `serve_url` \
                   in ~/.config/tarpi/config.yaml) and use its characters, chats, personas, \
-                  system prompts and API connection from this device (formatting stays on each device). A copy of \
+                  lorebooks, system prompts and API connection from this device (formatting stays on each device). A copy of \
                   them is kept in ~/.config/tarpi/remote/ and brought up to date before the \
                   chat opens, every few seconds while it is open, and when you quit. Then \
                   you pick a character, as in plain `tarpi`. The token is the one `tarpi \

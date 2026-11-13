@@ -1,5 +1,5 @@
-//! `tarpi serve`: share this machine's characters, chats, personas, system
-//! prompts and API connections with other devices running
+//! `tarpi serve`: share this machine's characters, chats, personas, lorebooks,
+//! system prompts and API connections with other devices running
 //! `tarpi connect`. It does not open the chat screen; it just answers requests
 //! until you stop it (Ctrl+C).
 //!
@@ -42,8 +42,8 @@ use tokio::net::{TcpListener, TcpStream};
 #[command(
     name = "tarpi serve",
     about = "Share your characters, chats and settings with other devices running `tarpi connect`",
-    long_about = "Serve the data in ~/.config/tarpi (characters, chats, personas, system \
-                  prompts and the API connections) to other devices, which \
+    long_about = "Serve the data in ~/.config/tarpi (characters, chats, personas, lorebooks, \
+                  system prompts and the API connections) to other devices, which \
                   keep a copy of it in step with `tarpi connect`. Nothing is drawn on the \
                   screen: the command just runs until you stop it with Ctrl+C. By default \
                   it listens on every network interface; --local limits it to this \

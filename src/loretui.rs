@@ -22,6 +22,7 @@ use crossterm::event::{
     MouseEventKind,
 };
 use futures_util::StreamExt;
+use serde_json::Value;
 use ratatui::{
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style},
@@ -59,7 +60,7 @@ enum EF {
     Enabled,
     Keys,
     Secondary,
-    Selective,
+    Logic,
     Constant,
     Case,
     Position,
@@ -104,7 +105,7 @@ enum Modal {
     /// Characters whose card has a lorebook: (card file, name, entries), and
     /// the one under the cursor.
     Chars(Vec<(String, String, usize)>, usize),
-    /// "Also on for": every character with a switch (card file, name), and
+    /// "On for": every character with a switch (card file, name), and
     /// the one under the cursor.
     Toggle(Vec<(String, String)>, usize),
 }
@@ -123,6 +124,9 @@ struct Tui {
     /// The book being edited, and what its file holds.
     cur: Option<Book>,
     saved: Option<Book>,
+    /// A fingerprint of the file `cur` was read from or last saved to: a save
+    /// is refused when the file is no longer like that (another device).
+    disk: String,
     /// Earlier states of `cur`, newest last (`u` goes back one).
     undo: Vec<Book>,
     /// The entry being edited (entry screen).
@@ -175,6 +179,9 @@ fn clean_number_window(m: &mut MultiEdit, negative: bool) {
     }
 }
 
+/// Shown when "On for" is used while the book is on for every chat.
+const CHARS_OFF: &str = "'On for every chat' is on, so this list is not needed: switch it off to choose characters";
+
 fn char_stem(s: &str) -> String {
     let l = s.trim().to_lowercase();
     l.strip_suffix(".png").map(str::to_string).unwrap_or(l)
@@ -200,6 +207,7 @@ impl Tui {
             follow: true,
             cur: None,
             saved: None,
+            disk: String::new(),
             undo: Vec::new(),
             eidx: 0,
             status: None,
@@ -358,7 +366,7 @@ impl Tui {
             EF::Enabled,
             EF::Keys,
             EF::Secondary,
-            EF::Selective,
+            EF::Logic,
             EF::Constant,
             EF::Case,
             EF::Position,
@@ -434,9 +442,18 @@ impl Tui {
     // ---------------------------------------------------- list screen
 
     fn open_book(&mut self, i: usize) {
-        let Some(b) = self.books.get(i).cloned() else {
+        let Some(listed) = self.books.get(i).cloned() else {
             return;
         };
+        // The file as it is now (the list may be older than a sync).
+        let (b, disk) = match lorestore::load(&listed.id) {
+            Ok(x) => x,
+            Err(_) => {
+                let h = lorestore::disk_hash(&listed.id).unwrap_or_default();
+                (listed, h)
+            }
+        };
+        self.disk = disk;
         self.saved = Some(b.clone());
         self.cur = Some(b);
         self.undo.clear();
@@ -481,8 +498,9 @@ impl Tui {
         let Some(b) = self.cur.as_mut() else {
             return false;
         };
-        match lorestore::save(b) {
-            Ok(()) => {
+        match lorestore::save_checked(b, &self.disk) {
+            Ok(hash) => {
+                self.disk = hash;
                 self.saved = self.cur.clone();
                 self.say("saved: chats use it from the next reply on", false);
                 true
@@ -494,18 +512,24 @@ impl Tui {
         }
     }
 
-    /// `a` in the list: switch a book on for every chat, or off.
-    fn toggle_global(&mut self) {
-        let Some(mut b) = self.books.get(self.sels[0]).cloned() else {
+    /// Space in the list: switch a book on or off as a whole (off, it is never
+    /// used, whatever its own settings say).
+    fn toggle_enabled(&mut self) {
+        let Some(listed) = self.books.get(self.sels[0]).cloned() else {
             return;
         };
-        b.active = !b.active;
-        match lorestore::save(&mut b) {
-            Ok(()) => {
-                let msg = if b.active {
-                    format!("'{}' is on for every chat", b.name)
+        // Change the file as it is now, not the list's older copy.
+        let (mut b, seen) = lorestore::load(&listed.id).unwrap_or_else(|_| {
+            let h = lorestore::disk_hash(&listed.id).unwrap_or_default();
+            (listed, h)
+        });
+        b.enabled = !b.enabled;
+        match lorestore::save_checked(&mut b, &seen) {
+            Ok(_) => {
+                let msg = if b.enabled {
+                    format!("'{}' is on: used as its settings say", b.name)
                 } else {
-                    format!("'{}' is off for everyone (characters listed in it still use it)", b.name)
+                    format!("'{}' is off: not used at all", b.name)
                 };
                 self.reload();
                 self.select_book(&b.id);
@@ -545,9 +569,31 @@ impl Tui {
         }
     }
 
-    /// `c`: pick a character whose card carries a lorebook and copy it.
+    /// Was the lorebook of this card already copied? Books made here remember
+    /// their character; older ones are recognised by their name.
+    fn already_imported(&self, card: &Value) -> bool {
+        let avatar = jstr(card, "avatar");
+        let book_name = card
+            .get("data")
+            .and_then(|d| d.get("character_book"))
+            .map(|b| jstr(b, "name"))
+            .unwrap_or_default();
+        let name = if book_name.trim().is_empty() {
+            format!("{} lorebook", jstr(card, "name").trim())
+        } else {
+            book_name
+        };
+        self.books.iter().any(|b| {
+            (!b.source.is_empty() && char_stem(&b.source) == char_stem(&avatar))
+                || b.name.trim().to_lowercase() == name.trim().to_lowercase()
+        })
+    }
+
+    /// `c`: pick a character whose card carries a lorebook that is not in
+    /// your lorebooks yet, and copy it.
     fn open_chars(&mut self) {
         let mut found = Vec::new();
+        let mut copied = 0;
         for v in crate::charstore::list() {
             let n = v
                 .get("data")
@@ -556,18 +602,25 @@ impl Tui {
                 .and_then(|e| e.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0);
-            if n > 0 {
+            if n == 0 {
+                continue;
+            }
+            if self.already_imported(&v) {
+                copied += 1;
+            } else {
                 found.push((jstr(&v, "avatar"), jstr(&v, "name"), n));
             }
         }
-        if found.is_empty() {
+        if found.is_empty() && copied > 0 {
+            self.say("every lorebook in your characters' cards is already copied here", false);
+        } else if found.is_empty() {
             self.say("none of your characters has a lorebook in its card", true);
         } else {
             self.modal = Modal::Chars(found, 0);
         }
     }
 
-    /// Enter on "Also on for": every character, each with a switch.
+    /// Enter on "On for": every character, each with a switch.
     fn open_toggle(&mut self) {
         let Some(b) = &self.cur else {
             return;
@@ -650,7 +703,7 @@ impl Tui {
         let Some(b) = book else {
             return;
         };
-        let id = if b.id.is_empty() { "lorebook".to_string() } else { b.id.clone() };
+        let id = lorestore::slug(&b.name);
         let name = if st { format!("{}-st.json", id) } else { format!("{}.json", id) };
         let dir = std::env::current_dir()
             .map(|d| d.display().to_string())
@@ -689,6 +742,10 @@ impl Tui {
         let Some(b) = &self.cur else {
             return;
         };
+        if f == BF::Characters && b.active {
+            self.say(CHARS_OFF, true);
+            return;
+        }
         let (text, single) = match f {
             BF::Name => (b.name.clone(), true),
             BF::Description => (b.description.clone(), false),
@@ -901,6 +958,10 @@ impl Tui {
         match f {
             BF::Global => self.change(|b| b.active = !b.active),
             BF::Characters => {
+                if self.cur.as_ref().map(|b| b.active).unwrap_or(false) {
+                    self.say(CHARS_OFF, true);
+                    return;
+                }
                 if self.avatar.trim().is_empty() {
                     self.say("no character in this chat", true);
                     return;
@@ -929,7 +990,7 @@ impl Tui {
         };
         match f {
             EF::Enabled => self.change_item(|e| e.enabled = !e.enabled),
-            EF::Selective => self.change_item(|e| e.selective = !e.selective),
+            EF::Logic => self.change_item(|e| step_logic(e, dir)),
             EF::Constant => self.change_item(|e| e.constant = !e.constant),
             EF::Case => self.change_item(|e| e.case_sensitive = !e.case_sensitive),
             EF::Position => self.change_item(|e| {
@@ -1189,7 +1250,7 @@ impl Tui {
             ),
             KeyCode::Char('i') => self.begin_import(),
             KeyCode::Char('c') => self.open_chars(),
-            KeyCode::Char('a') | KeyCode::Char(' ') => self.toggle_global(),
+            KeyCode::Char(' ') => self.toggle_enabled(),
             KeyCode::Char('x') => self.begin_export(false),
             KeyCode::Char('X') => self.begin_export(true),
             KeyCode::Char('D') => self.duplicate_book(),
@@ -1223,15 +1284,17 @@ impl Tui {
                 Some(BRow::Entry(i)) => self.open_entry(i),
                 _ => self.adjust_book(1),
             },
-            KeyCode::Char(' ') => {
-                if let Some(BRow::Entry(i)) = self.book_row() {
-                    self.change(|b| {
-                        if let Some(e) = b.entries.get_mut(i) {
-                            e.enabled = !e.enabled;
-                        }
-                    });
-                }
-            }
+            KeyCode::Char(' ') => match self.book_row() {
+                Some(BRow::Entry(i)) => self.change(|b| {
+                    if let Some(e) = b.entries.get_mut(i) {
+                        e.enabled = !e.enabled;
+                    }
+                }),
+                // Space switches "On for every chat"; on "On for" it opens the list.
+                Some(BRow::Setting(BF::Global)) => self.adjust_book(1),
+                Some(BRow::Setting(BF::Characters)) => self.begin_book_edit(BF::Characters),
+                _ => {}
+            },
             KeyCode::Char('D') => {
                 if let Some(BRow::Entry(i)) = self.book_row() {
                     self.duplicate_entry(i);
@@ -1339,9 +1402,9 @@ fn ef_label(f: EF) -> &'static str {
         EF::Enabled => "Enabled",
         EF::Keys => "Keys",
         EF::Secondary => "Secondary keys",
-        EF::Selective => "Needs a secondary key",
+        EF::Logic => "Secondary logic",
         EF::Constant => "Always on",
-        EF::Case => "Match case",
+        EF::Case => "Case sensitive",
         EF::Position => "Position",
         EF::Depth => "Depth",
         EF::Role => "Role",
@@ -1355,10 +1418,10 @@ fn ef_help(f: EF) -> &'static str {
         EF::Title => "Just a name so you can tell entries apart in the list. The model never sees it.",
         EF::Enabled => "Off: the entry stays in the book but is never used. Handy to pause one without deleting it.",
         EF::Keys => "Trigger words, separated by commas. If any of them appears in the latest messages, this entry's text is added to the prompt. Plain words only.",
-        EF::Secondary => "Extra words, separated by commas. Only used when 'Needs a secondary key' is on: then one of these must show up too.",
-        EF::Selective => "Off: one Key is enough. On: the entry needs one Key AND one Secondary key before it is used.",
+        EF::Secondary => "Extra words, separated by commas. 'Secondary logic' decides how they count; they are ignored while it is off.",
+        EF::Logic => "How Secondary keys count once a Key matched. Off: ignored. Needs any one / every one: they must appear. Blocked if any / all appear: they stop the entry.",
         EF::Constant => "On: the entry is sent every time, whatever is said. Keys are ignored.",
-        EF::Case => "Off: 'Dragon' and 'dragon' both match. On: the capital letters must match exactly.",
+        EF::Case => "Off (default): 'Dragon' and 'dragon' both match. On: capital letters must match exactly. Applies to Keys and Secondary keys.",
         EF::Position => "Where the text goes: before or after the character's description, or inside the chat history among the messages.",
         EF::Depth => "Only for 'in the chat'. How many messages from the end the text is placed. 0 = after the last message, 1 = just before it.",
         EF::Role => "Only for 'in the chat'. Who the text appears to be said by: system (a note), user, or assistant (the character).",
@@ -1372,17 +1435,20 @@ fn bf_label(f: BF) -> &'static str {
         BF::Name => "Name",
         BF::Description => "Description",
         BF::Global => "On for every chat",
-        BF::Characters => "Also on for",
+        BF::Characters => "On for",
         BF::ScanDepth => "Scan depth",
         BF::TokenBudget => "Token budget",
     }
 }
 
-fn bf_help(f: BF, char_name: &str) -> String {
+fn bf_help(f: BF, char_name: &str, active: bool) -> String {
     match f {
         BF::Name => "The name shown in the list of lorebooks.".to_string(),
         BF::Description => "A note for yourself about this book. The model never sees it.".to_string(),
         BF::Global => "On: the book is used in every chat with every character. Off: only for the characters chosen below. Left / Right switches it.".to_string(),
+        BF::Characters if active => {
+            "Disabled: the book is already on for every chat. Switch 'On for every chat' off to choose characters.".to_string()
+        }
         BF::Characters => format!(
             "Characters this book is also used for, even when it is not on for everyone. Enter: pick from a list. Left / Right: add or remove {}.",
             if char_name.is_empty() { "this chat's character" } else { char_name }
@@ -1405,6 +1471,34 @@ fn role_text(role: u8) -> &'static str {
         1 => "user",
         2 => "assistant",
         _ => "system",
+    }
+}
+
+/// The choices of the "Secondary logic" row, in the order Left / Right goes
+/// through them: (secondary keys used, SillyTavern's `selectiveLogic`).
+const LOGIC_STEPS: [(bool, u8); 5] = [(false, 0), (true, 0), (true, 3), (true, 2), (true, 1)];
+
+fn logic_index(e: &Item) -> usize {
+    LOGIC_STEPS
+        .iter()
+        .position(|(on, l)| *on == e.selective && (!e.selective || *l == e.logic))
+        .unwrap_or(0)
+}
+
+fn step_logic(e: &mut Item, dir: i64) {
+    let n = LOGIC_STEPS.len() as i64;
+    let (on, l) = LOGIC_STEPS[(logic_index(e) as i64 + dir.signum()).rem_euclid(n) as usize];
+    e.selective = on;
+    e.logic = l;
+}
+
+fn logic_text(e: &Item) -> &'static str {
+    match LOGIC_STEPS[logic_index(e)] {
+        (false, _) => "off (secondary keys ignored)",
+        (true, 3) => "needs every one of them",
+        (true, 2) => "blocked if any of them appears",
+        (true, 1) => "blocked if all of them appear",
+        _ => "needs any one of them",
     }
 }
 
@@ -1464,13 +1558,7 @@ fn bar_line(text: &str, selected: bool, dim: bool, width: usize) -> Line<'static
 impl Tui {
     fn books_line(&self, i: usize, width: usize) -> Line<'static> {
         let b = &self.books[i];
-        let mark = if b.active {
-            "[x]"
-        } else if !b.characters.is_empty() {
-            "[c]"
-        } else {
-            "[ ]"
-        };
+        let mark = if b.enabled { "[x]" } else { "[ ]" };
         let name_w = (width / 2).clamp(10, 32);
         let text = format!(
             " {} {:<nw$} {:>4} entries  {}",
@@ -1480,7 +1568,7 @@ impl Tui {
             b.scope(),
             nw = name_w
         );
-        bar_line(&text, i == self.sels[0], !b.active && b.characters.is_empty(), width)
+        bar_line(&text, i == self.sels[0], !b.enabled, width)
     }
 
     fn book_setting_value(&self, f: BF, b: &Book) -> (String, bool) {
@@ -1496,7 +1584,9 @@ impl Tui {
             }
             BF::Global => (on_off(b.active).to_string(), false),
             BF::Characters => {
-                if b.characters.is_empty() {
+                if b.active {
+                    ("(not needed: on for every chat)".to_string(), true)
+                } else if b.characters.is_empty() {
                     ("(none)".to_string(), true)
                 } else {
                     (b.characters.join(", "), false)
@@ -1570,7 +1660,7 @@ impl Tui {
             EF::Enabled => (on_off(e.enabled).to_string(), false),
             EF::Keys => (e.keys.join(", "), e.keys.is_empty()),
             EF::Secondary => (e.secondary.join(", "), e.secondary.is_empty()),
-            EF::Selective => (on_off(e.selective).to_string(), false),
+            EF::Logic => (arrows(logic_text(e)), false),
             EF::Constant => (on_off(e.constant).to_string(), false),
             EF::Case => (on_off(e.case_sensitive).to_string(), false),
             EF::Position => (arrows(&place_text(e)), false),
@@ -1617,7 +1707,7 @@ impl Tui {
         match self.screen {
             Screen::Books => match self.books.get(self.sels[0]) {
                 Some(b) => format!(
-                    "[x] on for every chat  [c] on for chosen characters  [ ] off.  {}: {} of {} entries can fire.",
+                    "[x] the book is used as its own settings say, [ ] it is never used.  {}: {} of {} entries can fire.",
                     b.name,
                     b.usable_count(),
                     b.entries.len()
@@ -1625,7 +1715,9 @@ impl Tui {
                 None => "A lorebook adds text to the prompt when its keys show up in the chat.".to_string(),
             },
             Screen::Book => match self.book_row() {
-                Some(BRow::Setting(f)) => bf_help(f, &self.char_name),
+                Some(BRow::Setting(f)) => {
+                    bf_help(f, &self.char_name, self.cur.as_ref().map(|b| b.active).unwrap_or(false))
+                }
                 Some(BRow::Entry(_)) => {
                     "Enter opens the entry, Space switches it on / off, D copies it, d deletes it.".to_string()
                 }
@@ -1819,8 +1911,8 @@ fn draw(f: &mut Frame, t: &mut Tui) {
         );
     } else {
         let hints = match t.screen {
-            Screen::Books => " \u{2191}\u{2193} select  Enter open  n new  i import  c from a character  a on/off  D copy  x/X export  d delete  q quit",
-            Screen::Book => " \u{2191}\u{2193} select  Enter edit/open  n new entry  Space on/off  i import  x/X export  d delete  u undo  s save  q back",
+            Screen::Books => " \u{2191}\u{2193} select  Enter open  n new  i import  c from a character  Space on/off  D copy  x/X export  d delete  q quit",
+            Screen::Book => " \u{2191}\u{2193} select  Enter edit/open  Space on/off  n new entry  i import  x/X export  d delete  u undo  s save  q back",
             Screen::Entry => " \u{2191}\u{2193} select  Enter edit  \u{2190}\u{2192} change  Tab next entry  u undo  s save  q back",
         };
         f.render_widget(
@@ -1841,7 +1933,7 @@ fn draw(f: &mut Frame, t: &mut Tui) {
         }
     }
 
-    // ---- "Also on for": every character with a switch
+    // ---- "On for": every character with a switch
     if let Modal::Toggle(list, sel) = &t.modal {
         let book = t.cur.as_ref();
         let rect = centered(area, 60, (list.len() as u16 + 4).min(area.height));
@@ -1878,7 +1970,7 @@ fn draw(f: &mut Frame, t: &mut Tui) {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::Cyan))
-                    .title(" Also on for "),
+                    .title(" On for "),
             ),
             rect,
         );
@@ -2081,6 +2173,56 @@ mod tests {
         assert_eq!(t.cur.as_ref().unwrap().characters, vec!["Ann"]);
         t.on_key(key(KeyCode::Esc));
         assert!(matches!(t.modal, Modal::None));
+    }
+
+    #[test]
+    fn on_for_is_disabled_while_the_book_is_on_for_every_chat() {
+        let mut t = open();
+        t.change(|b| b.active = true);
+        t.sels[1] = t
+            .book_rows()
+            .iter()
+            .position(|r| *r == BRow::Setting(BF::Characters))
+            .unwrap();
+        t.adjust_book(1);
+        t.begin_book_edit(BF::Characters);
+        assert!(t.cur.as_ref().unwrap().characters.is_empty());
+        assert!(matches!(t.modal, Modal::None));
+        assert!(t.status.as_ref().map(|s| s.1).unwrap_or(false));
+        t.change(|b| b.active = false);
+        t.begin_book_edit(BF::Characters);
+        assert!(matches!(t.modal, Modal::Toggle(..)) || t.status.is_some());
+    }
+
+    #[test]
+    fn secondary_logic_steps_through_its_choices() {
+        let mut e = Item::new();
+        assert_eq!(logic_text(&e), "off (secondary keys ignored)");
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            step_logic(&mut e, 1);
+            seen.push((e.selective, e.logic));
+        }
+        assert_eq!(seen, vec![(true, 0), (true, 3), (true, 2), (true, 1), (false, 0)]);
+        step_logic(&mut e, -1);
+        assert_eq!((e.selective, e.logic), (true, 1));
+        assert_eq!(logic_text(&e), "blocked if all of them appear");
+        assert!(!Item::new().case_sensitive);
+    }
+
+    #[test]
+    fn space_switches_on_for_every_chat() {
+        let mut t = open();
+        t.sels[1] = t
+            .book_rows()
+            .iter()
+            .position(|r| *r == BRow::Setting(BF::Global))
+            .unwrap();
+        let space = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
+        t.on_key(space);
+        assert!(t.cur.as_ref().unwrap().active);
+        t.on_key(space);
+        assert!(!t.cur.as_ref().unwrap().active);
     }
 
     #[test]

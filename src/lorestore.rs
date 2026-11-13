@@ -45,6 +45,10 @@ pub struct Item {
     pub keys: Vec<String>,
     pub secondary: Vec<String>,
     pub selective: bool,
+    /// How the secondary keys count when `selective` (SillyTavern's
+    /// `selectiveLogic`): 0 any one must appear, 3 every one must, 2 none may
+    /// appear, 1 they must not all appear.
+    pub logic: u8,
     pub constant: bool,
     pub case_sensitive: bool,
     pub order: i64,
@@ -66,6 +70,7 @@ impl Item {
             keys: Vec::new(),
             secondary: Vec::new(),
             selective: false,
+            logic: 0,
             constant: false,
             case_sensitive: false,
             order: 100,
@@ -107,6 +112,7 @@ impl Item {
             keys: strings(e.get("keys")),
             secondary: strings(e.get("secondary_keys")),
             selective: jbool(e, "selective", false),
+            logic: ji64(ext, "selectiveLogic", 0).clamp(0, 3) as u8,
             constant: jbool(e, "constant", false),
             case_sensitive: jbool(e, "case_sensitive", false),
             order: ji64(e, "insertion_order", 100),
@@ -142,6 +148,7 @@ impl Item {
         ext.insert("position".into(), json!(self.place_number()));
         ext.insert("depth".into(), json!(self.depth));
         ext.insert("role".into(), json!(self.role));
+        ext.insert("selectiveLogic".into(), json!(self.logic));
         o.insert("extensions".into(), Value::Object(ext));
         Value::Object(o)
     }
@@ -178,6 +185,7 @@ impl Item {
             keys: self.keys.clone(),
             secondary: self.secondary.clone(),
             selective: self.selective,
+            logic: self.logic,
             constant: self.constant,
             case_sensitive: self.case_sensitive,
             order: self.order,
@@ -207,10 +215,16 @@ pub struct Book {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// The master switch: off, the book is never used, whatever its other
+    /// settings say (`[x]` / `[ ]` in the list). On by default.
+    pub enabled: bool,
     /// On for every chat.
     pub active: bool,
     /// Also on for these characters (card file names without `.png`).
     pub characters: Vec<String>,
+    /// The character whose card this book was copied from (card file name
+    /// without `.png`); empty for any other book.
+    pub source: String,
     pub scan_depth: i64,
     pub token_budget: i64,
     pub entries: Vec<Item>,
@@ -230,8 +244,10 @@ impl Book {
             id: String::new(),
             name: name.trim().to_string(),
             description: String::new(),
+            enabled: true,
             active: false,
             characters: Vec::new(),
+            source: String::new(),
             scan_depth: DEFAULT_SCAN_DEPTH,
             token_budget: 0,
             entries: Vec::new(),
@@ -261,8 +277,10 @@ impl Book {
             id: id.to_string(),
             name,
             description: jstr(v, "description"),
+            enabled: jbool(tarpi, "enabled", true),
             active: jbool(tarpi, "active", false),
             characters: strings(tarpi.get("characters")),
+            source: jstr(tarpi, "source"),
             scan_depth: ji64(v, "scan_depth", DEFAULT_SCAN_DEPTH).max(0),
             token_budget: ji64(v, "token_budget", 0).max(0),
             entries,
@@ -294,7 +312,12 @@ impl Book {
             .unwrap_or_default();
         ext.insert(
             "tarpi".into(),
-            json!({ "active": self.active, "characters": self.characters }),
+            json!({
+                "enabled": self.enabled,
+                "active": self.active,
+                "characters": self.characters,
+                "source": self.source,
+            }),
         );
         o.insert("extensions".into(), Value::Object(ext));
         Value::Object(o)
@@ -302,12 +325,13 @@ impl Book {
 
     /// Is the book on for this character (a card file name)?
     pub fn applies_to(&self, avatar: &str) -> bool {
-        self.active
-            || (!avatar.trim().is_empty()
+        self.enabled
+            && (self.active
+                || (!avatar.trim().is_empty()
                 && self
                     .characters
                     .iter()
-                    .any(|c| char_key(c) == char_key(avatar)))
+                    .any(|c| char_key(c) == char_key(avatar))))
     }
 
     /// Is the character in the book's list?
@@ -352,7 +376,7 @@ impl Book {
     pub fn scope(&self) -> String {
         match (self.active, self.characters.len()) {
             (true, _) => "every chat".to_string(),
-            (false, 0) => "off".to_string(),
+            (false, 0) => "nobody yet".to_string(),
             (false, 1) => format!("only {}", self.characters[0]),
             (false, n) => format!("{} characters", n),
         }
@@ -381,7 +405,7 @@ fn valid_id(id: &str) -> bool {
 }
 
 /// A file-name friendly id made from a book's name.
-fn slug(name: &str) -> String {
+pub fn slug(name: &str) -> String {
     let mut out = String::new();
     for c in name.chars() {
         if c.is_ascii_alphanumeric() {
@@ -399,15 +423,17 @@ fn slug(name: &str) -> String {
     }
 }
 
-/// `base`, or `base-2`, `base-3`, ... when that file already exists.
+/// `base` and six random characters (`dragons-3fa9c1`). The ending keeps two
+/// devices that each make a book with the same name (see `tarpi connect`)
+/// from writing the same file.
 fn unique_id(dir: &Path, base: &str) -> String {
-    if !dir.join(format!("{}.json", base)).exists() {
-        return base.to_string();
+    loop {
+        let rnd = uuid::Uuid::new_v4().simple().to_string();
+        let id = format!("{}-{}", base, &rnd[..6]);
+        if !dir.join(format!("{}.json", id)).exists() {
+            return id;
+        }
     }
-    (2..)
-        .map(|n| format!("{}-{}", base, n))
-        .find(|id| !dir.join(format!("{}.json", id)).exists())
-        .unwrap_or_else(|| base.to_string())
 }
 
 fn path_of(id: &str) -> Result<PathBuf> {
@@ -424,12 +450,6 @@ fn parse_book(id: &str, text: &str) -> Result<Book> {
         bail!("{}.json is not a lorebook", id);
     }
     Ok(Book::from_value(id, &v))
-}
-
-pub fn load(id: &str) -> Result<Book> {
-    let p = path_of(id)?;
-    let text = std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
-    parse_book(id, &text)
 }
 
 /// Every book, by name, and a line for each file that could not be read.
@@ -462,6 +482,42 @@ pub fn list() -> (Vec<Book>, Vec<String>) {
     }
     books.sort_by_key(|b| b.name.to_lowercase());
     (books, errors)
+}
+
+/// A book as its file holds it now, and a fingerprint of that file (what
+/// `save_checked` compares against).
+pub fn load(id: &str) -> Result<(Book, String)> {
+    let p = path_of(id)?;
+    let bytes = std::fs::read(&p).with_context(|| format!("reading {}", p.display()))?;
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    Ok((parse_book(id, &text)?, crate::mirror::hash_bytes(&bytes)))
+}
+
+/// The fingerprint of the book's file as it is now; `None` when it is gone.
+pub fn disk_hash(id: &str) -> Option<String> {
+    let p = path_of(id).ok()?;
+    std::fs::read(p).ok().map(|b| crate::mirror::hash_bytes(&b))
+}
+
+/// Like `save`, but only when the file is still the one that was read (`seen`
+/// is what `load` or an earlier `save_checked` returned): when another device
+/// changed or deleted it meanwhile, nothing is written. Returns the new
+/// fingerprint.
+pub fn save_checked(book: &mut Book, seen: &str) -> Result<String> {
+    if !book.id.is_empty() && disk_hash(&book.id).unwrap_or_default() != seen {
+        bail!(
+            "not saved: this lorebook was changed or deleted somewhere else (another device?) \
+             since you opened it. Leave without saving (q, then n) and open it again"
+        );
+    }
+    let d = dir()?;
+    if book.id.is_empty() {
+        book.id = unique_id(&d, &slug(&book.name));
+    }
+    let p = path_of(&book.id)?;
+    let bytes = serde_json::to_vec_pretty(&book.to_value())?;
+    crate::mirror::write_atomic(&p, &bytes, None)?;
+    Ok(crate::mirror::hash_bytes(&bytes))
 }
 
 /// Write the book (a new one gets its file name from its name).
@@ -593,8 +649,10 @@ pub fn parse_import(bytes: &[u8], fallback: &str) -> Result<Imported> {
     };
     imp.book.id = String::new();
     // An imported book starts off, whatever the file it came from said.
+    imp.book.enabled = true;
     imp.book.active = false;
     imp.book.characters.clear();
+    imp.book.source.clear();
     if jstr(&raw, "name").trim().is_empty() {
         imp.book.name = fallback.trim().to_string();
     }
@@ -623,8 +681,10 @@ pub fn from_card(card: &Value, fallback: &str) -> Result<Imported> {
         b.name = format!("{} lorebook", who.trim());
     }
     // A card's book is not one of tarpi's: it starts off.
+    b.enabled = true;
     b.active = false;
     b.characters.clear();
+    b.source = char_key_name(fallback);
     Ok(Imported { book: b, notes: Vec::new() })
 }
 
@@ -637,7 +697,7 @@ fn is_regex_key(k: &str) -> bool {
 fn from_st(raw: &Value, entries: &Map<String, Value>) -> Imported {
     let mut list: Vec<&Value> = entries.values().filter(|e| e.is_object()).collect();
     list.sort_by_key(|e| (ji64(e, "displayIndex", ji64(e, "uid", 0)), ji64(e, "uid", 0)));
-    let (mut regex, mut logic, mut prob, mut slots, mut timed) = (0, 0, 0, 0, 0);
+    let (mut regex, mut prob, mut slots, mut timed) = (0, 0, 0, 0);
     let mut items = Vec::new();
     for e in list {
         let keys = strings(e.get("key"));
@@ -645,9 +705,6 @@ fn from_st(raw: &Value, entries: &Map<String, Value>) -> Imported {
         let selective = jbool(e, "selective", false);
         if keys.iter().chain(secondary.iter()).any(|k| is_regex_key(k)) {
             regex += 1;
-        }
-        if selective && !secondary.is_empty() && ji64(e, "selectiveLogic", 0) != 0 {
-            logic += 1;
         }
         if jbool(e, "useProbability", false) && ji64(e, "probability", 100) < 100 {
             prob += 1;
@@ -679,6 +736,7 @@ fn from_st(raw: &Value, entries: &Map<String, Value>) -> Imported {
                 "position": position,
                 "depth": ji64(e, "depth", 4),
                 "role": ji64(e, "role", 0),
+                "selectiveLogic": ji64(e, "selectiveLogic", 0),
             },
         });
         items.push(Item::from_value(&v));
@@ -689,9 +747,6 @@ fn from_st(raw: &Value, entries: &Map<String, Value>) -> Imported {
     let mut notes = Vec::new();
     if regex > 0 {
         notes.push(format!("{} with /regex/ keys (kept as plain text)", regex));
-    }
-    if logic > 0 {
-        notes.push(format!("{} with NOT / AND-ALL secondary-key logic (read as AND-ANY)", logic));
     }
     if prob > 0 {
         notes.push(format!("{} with a probability (always on when a key matches)", prob));
@@ -733,7 +788,7 @@ pub fn to_st(book: &Book) -> Value {
                 "constant": e.constant,
                 "vectorized": false,
                 "selective": e.selective,
-                "selectiveLogic": 0,
+                "selectiveLogic": e.logic,
                 "addMemo": true,
                 "order": e.order,
                 "position": e.place_number(),
@@ -772,8 +827,7 @@ pub fn export_to(book: &Book, path_text: &str, st: bool) -> Result<PathBuf> {
     }
     let mut p = crate::import::expand_path(t);
     if p.is_dir() {
-        let id = if book.id.is_empty() { slug(&book.name) } else { book.id.clone() };
-        p = p.join(format!("{}.json", id));
+        p = p.join(format!("{}.json", slug(&book.name)));
     }
     if p.exists() {
         bail!("{} already exists: pick another name", p.display());
@@ -825,8 +879,9 @@ mod tests {
         assert_eq!((dragon.depth, dragon.role, dragon.order), (2, 1, 50));
         assert!(dragon.case_sensitive);
         assert_eq!(dragon.keys, vec!["/dr.g/i", "wyrm"]);
-        // regex key, selective logic, probability
-        assert_eq!(imp.notes.len(), 3);
+        // regex key, probability (selective logic is kept)
+        assert_eq!(imp.notes.len(), 2);
+        assert_eq!(king.logic, 1);
         // not on until the person says so
         assert!(!imp.book.active);
     }
@@ -884,6 +939,31 @@ mod tests {
         assert!(again.active);
         assert_eq!(again.characters, vec!["Sofia"]);
         assert_eq!(again.token_budget, 300);
+    }
+
+    #[test]
+    fn a_disabled_book_applies_to_nobody() {
+        let mut b = Book::new("Test");
+        b.active = true;
+        b.characters = vec!["Sofia".into()];
+        assert!(b.applies_to("Sofia.png") && b.applies_to("Other.png"));
+        b.enabled = false;
+        assert!(!b.applies_to("Sofia.png") && !b.applies_to("Other.png"));
+        let again = Book::from_value("", &b.to_value());
+        assert!(!again.enabled);
+        // A file from before the switch existed is on.
+        let old = json!({ "name": "Old", "entries": [], "extensions": { "tarpi": { "active": true } } });
+        assert!(Book::from_value("o", &old).enabled);
+    }
+
+    #[test]
+    fn a_book_copied_from_a_card_remembers_the_character() {
+        let card = json!({ "name": "Sofia", "data": { "character_book": { "entries": [
+            { "keys": ["a"], "content": "x", "enabled": true }
+        ] } } });
+        let imp = from_card(&card, "Sofia.png").unwrap();
+        assert_eq!(imp.book.source, "Sofia");
+        assert_eq!(Book::from_value("", &imp.book.to_value()).source, "Sofia");
     }
 
     #[test]
@@ -955,6 +1035,15 @@ mod tests {
     fn ids_are_file_name_safe() {
         assert_eq!(slug("The Realm of  Aldor!"), "the-realm-of-aldor");
         assert_eq!(slug("???"), "lorebook");
+    }
+
+    #[test]
+    fn new_ids_never_repeat_across_devices() {
+        let d = std::env::temp_dir();
+        let (a, b) = (unique_id(&d, "dragons"), unique_id(&d, "dragons"));
+        assert!(a.starts_with("dragons-") && valid_id(&a));
+        assert_eq!(a.len(), "dragons-".len() + 6);
+        assert_ne!(a, b);
         assert!(valid_id("my-book_2"));
         assert!(!valid_id("../x"));
         assert!(!valid_id(""));

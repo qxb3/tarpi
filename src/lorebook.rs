@@ -35,9 +35,13 @@ pub enum Place {
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub keys: Vec<String>,
-    /// Used only when `selective`: one of these must appear too.
+    /// Used only when `selective`, as `logic` says.
     pub secondary: Vec<String>,
     pub selective: bool,
+    /// How the secondary keys count (SillyTavern's `selectiveLogic`):
+    /// 0 any one of them must appear, 3 every one must, 2 none may appear,
+    /// 1 they must not all appear.
+    pub logic: u8,
     /// On whatever the messages say.
     pub constant: bool,
     pub case_sensitive: bool,
@@ -103,6 +107,7 @@ impl Entry {
             keys: strings(e.get("keys")),
             secondary: strings(e.get("secondary_keys")),
             selective: jbool(e, "selective", false),
+            logic: ji64(ext, "selectiveLogic", 0).clamp(0, 3) as u8,
             constant: jbool(e, "constant", false),
             case_sensitive: jbool(e, "case_sensitive", false),
             order: ji64(e, "insertion_order", 100),
@@ -122,6 +127,17 @@ impl Entry {
         })
     }
 
+    /// Does every one of `keys` appear in the text?
+    fn all_keys_in(&self, keys: &[String], text: &str, lower: &str) -> bool {
+        keys.iter().all(|k| {
+            if self.case_sensitive {
+                text.contains(k.as_str())
+            } else {
+                lower.contains(&k.to_lowercase())
+            }
+        })
+    }
+
     fn fires(&self, text: &str, lower: &str) -> bool {
         if self.constant {
             return true;
@@ -129,10 +145,17 @@ impl Entry {
         if !self.any_key_in(&self.keys, text, lower) {
             return false;
         }
-        // A selective entry also needs one of its secondary keys; one with
-        // none listed is an ordinary entry.
-        !(self.selective && !self.secondary.is_empty())
-            || self.any_key_in(&self.secondary, text, lower)
+        // A selective entry also looks at its secondary keys; one with none
+        // listed is an ordinary entry.
+        if !self.selective || self.secondary.is_empty() {
+            return true;
+        }
+        match self.logic {
+            1 => !self.all_keys_in(&self.secondary, text, lower),
+            2 => !self.any_key_in(&self.secondary, text, lower),
+            3 => self.all_keys_in(&self.secondary, text, lower),
+            _ => self.any_key_in(&self.secondary, text, lower),
+        }
     }
 }
 
@@ -237,6 +260,26 @@ mod tests {
         // Not selective: the secondary keys are not looked at.
         let b = book(json!([{ "keys": ["king"], "secondary_keys": ["crown"], "content": "c" }]));
         assert_eq!(texts(&b, &["the king"]).len(), 1);
+    }
+
+    #[test]
+    fn secondary_logic_decides_how_the_secondary_keys_count() {
+        let with = |logic: i64| {
+            book(json!([{ "keys": ["king"], "secondary_keys": ["crown", "throne"],
+                          "selective": true, "content": "c",
+                          "extensions": { "selectiveLogic": logic } }]))
+        };
+        let both = ["the king: crown and throne"];
+        let one = ["the king: crown"];
+        let none = ["the king"];
+        // 0: any one of them
+        assert_eq!((texts(&with(0), &both).len(), texts(&with(0), &one).len(), texts(&with(0), &none).len()), (1, 1, 0));
+        // 3: every one of them
+        assert_eq!((texts(&with(3), &both).len(), texts(&with(3), &one).len(), texts(&with(3), &none).len()), (1, 0, 0));
+        // 2: none of them may appear
+        assert_eq!((texts(&with(2), &both).len(), texts(&with(2), &one).len(), texts(&with(2), &none).len()), (0, 0, 1));
+        // 1: blocked only when all of them appear
+        assert_eq!((texts(&with(1), &both).len(), texts(&with(1), &one).len(), texts(&with(1), &none).len()), (0, 1, 1));
     }
 
     #[test]
