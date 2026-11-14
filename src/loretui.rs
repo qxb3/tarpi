@@ -272,6 +272,9 @@ struct Tui {
     books: Vec<Book>,
     /// Files in `lorebooks/` that could not be read.
     problems: Vec<String>,
+    /// Ids of the books copied from a card whose own lorebook has changed
+    /// since (the card was imported again, or its book edited).
+    outdated: Vec<String>,
     /// The selected row of each screen.
     sels: [usize; 3],
     scroll: usize,
@@ -299,11 +302,70 @@ struct Tui {
     spell: Option<LoreSpell>,
 }
 
+/// A list as it is typed in a window: the items joined with `, `. An item
+/// that has a comma in it (or starts with a quote, or has spaces at its ends)
+/// is written in "quotes", a quote inside doubled, so that `split_list` reads
+/// the same items back and opening a window and accepting it changes nothing.
+fn join_list(items: &[String]) -> String {
+    items
+        .iter()
+        .map(|s| {
+            if s.contains(',') || s.starts_with('"') || s != s.trim() {
+                format!("\"{}\"", s.replace('"', "\"\""))
+            } else {
+                s.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The items of a typed list: split on commas, spaces at the ends dropped,
+/// spaces inside kept, empty ones left out. An item that starts with a quote
+/// runs to the closing quote (`""` inside is one quote), so it may contain
+/// commas: `"Smith, John", dragon` is two items. A quote that is not closed
+/// takes the rest of the text.
 fn split_list(text: &str) -> Vec<String> {
-    text.split(',')
-        .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|s| !s.is_empty())
-        .collect()
+    fn push_item(out: &mut Vec<String>, cur: &mut String, written_quoted: bool) {
+        let item = std::mem::take(cur);
+        let item = if written_quoted { item } else { item.trim().to_string() };
+        if !item.is_empty() {
+            out.push(item);
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    // `quoted`: inside the quotes. `written_quoted`: the item began with a
+    // quote, so the spaces inside it are its own.
+    let (mut quoted, mut written_quoted) = (false, false);
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if quoted {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    cur.push('"');
+                } else {
+                    quoted = false;
+                }
+            } else {
+                cur.push(c);
+            }
+        } else if c == ',' {
+            push_item(&mut out, &mut cur, written_quoted);
+            written_quoted = false;
+        } else if c == '"' && !written_quoted && cur.trim().is_empty() {
+            cur.clear();
+            quoted = true;
+            written_quoted = true;
+        } else if written_quoted && c.is_whitespace() {
+            // Spaces after the closing quote are not part of the item.
+        } else {
+            cur.push(c);
+        }
+    }
+    push_item(&mut out, &mut cur, written_quoted);
+    out
 }
 
 /// The windows that take a number: (is it a number window, may it be negative).
@@ -359,6 +421,7 @@ impl Tui {
             screen: Screen::Books,
             books: Vec::new(),
             problems: Vec::new(),
+            outdated: Vec::new(),
             sels: [0; 3],
             scroll: 0,
             follow: true,
@@ -388,6 +451,19 @@ impl Tui {
     /// Read the list of books again.
     fn reload(&mut self) {
         let (books, problems) = lorestore::list();
+        // A copy of a card's book that no longer matches the card: said in
+        // the list, since the copy stays in use (and the card's own book
+        // stays out of the prompt) until it is replaced.
+        self.outdated = books
+            .iter()
+            .filter(|b| !b.source.is_empty() && !b.source_hash.is_empty())
+            .filter(|b| {
+                crate::charstore::get(&b.source)
+                    .map(|card| b.card_book_changed(&card))
+                    .unwrap_or(false)
+            })
+            .map(|b| b.id.clone())
+            .collect();
         self.books = books;
         self.problems = problems;
         let last = self.books.len().saturating_sub(1);
@@ -603,12 +679,16 @@ impl Tui {
         let Some(listed) = self.books.get(i).cloned() else {
             return;
         };
-        // The file as it is now (the list may be older than a sync).
+        // The file as it is now (the list may be older than a sync). When it
+        // cannot be read, the list's copy is not edited instead: saving it
+        // would write a book back that another device deleted.
         let (b, disk) = match lorestore::load(&listed.id) {
             Ok(x) => x,
-            Err(_) => {
-                let h = lorestore::disk_hash(&listed.id).unwrap_or_default();
-                (listed, h)
+            Err(e) => {
+                let msg = self.unreadable(&listed, &e);
+                self.reload();
+                self.say(msg, true);
+                return;
             }
         };
         self.disk = disk;
@@ -660,7 +740,26 @@ impl Tui {
             Ok(hash) => {
                 self.disk = hash;
                 self.saved = self.cur.clone();
-                self.say("saved: chats use it from the next reply on", false);
+                // An entry bigger than the whole token budget can never be
+                // added: say so, since nothing else shows it.
+                let cpt = crate::config::load()
+                    .ok()
+                    .and_then(|c| c.chars_per_token)
+                    .unwrap_or(3.2);
+                let big = self.cur.as_ref().map(|b| b.over_budget(cpt)).unwrap_or(0);
+                if big > 0 {
+                    self.say(
+                        format!(
+                            "saved, but {} {} bigger than the token budget and will never be used \
+                             (raise the budget, or set it to 0 for no limit)",
+                            big,
+                            if big == 1 { "entry is" } else { "entries are" }
+                        ),
+                        false,
+                    );
+                } else {
+                    self.say("saved: chats use it from the next reply on", false);
+                }
                 true
             }
             Err(e) => {
@@ -676,11 +775,17 @@ impl Tui {
         let Some(listed) = self.books.get(self.sels[0]).cloned() else {
             return;
         };
-        // Change the file as it is now, not the list's older copy.
-        let (mut b, seen) = lorestore::load(&listed.id).unwrap_or_else(|_| {
-            let h = lorestore::disk_hash(&listed.id).unwrap_or_default();
-            (listed, h)
-        });
+        // Change the file as it is now, not the list's older copy (and not at
+        // all when it is gone: that would bring back a deleted book).
+        let (mut b, seen) = match lorestore::load(&listed.id) {
+            Ok(x) => x,
+            Err(e) => {
+                let msg = self.unreadable(&listed, &e);
+                self.reload();
+                self.say(msg, true);
+                return;
+            }
+        };
         b.enabled = !b.enabled;
         match lorestore::save_checked(&mut b, &seen) {
             Ok(_) => {
@@ -697,18 +802,52 @@ impl Tui {
         }
     }
 
+    /// Why a book of the list cannot be opened: gone (another device deleted
+    /// it) or not readable.
+    fn unreadable(&self, listed: &Book, e: &anyhow::Error) -> String {
+        if lorestore::disk_hash(&listed.id).is_none() {
+            format!(
+                "'{}' was deleted somewhere else (another device?): the list is updated",
+                listed.name
+            )
+        } else {
+            format!("could not read '{}': {:#}", listed.name, e)
+        }
+    }
+
     fn duplicate_book(&mut self) {
-        let Some(mut b) = self.books.get(self.sels[0]).cloned() else {
+        let Some(listed) = self.books.get(self.sels[0]).cloned() else {
             return;
+        };
+        // The file as it is now, not the list's older copy.
+        let mut b = match lorestore::load(&listed.id) {
+            Ok((b, _)) => b,
+            Err(e) => {
+                let msg = self.unreadable(&listed, &e);
+                self.reload();
+                self.say(format!("could not copy: {}", msg), true);
+                return;
+            }
         };
         b.id = String::new();
         b.name = format!("{} copy", b.name);
+        // A copy starts like any new book: on for nobody. It must not stay on
+        // for the original's characters (they would get every entry twice),
+        // and it is no copy of a card (`source`), or it would shut that
+        // card's own book out of the prompt as well.
+        b.enabled = true;
         b.active = false;
+        b.characters.clear();
+        b.source.clear();
+        b.source_hash.clear();
         match lorestore::save(&mut b) {
             Ok(()) => {
                 self.reload();
                 self.select_book(&b.id);
-                self.say(format!("copied as '{}' (off)", b.name), false);
+                self.say(
+                    format!("copied as '{}' (on for nobody yet: open it to choose)", b.name),
+                    false,
+                );
             }
             Err(e) => self.say(format!("could not copy: {:#}", e), true),
         }
@@ -728,23 +867,15 @@ impl Tui {
     }
 
     /// Was the lorebook of this card already copied? Books made here remember
-    /// their character; older ones are recognised by their name.
+    /// their character, and that is what counts: two characters whose books
+    /// share a name are two books. Only older copies, which remember nothing,
+    /// are recognised by the name.
     fn already_imported(&self, card: &Value) -> bool {
         let avatar = jstr(card, "avatar");
-        let book_name = card
-            .get("data")
-            .and_then(|d| d.get("character_book"))
-            .map(|b| jstr(b, "name"))
+        let name = lorestore::from_card(card, &avatar)
+            .map(|imp| imp.book.name)
             .unwrap_or_default();
-        let name = if book_name.trim().is_empty() {
-            format!("{} lorebook", jstr(card, "name").trim())
-        } else {
-            book_name
-        };
-        self.books.iter().any(|b| {
-            (!b.source.is_empty() && char_stem(&b.source) == char_stem(&avatar))
-                || b.name.trim().to_lowercase() == name.trim().to_lowercase()
-        })
+        self.books.iter().any(|b| b.is_copy_of(&avatar, &name))
     }
 
     /// `c`: pick a character whose card carries a lorebook that is not in
@@ -980,8 +1111,8 @@ impl Tui {
         };
         let (text, single) = match f {
             EF::Title => (e.name.clone(), true),
-            EF::Keys => (e.keys.join(", "), true),
-            EF::Secondary => (e.secondary.join(", "), true),
+            EF::Keys => (join_list(&e.keys), true),
+            EF::Secondary => (join_list(&e.secondary), true),
             EF::Order => (e.order.to_string(), true),
             EF::Depth => (e.depth.to_string(), true),
             EF::Content => (e.content.replace("\r\n", "\n").replace('\r', "\n"), false),
@@ -990,7 +1121,9 @@ impl Tui {
                 return;
             }
         };
-        let hint = if single {
+        let hint = if matches!(f, EF::Keys | EF::Secondary) {
+            "Enter accept  Esc cancel  (a key with a comma goes in \"quotes\")"
+        } else if single {
             "Enter accept  Esc cancel"
         } else {
             "Ctrl+S accept  :w accept  Esc leaves INSERT, then cancels"
@@ -1800,6 +1933,11 @@ impl Tui {
             b.scope(),
             nw = name_w
         );
+        let text = if self.outdated.contains(&b.id) {
+            format!("{}  (card changed)", text)
+        } else {
+            text
+        };
         bar_line(&text, i == self.sels[0], !b.enabled, width)
     }
 
@@ -1821,7 +1959,7 @@ impl Tui {
                 } else if b.characters.is_empty() {
                     ("(none)".to_string(), true)
                 } else {
-                    (b.characters.join(", "), false)
+                    (join_list(&b.characters), false)
                 }
             }
             BF::ScanDepth => (arrows(&format!("{} latest messages", b.scan_depth)), false),
@@ -1890,8 +2028,8 @@ impl Tui {
         let (v, empty) = match f {
             EF::Title => (e.name.clone(), e.name.trim().is_empty()),
             EF::Enabled => (on_off(e.enabled).to_string(), false),
-            EF::Keys => (e.keys.join(", "), e.keys.is_empty()),
-            EF::Secondary => (e.secondary.join(", "), e.secondary.is_empty()),
+            EF::Keys => (join_list(&e.keys), e.keys.is_empty()),
+            EF::Secondary => (join_list(&e.secondary), e.secondary.is_empty()),
             EF::Logic => (arrows(logic_text(e)), false),
             EF::Constant => (on_off(e.constant).to_string(), false),
             EF::Case => (on_off(e.case_sensitive).to_string(), false),
@@ -1913,11 +2051,21 @@ impl Tui {
                 .books
                 .get(self.sels[0])
                 .map(|b| {
-                    if b.description.trim().is_empty() {
+                    let mut t = if b.description.trim().is_empty() {
                         String::new()
                     } else {
                         b.description.clone()
+                    };
+                    if self.outdated.contains(&b.id) {
+                        let note = format!(
+                            "The lorebook in {}'s card has changed since this copy was made. \
+                             The copy is still what is used. To take over the card's version: \
+                             d deletes this copy, then c copies the card's book again.",
+                            b.source
+                        );
+                        t = if t.is_empty() { note } else { format!("{}\n\n{}", note, t) };
                     }
+                    t
                 })
                 .unwrap_or_default(),
             Screen::Book => match (self.book_row(), &self.cur) {
@@ -2500,7 +2648,31 @@ mod tests {
     fn lists_are_split_on_commas() {
         assert_eq!(split_list("a, b ,, c"), vec!["a", "b", "c"]);
         assert!(split_list(" , ").is_empty());
-        assert_eq!(split_list("  red   dragon ,\tgold  "), vec!["red dragon", "gold"]);
+        // Spaces inside an item are the item's own.
+        assert_eq!(split_list("  red   dragon ,\tgold  "), vec!["red   dragon", "gold"]);
+    }
+
+    #[test]
+    fn an_item_with_a_comma_is_written_and_read_in_quotes() {
+        let keys: Vec<String> = ["Smith, John", "dragon", "say \"hi\"", "\"quoted\"", "a  b"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let text = join_list(&keys);
+        assert_eq!(
+            text,
+            "\"Smith, John\", dragon, say \"hi\", \"\"\"quoted\"\"\", a  b"
+        );
+        // Opening the window and accepting it as it is changes nothing.
+        assert_eq!(split_list(&text), keys);
+        assert_eq!(split_list(&join_list(&[])), Vec::<String>::new());
+        // Typed by hand.
+        assert_eq!(split_list("\"Smith, John\" , x"), vec!["Smith, John", "x"]);
+        assert_eq!(split_list("\"  keep  \", y"), vec!["  keep  ", "y"]);
+        // A quote that is never closed takes the rest.
+        assert_eq!(split_list("a, \"b, c"), vec!["a", "b, c"]);
+        // A quote in the middle of an item is just a quote.
+        assert_eq!(split_list("5\" nail, x"), vec!["5\" nail", "x"]);
     }
 
     /// A window's text with the cursor at its end, in INSERT mode.

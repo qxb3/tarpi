@@ -19,6 +19,7 @@ use crate::jv::*;
 use crate::lorebook::{strings, Entry as LoreEntry, Lorebook, Place};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Map, Value};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -62,6 +63,42 @@ pub struct Item {
     raw: Map<String, Value>,
 }
 
+/// SillyTavern's number for a place, read the way tarpi does: 0 before, 1
+/// after, 4 at a depth; the Author's Note and example-message slots (2, 3, 5,
+/// 6) fall to the nearest of before / after. `None` for any other number.
+fn place_of_number(n: i64) -> Option<u8> {
+    match n {
+        4 => Some(DEPTH),
+        1 | 3 | 6 => Some(AFTER),
+        0 | 2 | 5 => Some(BEFORE),
+        _ => None,
+    }
+}
+
+/// SillyTavern entry fields tarpi does not act on. They are kept in the
+/// entry's `extensions` (under SillyTavern's own names) when a World Info
+/// file is imported, so that saving the book and `to_st` hand them back
+/// instead of losing them.
+const ST_KEPT: &[&str] = &[
+    "scanDepth",
+    "matchWholeWords",
+    "characterFilter",
+    "triggers",
+    "ignoreBudget",
+    "excludeRecursion",
+    "preventRecursion",
+    "delayUntilRecursion",
+    "probability",
+    "useProbability",
+    "sticky",
+    "cooldown",
+    "delay",
+    "group",
+    "groupOverride",
+    "groupWeight",
+    "useGroupScoring",
+];
+
 impl Item {
     pub fn new() -> Item {
         Item {
@@ -87,21 +124,13 @@ impl Item {
     pub fn from_value(e: &Value) -> Item {
         let null = Value::Null;
         let ext = e.get("extensions").unwrap_or(&null);
-        let mut place = match ji64(ext, "position", -1) {
-            4 => DEPTH,
-            1 | 3 | 6 => AFTER,
-            0 | 2 | 5 => BEFORE,
-            _ => {
-                if jstr(e, "position") == "after_char" {
-                    AFTER
-                } else {
-                    BEFORE
-                }
+        let place = place_of_number(ji64(ext, "position", -1)).unwrap_or_else(|| {
+            if jstr(e, "position") == "after_char" {
+                AFTER
+            } else {
+                BEFORE
             }
-        };
-        if place > DEPTH {
-            place = BEFORE;
-        }
+        });
         let mut name = jstr(e, "comment");
         if name.trim().is_empty() {
             name = jstr(e, "name");
@@ -153,8 +182,19 @@ impl Item {
         Value::Object(o)
     }
 
-    /// SillyTavern's number for the place.
+    /// SillyTavern's number for the place. An entry that came with one of the
+    /// slots tarpi folds onto before / after (Author's Note, example
+    /// messages) keeps its number as long as its place is not changed, so
+    /// saving it or exporting it does not move it.
     fn place_number(&self) -> i64 {
+        let kept = self
+            .raw
+            .get("extensions")
+            .map(|x| ji64(x, "position", -1))
+            .unwrap_or(-1);
+        if place_of_number(kept) == Some(self.place) {
+            return kept;
+        }
         match self.place {
             AFTER => 1,
             DEPTH => 4,
@@ -225,6 +265,10 @@ pub struct Book {
     /// The character whose card this book was copied from (card file name
     /// without `.png`); empty for any other book.
     pub source: String,
+    /// A fingerprint of the card's book as it was when this copy was made
+    /// (empty for older copies and other books), to tell when the card's own
+    /// book has changed since.
+    pub source_hash: String,
     pub scan_depth: i64,
     pub token_budget: i64,
     pub entries: Vec<Item>,
@@ -248,6 +292,7 @@ impl Book {
             active: false,
             characters: Vec::new(),
             source: String::new(),
+            source_hash: String::new(),
             scan_depth: DEFAULT_SCAN_DEPTH,
             token_budget: 0,
             entries: Vec::new(),
@@ -281,6 +326,7 @@ impl Book {
             active: jbool(tarpi, "active", false),
             characters: strings(tarpi.get("characters")),
             source: jstr(tarpi, "source"),
+            source_hash: jstr(tarpi, "source_hash"),
             scan_depth: ji64(v, "scan_depth", DEFAULT_SCAN_DEPTH).max(0),
             token_budget: ji64(v, "token_budget", 0).max(0),
             entries,
@@ -310,15 +356,16 @@ impl Book {
             .and_then(|x| x.as_object())
             .cloned()
             .unwrap_or_default();
-        ext.insert(
-            "tarpi".into(),
-            json!({
-                "enabled": self.enabled,
-                "active": self.active,
-                "characters": self.characters,
-                "source": self.source,
-            }),
-        );
+        let mut tarpi = json!({
+            "enabled": self.enabled,
+            "active": self.active,
+            "characters": self.characters,
+            "source": self.source,
+        });
+        if !self.source_hash.is_empty() {
+            tarpi["source_hash"] = json!(self.source_hash);
+        }
+        ext.insert("tarpi".into(), tarpi);
         o.insert("extensions".into(), Value::Object(ext));
         Value::Object(o)
     }
@@ -332,6 +379,46 @@ impl Book {
                     .characters
                     .iter()
                     .any(|c| char_key(c) == char_key(avatar))))
+    }
+
+    /// Is this book the copy of the lorebook in this character's card
+    /// (`avatar`; `book_name` is the name that book is given)? A book made
+    /// from a card remembers its character (`source`) and only that counts,
+    /// so two characters whose books share a name (a plain "Lorebook") are
+    /// not mistaken for each other. Only older copies, which have no
+    /// `source`, are recognised by that name.
+    pub fn is_copy_of(&self, avatar: &str, book_name: &str) -> bool {
+        if !self.source.is_empty() {
+            return char_key(&self.source) == char_key(avatar);
+        }
+        let name = book_name.trim().to_lowercase();
+        !name.is_empty() && self.name.trim().to_lowercase() == name
+    }
+
+    /// Has the lorebook in the card (`card` as `charstore::get` gives it)
+    /// changed since this copy was made? `false` for a book that is no copy
+    /// or an older one that did not note the fingerprint.
+    pub fn card_book_changed(&self, card: &Value) -> bool {
+        if self.source.is_empty() || self.source_hash.is_empty() {
+            return false;
+        }
+        match card.get("data").and_then(|d| d.get("character_book")) {
+            Some(b) => card_book_hash(b) != self.source_hash,
+            None => true,
+        }
+    }
+
+    /// How many entries are bigger than the whole token budget, so that they
+    /// can never be added to a prompt (`cpt`: characters per token).
+    pub fn over_budget(&self, cpt: f32) -> usize {
+        if self.token_budget <= 0 {
+            return 0;
+        }
+        let budget = self.token_budget as usize;
+        self.entries
+            .iter()
+            .filter(|e| e.usable() && crate::prompt::est_tokens(&e.content, cpt) > budget)
+            .count()
     }
 
     /// Is the character in the book's list?
@@ -395,13 +482,18 @@ fn dir() -> Result<PathBuf> {
     config::lorebooks_dir().ok_or_else(|| anyhow!("no config directory on this system"))
 }
 
-/// Ids become file names, so only plain characters are allowed in them.
+/// Longest file name (without `.json`) of a book.
+const MAX_ID: usize = 150;
+
+/// Ids become file names. Any name a file in the folder (or one that arrives
+/// with a sync) can have is fine, spaces and dots included, as long as it
+/// cannot reach outside the folder or hide: no `/`, `\\` or `:`, no control
+/// characters, no leading dot.
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
-        && id.len() <= 80
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && id.len() <= MAX_ID
+        && !id.starts_with('.')
+        && !id.chars().any(|c| c.is_control() || matches!(c, '/' | '\\' | ':'))
 }
 
 /// A file-name friendly id made from a book's name.
@@ -452,15 +544,13 @@ fn parse_book(id: &str, text: &str) -> Result<Book> {
     Ok(Book::from_value(id, &v))
 }
 
-/// Every book, by name, and a line for each file that could not be read.
-pub fn list() -> (Vec<Book>, Vec<String>) {
-    let mut books = Vec::new();
-    let mut errors = Vec::new();
+/// The `*.json` files of the folder, by name.
+fn book_files() -> Vec<PathBuf> {
     let Ok(d) = dir() else {
-        return (books, errors);
+        return Vec::new();
     };
     let Ok(rd) = std::fs::read_dir(&d) else {
-        return (books, errors);
+        return Vec::new();
     };
     let mut files: Vec<PathBuf> = rd
         .flatten()
@@ -468,10 +558,33 @@ pub fn list() -> (Vec<Book>, Vec<String>) {
         .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
         .collect();
     files.sort();
-    for p in files {
+    files
+}
+
+/// The id (file name without `.json`) of a file of the folder, when `/lore`
+/// can open it.
+fn usable_id(p: &Path) -> Option<String> {
+    p.file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| valid_id(s))
+        .map(str::to_string)
+}
+
+/// Every book, by name, and a line for each file that could not be read.
+pub fn list() -> (Vec<Book>, Vec<String>) {
+    let mut books = Vec::new();
+    let mut errors = Vec::new();
+    for p in book_files() {
         let Some(id) = p.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
             continue;
         };
+        if !valid_id(&id) {
+            errors.push(format!(
+                "{}: not a usable file name (rename the file: no leading dot, no / \\ or :)",
+                id
+            ));
+            continue;
+        }
         match std::fs::read_to_string(&p)
             .map_err(anyhow::Error::from)
             .and_then(|t| parse_book(&id, &t))
@@ -504,11 +617,9 @@ pub fn disk_hash(id: &str) -> Option<String> {
 /// changed or deleted it meanwhile, nothing is written. Returns the new
 /// fingerprint.
 pub fn save_checked(book: &mut Book, seen: &str) -> Result<String> {
-    if !book.id.is_empty() && disk_hash(&book.id).unwrap_or_default() != seen {
-        bail!(
-            "not saved: this lorebook was changed or deleted somewhere else (another device?) \
-             since you opened it. Leave without saving (q, then n) and open it again"
-        );
+    if !book.id.is_empty() {
+        path_of(&book.id)?; // a bad name is said as that, not as "deleted"
+        check_seen(disk_hash(&book.id), seen)?;
     }
     let d = dir()?;
     if book.id.is_empty() {
@@ -518,6 +629,23 @@ pub fn save_checked(book: &mut Book, seen: &str) -> Result<String> {
     let bytes = serde_json::to_vec_pretty(&book.to_value())?;
     crate::mirror::write_atomic(&p, &bytes, None)?;
     Ok(crate::mirror::hash_bytes(&bytes))
+}
+
+/// The rule of `save_checked`: `now` is the file's fingerprint as it is now
+/// (`None`: the file is gone). A file that is gone is not "the same as before":
+/// writing it would bring back a book that was deleted on purpose.
+fn check_seen(now: Option<String>, seen: &str) -> Result<()> {
+    match now {
+        Some(h) if h == seen => Ok(()),
+        Some(_) => bail!(
+            "not saved: this lorebook was changed somewhere else (another device?) since you \
+             opened it. Leave without saving (q, then n) and open it again"
+        ),
+        None => bail!(
+            "not saved: this lorebook was deleted somewhere else (another device?) since you \
+             opened it, and nothing was written. Leave without saving (q, then n)"
+        ),
+    }
 }
 
 /// Write the book (a new one gets its file name from its name).
@@ -565,20 +693,11 @@ pub fn active_books(avatar: &str) -> Vec<Lorebook> {
     if cfg!(test) {
         return Vec::new();
     }
-    let Ok(d) = dir() else {
-        return Vec::new();
-    };
-    let Ok(rd) = std::fs::read_dir(&d) else {
-        return Vec::new();
-    };
-    let mut files: Vec<PathBuf> = rd
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
-        .collect();
-    files.sort();
-    files
+    // Only books `/lore` can show: one that is on but cannot be opened to
+    // switch it off would be a trap.
+    book_files()
         .iter()
+        .filter(|p| usable_id(p).is_some())
         .filter_map(|p| cached(p))
         .filter(|b| b.applies_to(avatar))
         .filter_map(|b| b.engine())
@@ -592,16 +711,10 @@ pub fn replaces_card_book(avatar: &str) -> bool {
     if cfg!(test) || avatar.trim().is_empty() {
         return false;
     }
-    let Ok(d) = dir() else {
-        return false;
-    };
-    let Ok(rd) = std::fs::read_dir(&d) else {
-        return false;
-    };
-    rd.flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
-        .filter_map(|p| cached(&p))
+    book_files()
+        .iter()
+        .filter(|p| usable_id(p).is_some())
+        .filter_map(|p| cached(p))
         .any(|b| {
             !b.source.is_empty()
                 && char_key(&b.source) == char_key(avatar)
@@ -678,6 +791,7 @@ pub fn parse_import(bytes: &[u8], fallback: &str) -> Result<Imported> {
     imp.book.active = false;
     imp.book.characters.clear();
     imp.book.source.clear();
+    imp.book.source_hash.clear();
     if jstr(&raw, "name").trim().is_empty() {
         imp.book.name = fallback.trim().to_string();
     }
@@ -710,7 +824,31 @@ pub fn from_card(card: &Value, fallback: &str) -> Result<Imported> {
     b.active = false;
     b.characters.clear();
     b.source = char_key_name(fallback);
+    b.source_hash = card_book_hash(book);
     Ok(Imported { book: b, notes: Vec::new() })
+}
+
+/// A fingerprint of the `character_book` of a card, noted in the copy that
+/// `from_card` makes (see `Book::card_book_changed`).
+fn card_book_hash(book: &Value) -> String {
+    crate::mirror::hash_bytes(&serde_json::to_vec(book).unwrap_or_default())
+}
+
+/// The names of the copies of this character's card lorebook (a card file
+/// name; on or off) that no longer match what the card carries now: the card
+/// was imported again, or its book was edited. They stay as they are, in
+/// use, until the person replaces them.
+pub fn outdated_copies(avatar: &str) -> Vec<String> {
+    let Ok(card) = charstore::get(avatar) else {
+        return Vec::new();
+    };
+    list()
+        .0
+        .into_iter()
+        .filter(|b| !b.source.is_empty() && char_key(&b.source) == char_key(avatar))
+        .filter(|b| b.card_book_changed(&card))
+        .map(|b| b.name)
+        .collect()
 }
 
 /// A key written as `/regex/` (SillyTavern); tarpi reads keys as plain text.
@@ -723,6 +861,10 @@ fn from_st(raw: &Value, entries: &Map<String, Value>) -> Imported {
     let mut list: Vec<&Value> = entries.values().filter(|e| e.is_object()).collect();
     list.sort_by_key(|e| (ji64(e, "displayIndex", ji64(e, "uid", 0)), ji64(e, "uid", 0)));
     let (mut regex, mut prob, mut slots, mut timed) = (0, 0, 0, 0);
+    // Not acted on: per-entry scan depth, whole-word matching, a character
+    // filter (the entry is then on for every character), triggers, ignoring
+    // the budget, and the recursion flags.
+    let (mut scan, mut whole, mut filtered, mut trig, mut nobudget, mut recur) = (0, 0, 0, 0, 0, 0);
     let mut items = Vec::new();
     for e in list {
         let keys = strings(e.get("key"));
@@ -745,8 +887,33 @@ fn from_st(raw: &Value, entries: &Map<String, Value>) -> Imported {
         {
             timed += 1;
         }
+        if e.get("scanDepth").is_some_and(|x| x.is_number()) {
+            scan += 1;
+        }
+        if jbool(e, "matchWholeWords", false) {
+            whole += 1;
+        }
+        if e.get("characterFilter").is_some_and(|f| {
+            ["names", "tags"]
+                .iter()
+                .any(|k| f.get(*k).and_then(|x| x.as_array()).is_some_and(|a| !a.is_empty()))
+        }) {
+            filtered += 1;
+        }
+        if e.get("triggers").and_then(|t| t.as_array()).is_some_and(|a| !a.is_empty()) {
+            trig += 1;
+        }
+        if jbool(e, "ignoreBudget", false) {
+            nobudget += 1;
+        }
+        if jbool(e, "excludeRecursion", false)
+            || jbool(e, "preventRecursion", false)
+            || jbool(e, "delayUntilRecursion", false)
+        {
+            recur += 1;
+        }
         let comment = jstr(e, "comment");
-        let v = json!({
+        let mut v = json!({
             "keys": keys,
             "secondary_keys": secondary,
             "content": jstr(e, "content"),
@@ -764,6 +931,13 @@ fn from_st(raw: &Value, entries: &Map<String, Value>) -> Imported {
                 "selectiveLogic": ji64(e, "selectiveLogic", 0),
             },
         });
+        // What tarpi does not act on stays in the entry, in SillyTavern's own
+        // names, for the book file and `to_st` to hand back.
+        for k in ST_KEPT {
+            if let Some(x) = e.get(*k) {
+                v["extensions"][*k] = x.clone();
+            }
+        }
         items.push(Item::from_value(&v));
     }
     let mut book = Book::new(&jstr(raw, "name"));
@@ -785,6 +959,27 @@ fn from_st(raw: &Value, entries: &Map<String, Value>) -> Imported {
     if timed > 0 {
         notes.push(format!("{} with sticky / cooldown / delay / groups (ignored)", timed));
     }
+    if scan > 0 {
+        notes.push(format!("{} with a scan depth of their own (the book's is used)", scan));
+    }
+    if whole > 0 {
+        notes.push(format!("{} with match whole words (keys match inside words too)", whole));
+    }
+    if filtered > 0 {
+        notes.push(format!(
+            "{} limited to certain characters (now on for every character that uses the book)",
+            filtered
+        ));
+    }
+    if trig > 0 {
+        notes.push(format!("{} with triggers (ignored)", trig));
+    }
+    if nobudget > 0 {
+        notes.push(format!("{} that ignore the token budget (counted like the others)", nobudget));
+    }
+    if recur > 0 {
+        notes.push(format!("{} with recursion flags (there is no recursive scanning)", recur));
+    }
     Imported { book, notes }
 }
 
@@ -802,38 +997,45 @@ pub fn add(imp: Imported) -> Result<Book> {
 pub fn to_st(book: &Book) -> Value {
     let mut entries = Map::new();
     for (i, e) in book.entries.iter().enumerate() {
-        entries.insert(
-            i.to_string(),
-            json!({
-                "uid": i,
-                "key": e.keys,
-                "keysecondary": e.secondary,
-                "comment": e.name,
-                "content": e.content,
-                "constant": e.constant,
-                "vectorized": false,
-                "selective": e.selective,
-                "selectiveLogic": e.logic,
-                "addMemo": true,
-                "order": e.order,
-                "position": e.place_number(),
-                "disable": !e.enabled,
-                "excludeRecursion": false,
-                "preventRecursion": false,
-                "delayUntilRecursion": false,
-                "probability": 100,
-                "useProbability": true,
-                "depth": e.depth,
-                "group": "",
-                "groupOverride": false,
-                "groupWeight": 100,
-                "scanDepth": null,
-                "caseSensitive": e.case_sensitive,
-                "matchWholeWords": null,
-                "role": e.role,
-                "displayIndex": i,
-            }),
-        );
+        let mut entry = json!({
+            "uid": i,
+            "key": e.keys,
+            "keysecondary": e.secondary,
+            "comment": e.name,
+            "content": e.content,
+            "constant": e.constant,
+            "vectorized": false,
+            "selective": e.selective,
+            "selectiveLogic": e.logic,
+            "addMemo": true,
+            "order": e.order,
+            "position": e.place_number(),
+            "disable": !e.enabled,
+            "excludeRecursion": false,
+            "preventRecursion": false,
+            "delayUntilRecursion": false,
+            "probability": 100,
+            "useProbability": true,
+            "depth": e.depth,
+            "group": "",
+            "groupOverride": false,
+            "groupWeight": 100,
+            "scanDepth": null,
+            "caseSensitive": e.case_sensitive,
+            "matchWholeWords": null,
+            "role": e.role,
+            "displayIndex": i,
+        });
+        // The fields tarpi keeps but does not act on (see `ST_KEPT`) go back
+        // as they were read.
+        if let Some(ext) = e.raw.get("extensions").and_then(|x| x.as_object()) {
+            for k in ST_KEPT {
+                if let Some(x) = ext.get(*k) {
+                    entry[*k] = x.clone();
+                }
+            }
+        }
+        entries.insert(i.to_string(), entry);
     }
     json!({
         "name": book.name,
@@ -842,9 +1044,10 @@ pub fn to_st(book: &Book) -> Value {
     })
 }
 
-/// Write the book to `path_text` (a file, or a folder: then `<id>.json` goes
-/// there) as SillyTavern World Info (`st`) or as tarpi's own V2 file. An
-/// existing file is never overwritten. The path written is returned.
+/// Write the book to `path_text` (a file, or a folder: then `<name>.json`,
+/// made from the book's name, goes there) as SillyTavern World Info (`st`) or
+/// as tarpi's own V2 file. An existing file is never overwritten, not even
+/// by one that appears while this runs. The path written is returned.
 pub fn export_to(book: &Book, path_text: &str, st: bool) -> Result<PathBuf> {
     let t = path_text.trim();
     if t.is_empty() {
@@ -854,9 +1057,6 @@ pub fn export_to(book: &Book, path_text: &str, st: bool) -> Result<PathBuf> {
     if p.is_dir() {
         p = p.join(format!("{}.json", slug(&book.name)));
     }
-    if p.exists() {
-        bail!("{} already exists: pick another name", p.display());
-    }
     let value = if st { to_st(book) } else { book.to_value() };
     let bytes = serde_json::to_vec_pretty(&value)?;
     if let Some(parent) = p.parent() {
@@ -864,7 +1064,20 @@ pub fn export_to(book: &Book, path_text: &str, st: bool) -> Result<PathBuf> {
             bail!("the folder {} does not exist", parent.display());
         }
     }
-    std::fs::write(&p, bytes).with_context(|| format!("writing {}", p.display()))?;
+    // `create_new` makes the file only when there is none: one check and one
+    // write in a single step, so nothing can slip in between them.
+    let mut f = match std::fs::OpenOptions::new().write(true).create_new(true).open(&p) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            bail!("{} already exists: pick another name", p.display())
+        }
+        Err(e) => return Err(e).with_context(|| format!("writing {}", p.display())),
+    };
+    if let Err(e) = f.write_all(&bytes) {
+        drop(f);
+        let _ = std::fs::remove_file(&p); // no half-written file left behind
+        return Err(e).with_context(|| format!("writing {}", p.display()));
+    }
     Ok(p)
 }
 
@@ -1060,6 +1273,190 @@ mod tests {
     fn ids_are_file_name_safe() {
         assert_eq!(slug("The Realm of  Aldor!"), "the-realm-of-aldor");
         assert_eq!(slug("???"), "lorebook");
+    }
+
+    #[test]
+    fn file_names_with_spaces_and_dots_are_usable_but_not_ones_that_escape() {
+        assert!(valid_id("My Book"));
+        assert!(valid_id("world.v2"));
+        assert!(valid_id("Café – notes"));
+        assert!(!valid_id(".hidden"));
+        assert!(!valid_id(".."));
+        assert!(!valid_id("a/b"));
+        assert!(!valid_id("a\\b"));
+        assert!(!valid_id("a:b"));
+        assert!(!valid_id("a\u{7}b"));
+        assert!(!valid_id(&"x".repeat(MAX_ID + 1)));
+        assert!(valid_id(&"x".repeat(MAX_ID)));
+        // The id of a file is its name without `.json`, dots and all.
+        assert_eq!(usable_id(Path::new("/d/world.v2.json")).as_deref(), Some("world.v2"));
+        assert_eq!(usable_id(Path::new("/d/.x.json")), None);
+    }
+
+    #[test]
+    fn a_book_that_is_gone_is_not_saved_back() {
+        assert!(check_seen(Some("abc".into()), "abc").is_ok());
+        let changed = check_seen(Some("abd".into()), "abc").unwrap_err().to_string();
+        assert!(changed.contains("changed"));
+        // Deleted elsewhere: the old fingerprint can be anything, even empty
+        // (the list's copy has none), and still nothing is written.
+        for seen in ["abc", ""] {
+            let gone = check_seen(None, seen).unwrap_err().to_string();
+            assert!(gone.contains("deleted"));
+        }
+    }
+
+    #[test]
+    fn copies_are_told_apart_by_their_character_not_by_the_name() {
+        let card = |who: &str| {
+            json!({ "name": who, "data": { "character_book": {
+                "name": "Lorebook", "entries": [{ "keys": ["a"], "content": "x" }] } } })
+        };
+        let a = from_card(&card("Anna"), "Anna.png").unwrap().book;
+        let b = from_card(&card("Ben"), "Ben.png").unwrap().book;
+        // Same name, different characters.
+        assert_eq!(a.name, b.name);
+        assert!(a.is_copy_of("Anna.png", "Lorebook"));
+        assert!(a.is_copy_of("anna", "Lorebook"));
+        assert!(!a.is_copy_of("Ben.png", "Lorebook"));
+        assert!(b.is_copy_of("Ben.png", "Lorebook"));
+        // An older copy has no source: the name is all there is to go by.
+        let mut old = Book::new("Lorebook");
+        assert!(old.is_copy_of("Ben.png", "lorebook"));
+        assert!(!old.is_copy_of("Ben.png", "Other"));
+        assert!(!old.is_copy_of("Ben.png", " "));
+        old.source = "Anna".into();
+        assert!(!old.is_copy_of("Ben.png", "Lorebook"));
+    }
+
+    #[test]
+    fn a_copy_notices_when_the_card_book_changed() {
+        let card = |content: &str| {
+            json!({ "name": "Anna", "data": { "character_book": {
+                "entries": [{ "keys": ["a"], "content": content }] } } })
+        };
+        let copy = from_card(&card("one"), "Anna.png").unwrap().book;
+        assert!(!copy.source_hash.is_empty());
+        assert!(!copy.card_book_changed(&card("one")));
+        assert!(copy.card_book_changed(&card("two")));
+        // The card lost its book.
+        assert!(copy.card_book_changed(&json!({ "name": "Anna", "data": {} })));
+        // The note survives saving and reading.
+        let again = Book::from_value("x", &copy.to_value());
+        assert_eq!(again.source_hash, copy.source_hash);
+        // A book that is no copy, or an older copy, never reports a change.
+        assert!(!Book::new("B").card_book_changed(&card("two")));
+        let mut old = copy.clone();
+        old.source_hash.clear();
+        assert!(!old.card_book_changed(&card("two")));
+        // An imported file starts clean, whatever it carried.
+        let mut v = copy.to_value();
+        v["entries"] = json!([{ "keys": ["a"], "content": "x" }]);
+        let imp = parse_import(&serde_json::to_vec(&v).unwrap(), "f").unwrap();
+        assert!(imp.book.source.is_empty() && imp.book.source_hash.is_empty());
+    }
+
+    #[test]
+    fn an_entrys_own_slot_survives_saving_and_export() {
+        let st = json!({ "name": "W", "entries": {
+            "0": { "uid": 0, "key": ["a"], "content": "c0", "position": 2 },
+            "1": { "uid": 1, "key": ["b"], "content": "c1", "position": 3 },
+            "2": { "uid": 2, "key": ["c"], "content": "c2", "position": 5 },
+            "3": { "uid": 3, "key": ["d"], "content": "c3", "position": 6 },
+        } });
+        let imp = parse_import(&serde_json::to_vec(&st).unwrap(), "f").unwrap();
+        let places: Vec<u8> = imp.book.entries.iter().map(|e| e.place).collect();
+        assert_eq!(places, vec![BEFORE, AFTER, BEFORE, AFTER]);
+        // Saved and read again, then exported: the numbers are the originals.
+        let again = Book::from_value("x", &imp.book.to_value());
+        let out = to_st(&again);
+        let pos = |i: &str| out["entries"][i]["position"].as_i64().unwrap();
+        assert_eq!((pos("0"), pos("1"), pos("2"), pos("3")), (2, 3, 5, 6));
+        let saved = again.to_value();
+        assert_eq!(saved["entries"][1]["extensions"]["position"], json!(3));
+        // Moving the entry to another place gives it that place's own number.
+        let mut moved = again.clone();
+        moved.entries[1].place = BEFORE;
+        assert_eq!(to_st(&moved)["entries"]["1"]["position"], json!(0));
+        moved.entries[1].place = DEPTH;
+        assert_eq!(to_st(&moved)["entries"]["1"]["position"], json!(4));
+        // ... and back where it was: its own slot returns.
+        moved.entries[1].place = AFTER;
+        assert_eq!(to_st(&moved)["entries"]["1"]["position"], json!(3));
+    }
+
+    #[test]
+    fn what_tarpi_does_not_act_on_is_reported_and_kept() {
+        let st = json!({ "name": "W", "entries": {
+            "0": { "uid": 0, "key": ["a"], "content": "x", "scanDepth": 7,
+                   "matchWholeWords": true, "ignoreBudget": true,
+                   "excludeRecursion": true, "triggers": ["continue"],
+                   "characterFilter": { "isExclude": false, "names": ["Anna"], "tags": [] } },
+            "1": { "uid": 1, "key": ["b"], "content": "y", "scanDepth": null,
+                   "matchWholeWords": null, "triggers": [],
+                   "characterFilter": { "isExclude": false, "names": [], "tags": [] } },
+        } });
+        let imp = parse_import(&serde_json::to_vec(&st).unwrap(), "f").unwrap();
+        let has = |w: &str| imp.notes.iter().any(|n| n.contains(w) && n.starts_with("1 "));
+        assert!(has("scan depth"));
+        assert!(has("whole words"));
+        assert!(has("certain characters"));
+        assert!(has("triggers"));
+        assert!(has("token budget"));
+        assert!(has("recursion"));
+        // The second entry has none of it: nothing to report for it.
+        assert_eq!(imp.notes.len(), 6);
+        // Kept in the entry and handed back on export.
+        let out = to_st(&Book::from_value("x", &imp.book.to_value()));
+        let e0 = &out["entries"]["0"];
+        assert_eq!(e0["scanDepth"], json!(7));
+        assert_eq!(e0["matchWholeWords"], json!(true));
+        assert_eq!(e0["characterFilter"]["names"], json!(["Anna"]));
+        assert_eq!(e0["triggers"], json!(["continue"]));
+        // An entry without them is exported with the plain defaults.
+        assert_eq!(out["entries"]["1"]["probability"], json!(100));
+    }
+
+    #[test]
+    fn entries_bigger_than_the_budget_are_counted() {
+        let mut b = Book::new("B");
+        let mut big = Item::new();
+        big.content = "x".repeat(64); // ~20 tokens
+        let mut small = Item::new();
+        small.content = "y".repeat(8);
+        let mut off = Item::new();
+        off.content = "z".repeat(64);
+        off.enabled = false;
+        b.entries = vec![big, small, off];
+        assert_eq!(b.over_budget(3.2), 0); // no budget: no limit
+        b.token_budget = 10;
+        assert_eq!(b.over_budget(3.2), 1); // switched-off entries do not count
+        b.token_budget = 100;
+        assert_eq!(b.over_budget(3.2), 0);
+    }
+
+    #[test]
+    fn an_export_never_overwrites_a_file() {
+        let d = std::env::temp_dir().join(format!("tarpi-export-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&d).unwrap();
+        let mut b = Book::new("My World");
+        b.entries.push(Item::new());
+        // A folder: the file is named after the book.
+        let first = export_to(&b, d.to_str().unwrap(), false).unwrap();
+        assert_eq!(first, d.join("my-world.json"));
+        let before = std::fs::read(&first).unwrap();
+        // The same again is refused and the file is as it was.
+        b.name = "My World".into();
+        b.description = "changed".into();
+        let again = export_to(&b, d.to_str().unwrap(), false).unwrap_err().to_string();
+        assert!(again.contains("already exists"));
+        let explicit = export_to(&b, first.to_str().unwrap(), true).unwrap_err().to_string();
+        assert!(explicit.contains("already exists"));
+        assert_eq!(std::fs::read(&first).unwrap(), before);
+        // A new name in the same folder is fine.
+        let other = d.join("other.json");
+        assert_eq!(export_to(&b, other.to_str().unwrap(), true).unwrap(), other);
+        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]

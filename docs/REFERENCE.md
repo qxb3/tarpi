@@ -717,8 +717,8 @@ A card's own lorebook (the `character_book` that SillyTavern and chub.ai put in 
 Before every reply, the latest messages (the book's `scan_depth`, 4 when it has none) are searched for each entry's keys, and the entries that match are added to the prompt.
 
 - **Keys.** An entry is on when one of its `keys` is in those messages, ignoring case unless the entry is case sensitive. A `constant` entry is always on. A selective entry (`selective`) with `secondary_keys` also looks at those, as its *secondary logic* says (SillyTavern's `selectiveLogic`, in `extensions`): **needs any one** of them (the default), **needs every one**, **blocked if any appears**, or **blocked if all appear** (it still fires when only some do). In `/lore` this is the *Secondary logic* row; off means the secondary keys are ignored. Keys are plain text: `/regex/` keys are not evaluated.
-- **Where it goes.** `before_char` fills `{{wiBefore}}` of the story string and `after_char` fills `{{wiAfter}}` (the default templates have both; a template without them leaves lore out, as in SillyTavern). An entry set to "at depth" goes into the chat like the Author's Note, with its depth and role. The Author's Note and example-message positions of SillyTavern count as before / after.
-- **Order.** Entries go in by `insertion_order`, lowest first. With a `token_budget`, the highest orders are kept until it is used up (token counts are the `chars_per_token` estimate).
+- **Where it goes.** `before_char` fills `{{wiBefore}}` of the story string and `after_char` fills `{{wiAfter}}` (the default templates have both; a template without them leaves lore out, as in SillyTavern). An entry set to "at depth" goes into the chat like the Author's Note, with its depth and role. The Author's Note and example-message positions of SillyTavern count as before / after; an entry that came with one of those slots keeps its own number when it is saved or exported, until you change its position.
+- **Order.** Entries go in by `insertion_order`, lowest first. With a `token_budget`, the highest orders are tried first and kept while they fit; an entry that no longer fits is skipped and the smaller ones after it still get their turn (token counts are the `chars_per_token` estimate). An entry bigger than the whole budget is never used: `/lore` says so when you save such a book.
 - **Text.** `{{char}}`, `{{user}}` and the other macros work inside an entry.
 - **Seeing it.** `/prompt` shows what was added to the next reply.
 - **Editing a card's book.** `/lore` does not change a card. Edit the card in SillyTavern, or the `character_book` in the card's file. The card is read when the chat is opened. `/char` and Card save keep the book as it is. To work on it in tarpi, copy it into a lorebook of your own with `c` in `/lore` (below).
@@ -728,9 +728,10 @@ Before every reply, the latest messages (the book's `scan_depth`, 4 when it has 
 - **Yes** (Enter or `y`) copies the book into your own lorebooks (`/lore`) and puts the character in its *On for* list, so it is on for that character right away.
 - **No** (Esc, `n` or `q`) leaves it. `c` in `/lore` copies it later.
 - Left / Right, Tab or `h` / `l` move between the buttons, and a click on a button answers.
-- It is not asked when you already have a lorebook of that name.
+- It is not asked when you already have a copy of this card's lorebook. A copy remembers its character, so a book of the same name that came from another character does not count (only older copies, which remember no character, are recognised by their name).
 - If another window is open when the import finishes, the question waits until it is closed.
 - While a copy of a character's own book (one made this way or with `c`) is on for that character, the card's own copy is left out of the prompt, so the entries are not sent twice.
+- A copy keeps being used as it is even when the card's own book changes later (the card is imported again, or its book edited). `/lore` marks such a copy `(card changed)` and `/import` says so when it imports the card again. To take over the card's version, delete the copy (`d`) and copy the card's book again (`c`).
 
 ### Your own lorebooks (`/lore`)
 
@@ -743,16 +744,19 @@ There are three screens: the list of books, a book (its settings and entries), a
   - `i` import (SillyTavern World Info, a V2 lorebook, or a card's `.json` / `.png`; Tab completes the path)
   - `c` copy the lorebook inside one of your characters (the list leaves out the ones you already copied)
   - Space switches the whole book `[x]` / `[ ]` (off, it is never used, whatever its own settings say; "On for every chat" is a setting inside the book)
-  - `D` copy
-  - `x` / `X` export (V2 / SillyTavern)
+  - `D` copy (the copy starts on for nobody: it does not keep the original's characters or *On for every chat*, and it is not a copy of any card)
+  - `x` / `X` export (V2 / SillyTavern); a folder gets `<name of the book>.json`, and an existing file is never overwritten
   - `d` delete
 - **Book settings.** *On for every chat* (Space or Left / Right switches it), *On for*, *Scan depth* and *Token budget*. **On for**: Enter opens a list of all your characters with a switch each (Enter or Space switches, Esc closes), so a book can be on for chosen characters only (the row is greyed out and does nothing while *On for every chat* is on). Left / Right adds or removes the character of the current chat. A character that no longer has a card stays in the list ("no such card") so it can be removed.
 - **Entries.** `n` adds one (it opens empty: Enter on *Keys* or *Text* fills them in), Space switches it on / off, `D` copies, `d` deletes. An entry has a Title, Keys, Secondary keys, *Secondary logic*, *Always on*, *Case sensitive* (off by default), Position, Depth and Role (only for an entry in the chat), Order and Text.
+- **Keys.** Keys are separated by commas. A key that has a comma in it is shown, and typed, in quotes: `"Smith, John", dragon` is two keys (a quote inside a quoted key is doubled). Spaces inside a key are kept as they are, so opening a key window and accepting it changes nothing.
+- **File names.** A book is any `*.json` file in the folder, whatever its name (spaces and dots are fine). A file whose name cannot be used (it starts with a dot, or has a `/`, `\` or `:` in it) is listed as a problem at the top of the list instead of failing when you open it.
+- **Changed elsewhere.** `/lore` works on the file as it is on disk. A book that another device deleted cannot be opened or switched, and a save is refused with a message instead of bringing the book back.
 - **Changing a value.** Rows shown as `‹ value ›` (Scan depth, Token budget, Position, Depth, Role, Order) change with Left / Right (Scan depth and Depth by 1, Token budget by 100, Order by 10). Enter on a number lets you type one instead.
 - **Saving.** `s` saves, `u` undoes the last change, `q` goes back (asking about unsaved changes).
 - **Spelling.** With `spellcheck: true`, the Description of a book and the Text of an entry are spell checked like the chat box (red underline, **Tab** on a marked word opens the suggestions; see [Configuration](#configuration)). Titles and keys are not. The words of a book's name, its entry titles and keys, and the names of the character and your personas count as spelled right, so the names and terms of your world are not marked.
 
-**Intentionally minimal.** The number fields (Scan depth, Token budget, Depth, Order) only take digits, and Order a leading `-`. Any other character you type or paste is dropped, so there is no way to type a wrong value. The same limits as a card's book apply on purpose: keys are plain text, one scan depth and token budget for the whole book, no per-entry scan depth, and no regex, recursion, probability, sticky / cooldown / delay or inclusion groups. These are left out to keep the manager small, not forgotten.
+**Intentionally minimal.** The number fields (Scan depth, Token budget, Depth, Order) only take digits, and Order a leading `-`. Any other character you type or paste is dropped, so there is no way to type a wrong value. The same limits as a card's book apply on purpose: keys are plain text, one scan depth and token budget for the whole book, no per-entry scan depth, and no regex, recursion, probability, sticky / cooldown / delay or inclusion groups. These are left out to keep the manager small, not forgotten. When a SillyTavern World Info file is imported, the entries that use any of these (and per-entry whole-word matching, a character filter, triggers, "ignore budget" or the recursion flags) are counted in the notes shown after the import, for example "3 limited to certain characters (now on for every character that uses the book)". The settings themselves stay in the book file and go back out with `X`.
 
 ---
 

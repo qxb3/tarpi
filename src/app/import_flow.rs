@@ -40,13 +40,15 @@ impl App {
                 let ask = charstore::get(&saved.avatar)
                     .and_then(|card| crate::lorestore::from_card(&card, &saved.avatar))
                     .ok()
-                    // Not again when a book of that name (or from this very
-                    // card) is already among the user's lorebooks.
+                    // Not again when this card's book is already among the
+                    // user's lorebooks. A copy remembers its character, so a
+                    // book of the same name from another character does not
+                    // count (only older copies, with no character, go by name).
                     .filter(|imp| {
-                        !crate::lorestore::list().0.iter().any(|b| {
-                            b.name.trim().eq_ignore_ascii_case(imp.book.name.trim())
-                                || (!b.source.is_empty() && b.source == imp.book.source)
-                        })
+                        !crate::lorestore::list()
+                            .0
+                            .iter()
+                            .any(|b| b.is_copy_of(&saved.avatar, &imp.book.name))
                     })
                     .map(|imp| {
                         LoreAsk::new(saved.avatar.clone(), name.clone(), imp.book.name.clone(), imp.book.entries.len())
@@ -56,12 +58,21 @@ impl App {
                     self.lore_pending.push(a);
                     self.promote_lore_ask();
                 }
+                // A card imported again may carry a changed lorebook while the
+                // copy made earlier is still the one in use: say so.
+                let outdated = !asking && !crate::lorestore::outdated_copies(&saved.avatar).is_empty();
                 self.set_status(
                     format!(
                         "imported \"{}\" ({}) \u{2014} {}",
                         name,
                         saved.avatar,
-                        if asking { "it has a lorebook" } else { "switch to it with /chars" }
+                        if asking {
+                            "it has a lorebook"
+                        } else if outdated {
+                            "its lorebook copy in /lore is out of date (the card's book changed)"
+                        } else {
+                            "switch to it with /chars"
+                        }
                     ),
                     false,
                 );

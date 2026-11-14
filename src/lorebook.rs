@@ -178,8 +178,9 @@ impl Lorebook {
 
     /// The entries that are on for these messages (oldest first), in the order
     /// they go into the prompt: lowest `order` first. When there is a token
-    /// budget the entries with the highest `order` are kept first and the
-    /// rest dropped once it is used up.
+    /// budget the entries with the highest `order` are tried first; one that
+    /// no longer fits is skipped, and smaller ones after it still get their
+    /// turn. (An entry bigger than the whole budget is never used.)
     pub fn activate(&self, messages: &[String], chars_per_token: f32) -> Vec<&Entry> {
         let from = messages.len().saturating_sub(self.scan_depth);
         let text = messages[from..].join("\n");
@@ -190,10 +191,11 @@ impl Lorebook {
             let mut used = 0usize;
             let mut kept = Vec::new();
             for e in on {
-                used += est_tokens(&e.content, chars_per_token);
-                if used > self.token_budget {
-                    break;
+                let cost = est_tokens(&e.content, chars_per_token);
+                if used + cost > self.token_budget {
+                    continue;
                 }
+                used += cost;
                 kept.push(e);
             }
             on = kept;
@@ -336,6 +338,41 @@ mod tests {
         let on = b.activate(&msgs(&["a"]), 3.2);
         let orders: Vec<i64> = on.iter().map(|e| e.order).collect();
         assert_eq!(orders, vec![2, 3]);
+    }
+
+    #[test]
+    fn an_entry_that_does_not_fit_does_not_stop_the_smaller_ones() {
+        // ~10 tokens for 32 chars, ~3 for 8 chars; budget 16.
+        let big = "x".repeat(32);
+        let small = "y".repeat(8);
+        let b = Lorebook::from_card_data(&json!({ "character_book": { "token_budget": 16,
+            "entries": [
+                { "keys": ["a"], "content": small, "insertion_order": 1 },
+                { "keys": ["a"], "content": big, "insertion_order": 9 },
+                { "keys": ["a"], "content": big, "insertion_order": 8 },
+                { "keys": ["a"], "content": small, "insertion_order": 2 },
+            ] } }))
+        .unwrap();
+        let on = b.activate(&msgs(&["a"]), 3.2);
+        // The first big one (order 9) takes ~10, the second big one no longer
+        // fits and is skipped, both small ones (~3 each) still do: 10+3+3.
+        let orders: Vec<i64> = on.iter().map(|e| e.order).collect();
+        assert_eq!(orders, vec![1, 2, 9]);
+    }
+
+    #[test]
+    fn an_entry_bigger_than_the_whole_budget_is_skipped_not_fatal() {
+        let big = "x".repeat(64); // ~20 tokens
+        let small = "y".repeat(8); // ~3 tokens
+        let b = Lorebook::from_card_data(&json!({ "character_book": { "token_budget": 10,
+            "entries": [
+                { "keys": ["a"], "content": big, "insertion_order": 50 },
+                { "keys": ["a"], "content": small, "insertion_order": 1 },
+            ] } }))
+        .unwrap();
+        let on = b.activate(&msgs(&["a"]), 3.2);
+        assert_eq!(on.len(), 1);
+        assert_eq!(on[0].order, 1);
     }
 
     #[test]
