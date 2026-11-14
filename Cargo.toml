@@ -1,6 +1,6 @@
 [package]
 name = "tarpi"
-version = "0.9.1"
+version = "0.9.2"
 edition = "2021"
 description = "Roleplay from the command line."
 license = "MIT"
