@@ -22,6 +22,7 @@ mod import_st;
 mod input;
 mod jv;
 mod lorebook;
+mod memory;
 mod lorestore;
 mod loreask;
 mod loretui;
@@ -101,6 +102,7 @@ enum Arrival {
         "  /persona        choose who you are in the chat (a window)\n",
         "  /note           edit this chat's Author's Note (/an)\n",
         "  /one-shot       lock this chat: no editing, undo, regen, swipes, branches\n",
+        "  /memory         vector memory: recall older messages of the chat\n",
         "  /api            API settings (address, model and sampler); back to the chat on quit\n",
         "  /formatting     context and instruct templates (story string, prefixes, suffixes)\n",
         "  /lore           lorebooks: write, import, edit and switch them on (a window)\n",

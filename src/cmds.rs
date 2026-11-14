@@ -54,6 +54,7 @@ pub const COMMANDS: &[Cmd] = &[
     cmd("system", "", "choose, create or edit the system prompt"),
     cmd("prompt", "", "show the whole prompt of the next reply"),
     cmd("note", "an", "edit the Author's Note of this chat"),
+    cmd("memory", "", "vector memory: recall older messages"),
     cmd("api", "", "API connection and sampler settings"),
     cmd("formatting", "", "context and instruct templates"),
     cmd("lore", "", "lorebooks: write, import, switch on"),

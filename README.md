@@ -195,6 +195,7 @@ Type these in the chat box. Type `/` to see the menu.
 /persona        choose who you are in the chat
 /system         choose, create or edit the system prompt
 /lore           lorebooks: write, import, choose which characters use them
+/memory         vector memory: recall older messages
 /prompt         the exact prompt of the next reply
 /note           this chat's Author's Note  (/an)
 /api            backend address, model and sampler settings
@@ -241,6 +242,7 @@ you can back it up by copying the folder.
 ├── api.yaml               backend connections
 ├── formatting.yaml        context and instruct templates
 ├── system-prompt.jsonl    system prompts
+├── vector-memory.yaml     vector memory settings (/memory)
 ├── persona/               personas (who you are)
 ├── characters/            Name.png / Name.json
 ├── lorebooks/             your lorebooks
@@ -289,7 +291,7 @@ The full manual is [`docs/REFERENCE.md`](docs/REFERENCE.md). Good places to star
 ## limits (things tarpi does not do)
 
 - Text completion backends only (see above). No tool calling.
-- Lorebooks are simple on purpose: plain-text keys, no recursion. No vector memory, no group chats.
+- Lorebooks are simple on purpose: plain-text keys, no recursion. Vector memory (`/memory`) is a simple word match, not real embeddings. No group chats.
 - Token counts used to trim old messages are an estimate until the backend reports an exact number.
 - Mouse capture is on. Hold Shift to select text with the terminal's own selection.
 

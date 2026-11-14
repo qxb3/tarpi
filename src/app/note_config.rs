@@ -10,6 +10,56 @@ impl App {
         self.note_edit = true;
     }
 
+    /// `/memory`: the vector memory settings as a form of arrow-key rows.
+    pub(super) async fn open_vector(&mut self) {
+        let v = config::load_vector_memory();
+        self.card_modal = Some(CardModal::vector(&v, &self.input));
+        self.vector_edit = true;
+    }
+
+    /// Ctrl+S in the vector memory form: write the settings to
+    /// `vector-memory.yaml`. The next reply's prompt uses them.
+    pub(super) async fn save_vector_form(&mut self, close: bool) {
+        let v = match self.card_modal.as_mut() {
+            Some(m) => {
+                m.sync();
+                config::VectorMemoryConfig {
+                    enabled: m.value("enabled") == "on",
+                    results: note::parse_number(&m.value("results"), crate::cardedit::VECTOR_MAX_RESULTS).unwrap_or(3),
+                    recent: note::parse_number(&m.value("recent"), crate::cardedit::VECTOR_MAX_RECENT).unwrap_or(12),
+                    min_score: note::parse_number(&m.value("min_score"), 100).unwrap_or(15),
+                    depth: note::parse_number(&m.value("depth"), note::MAX_DEPTH).unwrap_or(4),
+                    role: m.value("role"),
+                    template: m.value("template"),
+                }
+            }
+            None => return,
+        };
+        if let Err(e) = config::save_vector_memory(&v) {
+            self.card_note(format!("not saved: {:#}", e), true);
+            return;
+        }
+        // The prompt (and its token count) now holds the memories, or not.
+        self.settings_ver += 1;
+        let msg = if v.enabled {
+            "vector memory saved (on)"
+        } else {
+            "vector memory saved (off)"
+        };
+        if close {
+            self.card_modal = None;
+            self.vector_edit = false;
+        } else {
+            if let Some(m) = self.card_modal.as_mut() {
+                for k in ["enabled", "results", "recent", "min_score", "depth", "role", "template"] {
+                    m.mark_saved(k);
+                }
+            }
+            self.card_note(msg, false);
+        }
+        self.set_status(msg, false);
+    }
+
     /// `/config`: `config.yaml` in a window, edited with the same vim modes
     /// as the chat box (when `vim.enabled`). Ctrl+S / `:w` / Save checks it,
     /// writes it and applies it to this running screen (see `apply_config`).

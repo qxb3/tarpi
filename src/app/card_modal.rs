@@ -63,6 +63,13 @@ impl App {
             }
             return;
         }
+        if self.vector_edit {
+            self.vector_edit = false;
+            if dirty {
+                self.set_status("vector memory: changes discarded", false);
+            }
+            return;
+        }
         if self.config_edit {
             self.config_edit = false;
             if dirty {
@@ -89,6 +96,10 @@ impl App {
         }
         if self.note_edit {
             self.save_note_form(close).await;
+            return;
+        }
+        if self.vector_edit {
+            self.save_vector_form(close).await;
             return;
         }
         if self.config_edit {
@@ -212,7 +223,7 @@ impl App {
                 _ => {}
             }
         }
-        // A row of choices (`/note`): arrows change it, nothing is typed.
+        // A row of choices (`/note`, `/memory`): arrows change it, nothing is typed.
         if self.card_modal.as_ref().map_or(false, |c| c.pick_of(c.focus).is_some()) {
             self.on_pick_key(k).await;
             return;

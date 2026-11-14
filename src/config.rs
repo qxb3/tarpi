@@ -85,6 +85,103 @@ impl Default for VimConfig {
     }
 }
 
+/// The vector memory settings: older messages of the chat that are close in
+/// meaning to the latest ones are added to the prompt (see `memory`). They are
+/// not part of `config.yaml`: only the `/memory` window
+/// changes them, and they live in `vector-memory.yaml` (see
+/// `load_vector_memory`), which `serve` and `connect` share.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct VectorMemoryConfig {
+    /// Switched on. Default false.
+    pub enabled: bool,
+    /// How many older messages come back. Default 3.
+    pub results: usize,
+    /// The latest this-many messages are not searched (they are normally
+    /// still in the prompt). Default 12.
+    pub recent: usize,
+    /// How close a message must be to come back, in percent (0 to 100).
+    /// Default 15.
+    pub min_score: usize,
+    /// Where the memories go: this many messages from the end of the chat
+    /// (0 = after the last one). Default 4.
+    pub depth: usize,
+    /// Who the memories are said by: `system`, `user` or `assistant`.
+    /// Default `system`.
+    pub role: String,
+    /// The text that is put into the prompt; `{{result}}` is where the
+    /// recalled messages go (see `memory::render`).
+    pub template: String,
+}
+
+impl Default for VectorMemoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            results: 3,
+            recent: 12,
+            min_score: 15,
+            depth: 4,
+            role: "system".to_string(),
+            template: crate::memory::DEFAULT_TEMPLATE.to_string(),
+        }
+    }
+}
+
+impl VectorMemoryConfig {
+    /// The settings as YAML, the way the window writes them.
+    fn to_yaml(&self) -> String {
+        format!(
+            "# Vector memory. Managed by /memory inside a chat.\n\
+             enabled: {}\nresults: {}\nrecent: {}\nmin_score: {}\ndepth: {}\nrole: {}\ntemplate: {}\n",
+            self.enabled,
+            self.results,
+            self.recent,
+            self.min_score.min(100),
+            self.depth,
+            match self.role.trim().to_lowercase().as_str() {
+                "user" => "user",
+                "assistant" => "assistant",
+                _ => "system",
+            },
+            // A JSON string is a YAML string too, and keeps the line breaks.
+            serde_json::to_string(&self.template).unwrap_or_else(|_| "\"\"".to_string())
+        )
+    }
+}
+
+/// `~/.config/tarpi/vector-memory.yaml`: the vector memory settings. Shared
+/// by `tarpi serve` / `tarpi connect` like the other data (see `mirror`).
+pub fn vector_memory_path() -> Option<PathBuf> {
+    data().map(|d| d.join("vector-memory.yaml"))
+}
+
+/// Read the vector memory settings from `text`; a missing key keeps its default.
+fn parse_vector_memory(text: &str) -> VectorMemoryConfig {
+    if text.lines().all(|l| l.trim().is_empty() || l.trim_start().starts_with('#')) {
+        return VectorMemoryConfig::default();
+    }
+    serde_yaml::from_str(text).unwrap_or_default()
+}
+
+/// The vector memory settings (off, with the defaults, when there is no file
+/// or it cannot be read).
+pub fn load_vector_memory() -> VectorMemoryConfig {
+    vector_memory_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|t| parse_vector_memory(&t))
+        .unwrap_or_default()
+}
+
+/// `/memory`: write the settings to `vector-memory.yaml`.
+pub fn save_vector_memory(cfg: &VectorMemoryConfig) -> Result<()> {
+    let path = vector_memory_path().context("no config folder")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(&path, cfg.to_yaml()).with_context(|| format!("writing {}", path.display()))
+}
+
 /// `msg_seperator:` section: the rule drawn between two messages.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -435,6 +532,22 @@ pub fn base_settings() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vector_memory_settings_round_trip_and_default_to_off() {
+        assert_eq!(parse_vector_memory(""), VectorMemoryConfig::default());
+        assert!(!VectorMemoryConfig::default().enabled);
+        let cfg = VectorMemoryConfig {
+            enabled: true,
+            results: 5,
+            role: "user".into(),
+            template: "MEMORY START\n\n{{result}}\n\nMEMORY END \"quoted\"".into(),
+            ..Default::default()
+        };
+        assert_eq!(parse_vector_memory(&cfg.to_yaml()), cfg);
+        // A missing key keeps its default.
+        assert_eq!(parse_vector_memory("enabled: true\n").results, 3);
+    }
 
     #[test]
     fn the_template_is_valid_and_holds_the_defaults() {

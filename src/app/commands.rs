@@ -106,6 +106,10 @@ impl App {
                     self.input.clear();
                     self.open_note().await;
                 }
+                "memory" => {
+                    self.input.clear();
+                    self.open_vector().await;
+                }
                 "config" | "settings" => {
                     self.input.clear();
                     self.open_config().await;

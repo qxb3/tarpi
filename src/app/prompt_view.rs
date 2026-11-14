@@ -3,9 +3,11 @@
 use super::*;
 
 impl App {
-    /// `/prompt`: show the whole prompt the next reply would be sent with: the
-    /// system prompt, character card, persona, examples, instruct formatting
-    /// and the messages that fit into the context size, as one text.
+    /// `/prompt`: show the prompt the next reply would be sent with, on two
+    /// pages: the pre-prompt (system prompt, character card, persona, examples,
+    /// instruct formatting; no messages) and the post-prompt (the latest
+    /// `textgen::POST_MESSAGES` messages that fit into the context size, and
+    /// the cue).
     pub(super) async fn show_prompt(&mut self) {
         // The same fresh settings, persona and system prompt a reply would use.
         self.refresh_settings().await;
@@ -42,9 +44,26 @@ impl App {
         } else {
             0
         };
-        let (pre, post) = tp.prompt.split_at(split);
+        let view = if tp.prompt.is_char_boundary(tp.view) {
+            tp.view.max(split)
+        } else {
+            split
+        };
+        // Page 1: no messages. Page 2: the latest ones and the cue; older
+        // messages that are in the request are left out of both pages.
+        let pre = &tp.prompt[..split];
+        let post = &tp.prompt[view..];
+        let mut post_text = tidy(post);
+        if tp.hidden > 0 {
+            post_text = format!(
+                "[{} earlier message{} in the prompt, not shown here]\n{}",
+                tp.hidden,
+                if tp.hidden == 1 { "" } else { "s" },
+                post_text
+            );
+        }
         self.prompt_view = Some(PromptView {
-            texts: [tidy(pre), tidy(post)],
+            texts: [tidy(pre), post_text],
             tab: 0,
             title: format!(
                 " \u{b7} {} characters \u{b7} ~{} tokens ",

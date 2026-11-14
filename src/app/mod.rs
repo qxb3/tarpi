@@ -14,7 +14,7 @@
 //! | `editing`, `greetings` | editing messages; the card's greetings |
 //! | `chat_ops` | one-shot, undo, new / delete chat, regenerate, branches, swipes |
 //! | `pickers`, `persona_ui`, `sysprompt_ui`, `prompt_view` | the choose-one windows |
-//! | `card_modal`, `note_config` | the `/char`, `/char-img`, `/note` and `/config` windows |
+//! | `card_modal`, `note_config` | the `/char`, `/char-img`, `/note`, `/memory` and `/config` windows |
 //! | `import_flow` | `/import` and the lorebook question after it |
 //! | `spellcheck` | spell checking of the input box |
 //! | `connection`, `generation` | the API connection, and writing replies |
@@ -169,6 +169,8 @@ pub struct App {
     sys_edit: Option<SysEdit>,
     /// Set while `card_modal` is the Author's Note form (`/note`).
     note_edit: bool,
+    /// Set while `card_modal` is the vector memory form (`/memory`).
+    vector_edit: bool,
     /// Set while `card_modal` is the `/config` window (config.yaml).
     pub config_edit: bool,
     /// `/one-shot` was typed once and waits for the second time.
@@ -351,6 +353,7 @@ impl App {
             persona_edit: None,
             sys_edit: None,
             note_edit: false,
+            vector_edit: false,
             config_edit: false,
             one_shot_armed: false,
             help_scroll: 0,

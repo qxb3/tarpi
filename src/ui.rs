@@ -625,6 +625,8 @@ const HELP: &[&str] = &[
     "                 (scroll; Esc closes)",
     "/note            edit this chat's Author's Note: text, position",
     "                 (before / after / chat), depth, role, interval (also /an)",
+    "/memory          vector memory: switch it on, how many old messages",
+    "                 come back, how close, where they go in the prompt",
     "/api             open the API settings; quitting them (q) brings",
     "                 you back to this chat",
     "/formatting      edit the context and instruct templates; quitting",

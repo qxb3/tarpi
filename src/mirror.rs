@@ -4,7 +4,7 @@
 //!
 //! The shared files are the ones in `~/.config/tarpi/` that hold your data:
 //! `characters/`, `chats/`, `persona/`, `lorebooks/`, `system-prompt.jsonl`,
-//! and `api.yaml`. `config.yaml`, `formatting.yaml`, `command_history`,
+//! `vector-memory.yaml` and `api.yaml`. `config.yaml`, `formatting.yaml`, `command_history`,
 //! `dictionary.txt` and `serve-token` belong to the machine and are never
 //! shared.
 //!
@@ -27,7 +27,7 @@ pub const DEFAULT_PORT: u16 = 7878;
 /// Folders that are shared, whole.
 const DIRS: &[&str] = &["characters", "chats", "persona", "lorebooks"];
 /// Single files that are shared.
-const FILES: &[&str] = &["system-prompt.jsonl", "api.yaml"];
+const FILES: &[&str] = &["system-prompt.jsonl", "vector-memory.yaml", "api.yaml"];
 const API_FILE: &str = "api.yaml";
 
 /// One file in a listing.
@@ -102,6 +102,7 @@ pub fn describe(path: &str) -> String {
         ["persona", .., file] => format!("persona {}", stem(file)),
         ["lorebooks", .., file] => format!("lorebook {}", stem(file)),
         ["system-prompt.jsonl"] => "the system prompts".to_string(),
+        ["vector-memory.yaml"] => "the vector memory settings".to_string(),
         ["api.yaml"] => "the API connections".to_string(),
         _ => path.to_string(),
     }
@@ -395,6 +396,8 @@ mod tests {
         assert!(valid_path("system-prompt.jsonl"));
         assert!(!valid_path("formatting.yaml"));
         assert!(valid_path("api.yaml"));
+        assert!(valid_path("vector-memory.yaml"));
+        assert_eq!(describe("vector-memory.yaml"), "the vector memory settings");
         assert!(!valid_path("config.yaml"));
         assert!(!valid_path("serve-token"));
         assert!(!valid_path("command_history"));

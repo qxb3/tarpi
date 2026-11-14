@@ -84,8 +84,8 @@ pub(super) struct PersonaEdit {
     pub(super) avatar: Option<String>,
 }
 
-/// The `/prompt` window: the whole prompt of the next reply, as text, on two
-/// pages: the pre-prompt (everything before the last few messages) and the
+/// The `/prompt` window: the prompt of the next reply, as text, on two
+/// pages: the pre-prompt (everything before the messages) and the
 /// post-prompt (the last `textgen::POST_MESSAGES` messages and the cue).
 pub struct PromptView {
     /// The two pages, tidied for the screen (no tabs or control characters).

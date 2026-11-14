@@ -35,6 +35,7 @@ line. Read that first. The details below it are there when you need them.
 - [Characters](#characters)
 - [Lorebooks](#lorebooks)
   - [Your own lorebooks (`/lore`)](#your-own-lorebooks-lore)
+- [Vector memory](#vector-memory)
 - [Importing characters](#importing-characters)
   - [Importing and deleting while connected](#importing-and-deleting-while-connected)
   - [Copying everything from SillyTavern](#copying-everything-from-sillytavern)
@@ -102,6 +103,7 @@ Type these in the message box. Type `/` to open a menu of them.
 | `/chats` | Opens a window with this character's chats. Pick one (↑/↓ then Enter, or click / tap), choose `+ new chat`, or press `d` on one to delete it (it asks `y`). Esc closes. The `_before-summary` copies are not listed. The chat you have open can't be deleted here (use `/newchat`), except when it is the last one: then it is deleted and tarpi goes back to the `choose a character` window. |
 | `/one-shot` | **Locks this chat for good.** No editing, no `/undo`, no regenerating, no `/continue`, no swipes (greeting switching too), no summary branches. tarpi asks you to type `/one-shot` a second time; typing anything else cancels. A grey `ONE SHOT MODE` tag then stays at the start of the status row. A reply that is being written can't be stopped either (no Esc, no Stop button, and `/quit`, `/chats` and `/chars` wait until it is done). You can still send new messages. Other chats are not affected. It is stored in the chat file (`tarpi_one_shot`) and **there is no command to undo it.** |
 | `/lore` | Opens the lorebook manager (see [Lorebooks](#lorebooks)). |
+| `/memory` | Opens the vector memory settings (see [Vector memory](#vector-memory)). |
 | `/persona` | Choose who you are in the chat. `+ new persona` makes one, `e` edits, `p` sets where its description goes in the prompt, `d` deletes (see [Personas](#personas)). |
 | `/system` | Choose the system prompt. `+ new system prompt` makes one, `e` edits, `d` deletes (see [System prompts](#system-prompts)). |
 | `/prompt` | Shows the exact prompt the next reply will be sent with (see [Prompt window](#prompt-window)). |
@@ -252,7 +254,7 @@ You can also give the token in the `TARPI_TOKEN` environment variable. `serve_ur
 
 - It does not open the chat screen. It prints the address, the port and the token, then answers requests until you press Ctrl+C.
 - By default it listens on every network interface. `--local` limits it to `127.0.0.1`.
-- It shares `characters/`, `chats/`, `persona/`, `lorebooks/`, `system-prompt.jsonl` and `api.yaml` from `~/.config/tarpi/` **and nothing else**. `config.yaml`, `formatting.yaml`, `command_history`, `dictionary.txt` and the token stay on each machine.
+- It shares `characters/`, `chats/`, `persona/`, `lorebooks/`, `system-prompt.jsonl`, `vector-memory.yaml` and `api.yaml` from `~/.config/tarpi/` **and nothing else**. `config.yaml`, `formatting.yaml`, `command_history`, `dictionary.txt` and the token stay on each machine.
 - The token is made the first time and kept in `~/.config/tarpi/serve-token`.
 - You can keep using tarpi on the serving machine as usual.
 
@@ -481,10 +483,10 @@ A persona imported by `tarpi import-st` with its old *After the character* posit
 
 It has two pages, shown as tabs in the title:
 
-1. **pre-prompt**: everything before the last five messages (system prompt, character card, persona, examples, the older messages).
-2. **post-prompt**: the last five messages (an Author's Note, post-history instructions or a `/regen` nudge sent among them count as messages) and the character cue at the very end.
+1. **pre-prompt**: everything before the chat, with no messages in it (system prompt, character card, persona, examples).
+2. **post-prompt**: the latest 20 messages (an Author's Note, post-history instructions or a `/regen` nudge sent among them count as messages) and the character cue at the very end.
 
-Together they are the whole prompt, in order. When fewer than five messages fit, they are all on page 2. The title shows the size of the whole prompt in characters and an estimated token count (`~`).
+When more than 20 messages fit into the context, the older ones are in the request but on neither page; the post-prompt starts with a line saying how many. The title shows the size of the whole prompt in characters and an estimated token count (`~`).
 
 | Key / click | What it does |
 | --- | --- |
@@ -760,6 +762,40 @@ There are three screens: the list of books, a book (its settings and entries), a
 
 ---
 
+## Vector memory
+
+*In plain words: when a chat gets long, tarpi can dig out old messages that match what you just said and add them to the prompt. `/memory` is where you control it, and the only place.*
+
+Off by default. Type `/memory` to open a window of rows; change a row with Left / Right (or type digits on a number row), then Ctrl+S to save (`:wq` saves and closes, Esc cancels).
+
+| row | what it does | default |
+| --- | --- | --- |
+| Memory | on / off | off |
+| Results | how many old messages come back (0 to 20) | 3 |
+| Skip | the latest this-many messages are not searched, because they are normally still in the prompt | 12 |
+| Match | how alike a message must be to come back, in percent: higher is stricter | 15 |
+| Depth | where the memories go: this many messages from the end of the chat (0 = after the last message) | 4 |
+| Role | who the memory note is said by: system, user or assistant | system |
+| Template | the text that is put into the prompt; `{{result}}` is where the recalled messages go, one per line (macros like `{{char}}` and `{{user}}` work too) | `[Relevant memories from earlier in this chat:` `{{result}}]` |
+
+For example, this template:
+
+```
+MEMORY START
+
+{{result}}
+
+MEMORY END
+```
+
+If the template has no `{{result}}`, the messages are added on a new line after it. An empty template is the default one.
+
+There is no setting for it in `config.yaml`, not even the on / off switch. The window saves everything in `~/.config/tarpi/vector-memory.yaml` (shared between devices by `tarpi serve` / `tarpi connect` like your other data). Deleting that file turns it off and restores the defaults.
+
+Before each reply tarpi turns every message of the chat (except the latest *Skip* ones) into a vector: a hashed bag of words, so it works offline with no model and no extra download. It compares them with your latest two messages (cosine similarity) and adds the best matches, in story order, as one note built from the Template. Each memory is cut at 600 characters. Nothing is stored: the chat file is the memory, and the `/prompt` window shows what was added.
+
+Limit: it matches words, not meaning, so "car" does not find "automobile".
+
 ## Importing characters
 
 *In plain words: type `/import` and then a file, a link, or press Tab to browse. Then `/chars` to switch to the new character.*
@@ -1014,7 +1050,7 @@ Everything tarpi needs is its own: cards in `~/.config/tarpi/characters/`, perso
 
 - **Backends:** only text completion is supported, through a standalone connection (`/api`): llama.cpp, any OpenAI-compatible `/v1/completions` server (OpenRouter included) and Ollama's `/api/generate`. The chat completions endpoint is not used. No other server is contacted (apart from `tarpi serve` when you use `tarpi connect`, a SillyTavern server for `import-st`, and the link you give to `/import`).
 - **Sync:** `tarpi connect` syncs whole files. There is no merging inside a chat, no encryption (plain TCP with a token), and an open chat is not reloaded when another device changes it.
-- **Lorebooks** (a card's own, or your own in `/lore`) use plain-text keys and are deliberately minimal (see [Lorebooks](#lorebooks)). No vector memory, group chats, or tool calling.
+- **Lorebooks** (a card's own, or your own in `/lore`) use plain-text keys and are deliberately minimal (see [Lorebooks](#lorebooks)). Vector memory is only a simple word match (see [Vector memory](#vector-memory)); no group chats or tool calling.
 - **Token counts** used to trim history to the context window are an estimate (`chars_per_token`), not a real tokenizer. The totals in the status row are exact once the connection's tokenizer has answered (see [Keys](#keys)). Without a tokenizer route (OpenRouter, OpenAI) they are the `usage` the backend reports with each reply (prompt plus reply), exact until the chat changes.
 - **Unfinished prose** is closed for you while a reply streams: an open `*narration`, `**bold` or `"speech` is shown with its closing marker added, and the model's own closer simply takes its place. Nothing is added for a lone trailing `*`, `2 * 3`, bullets, a `*` inside a word, or past a blank line. When a reply ends with markers still open, they are closed in the saved text too (Ctrl+K takes them off again before continuing).
 - **Markdown** is minimal: `*narration*` is bold and a neutral grey, `**bold**` is bold and "quoted speech" is yellow. Styles end at a blank line, and a `*` that has no partner (`2 * 3`, a `* ` bullet, an unclosed one) is shown as a plain asterisk.

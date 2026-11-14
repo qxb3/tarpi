@@ -4,6 +4,7 @@
 
 use crate::character::Character;
 use crate::input::{Input, Mode};
+use crate::config::VectorMemoryConfig;
 use crate::note::{self, Note};
 use crate::ui;
 use ratatui::layout::Rect;
@@ -54,6 +55,12 @@ pub const ROLES: &[(&str, &str)] = &[
     ("user", "user"),
     ("assistant", "assistant"),
 ];
+
+/// The on / off row of the `/memory` form.
+pub const ON_OFF: &[(&str, &str)] = &[("off", "Off"), ("on", "On")];
+/// Largest `results` and `recent` the `/memory` form steps to.
+pub const VECTOR_MAX_RESULTS: usize = 20;
+pub const VECTOR_MAX_RECENT: usize = 999;
 
 pub struct CardModal {
     /// Window title (`character card`, `persona`).
@@ -278,6 +285,42 @@ impl CardModal {
         m
     }
 
+    /// The `/memory` form: rows of arrow-key choices (see `Pick`), one per
+    /// vector memory setting, then the text to put into the prompt, with
+    /// `{{result}}` where the recalled messages go.
+    pub fn vector(v: &VectorMemoryConfig, cfg: &Input) -> CardModal {
+        let field = |key: &'static str, label: &str, text: &str| CardField {
+            key,
+            label: label.to_string(),
+            orig: text.to_string(),
+            text: text.to_string(),
+            editable: true,
+            alt: false,
+        };
+        let role = note::role_word(note::parse_role(&v.role).unwrap_or(0));
+        let fields = vec![
+            field("enabled", "Memory", if v.enabled { "on" } else { "off" }),
+            field("results", "Results", &v.results.min(VECTOR_MAX_RESULTS).to_string()),
+            field("recent", "Skip", &v.recent.min(VECTOR_MAX_RECENT).to_string()),
+            field("min_score", "Match", &v.min_score.min(100).to_string()),
+            field("depth", "Depth", &v.depth.min(note::MAX_DEPTH).to_string()),
+            field("role", "Role", role),
+            field("template", "Template", &norm(&v.template)),
+        ];
+        let mut m = CardModal::from_fields(fields, cfg);
+        m.picks = vec![
+            (0, Pick::Words(ON_OFF)),
+            (1, Pick::Number(VECTOR_MAX_RESULTS)),
+            (2, Pick::Number(VECTOR_MAX_RECENT)),
+            (3, Pick::Number(100)),
+            (4, Pick::Number(note::MAX_DEPTH)),
+            (5, Pick::Words(ROLES)),
+        ];
+        m.title = "vector memory".to_string();
+        m.input.enter_normal();
+        m
+    }
+
     /// The `/config` window: `config.yaml` as one editable field. It opens in
     /// NORMAL mode when vim modes are on (see the `vim:` config), so the file
     /// can be read and moved around in with the usual motions.
@@ -319,6 +362,9 @@ impl CardModal {
                     (k, 0) if k.ends_with("depth") => "after the last message".to_string(),
                     (k, 1) if k.ends_with("depth") => "before the last message".to_string(),
                     (k, n) if k.ends_with("depth") => format!("before the last {} messages", n),
+                    ("results", 0) => "none".to_string(),
+                    ("recent", n) => format!("not the latest {} messages", n),
+                    ("min_score", n) => format!("{}% alike or more", n),
                     ("interval", 0) => "never".to_string(),
                     ("interval", 1) => "every message of yours".to_string(),
                     ("interval", n) => format!("every {} messages of yours", n),

@@ -728,13 +728,22 @@ pub struct TgArgs<'a> {
 pub struct TgPrompt {
     pub prompt: String,
     pub stop: Vec<String>,
-    /// Byte offset in `prompt` where its last [`POST_MESSAGES`] messages
-    /// start (the `/prompt` window's second page); `0` when not worked out.
+    /// Byte offset in `prompt` where its messages start: before it is the
+    /// pre-prompt (system prompt, card, examples; no messages) of the
+    /// `/prompt` window. `0` when not worked out.
     pub split: usize,
+    /// Byte offset where the last [`POST_MESSAGES`] messages start: from it
+    /// on is the post-prompt page (those messages and the cue). `0` when not
+    /// worked out.
+    pub view: usize,
+    /// How many messages are in the prompt between `split` and `view`: in the
+    /// request, but on neither page.
+    pub hidden: usize,
 }
 
-/// How many messages from the end of the prompt make its "post prompt".
-pub const POST_MESSAGES: usize = 5;
+/// How many messages from the end of the prompt the `/prompt` window's
+/// post-prompt page shows.
+pub const POST_MESSAGES: usize = 20;
 
 pub fn build_prompt(a: &TgArgs) -> TgPrompt {
     let pu = sub(a.settings, "power_user");
@@ -970,6 +979,44 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
     }
     injects.extend(lore_injects);
 
+    // ---- vector memory: older messages close in meaning to the latest ones
+    // (off unless switched on in the `/memory` window)
+    if let Some(vm) = Some(crate::config::load_vector_memory()).filter(|v| v.enabled) {
+        let said: Vec<String> = a
+            .history
+            .iter()
+            .filter(|m| !chat::is_system(m))
+            .map(|m| {
+                let n = chat::name(m);
+                if n.is_empty() {
+                    chat::mes(m).to_string()
+                } else {
+                    format!("{}: {}", n, chat::mes(m))
+                }
+            })
+            .collect();
+        // The query is the latest two messages (or the reply being continued).
+        let mut query: Vec<&str> = a.history.iter().rev().filter(|m| !chat::is_system(m)).take(2).map(|m| chat::mes(m)).collect();
+        if let Some(t) = a.continue_text {
+            query.push(t);
+        }
+        let hits = crate::memory::recall(
+            &said,
+            &query.join(" "),
+            vm.results,
+            vm.recent,
+            vm.min_score.min(100) as f32 / 100.0,
+        );
+        let lines: Vec<String> = hits.into_iter().map(|i| said[i].clone()).collect();
+        if let Some(text) = crate::memory::render(&vm.template, &lines).map(|t| subst(&t, &ctx)) {
+            injects.push(Inject {
+                depth: vm.depth,
+                role: note::parse_role(&vm.role).unwrap_or(0),
+                text,
+            });
+        }
+    }
+
     // ---- history
     let mut msgs: Vec<HMsg> = Vec::new();
     for m in a.history.iter() {
@@ -1122,15 +1169,22 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
     prompt.push_str(&chat_start);
     // Where the last `POST_MESSAGES` messages of the prompt begin.
     let post_from = start.max(formatted.len().saturating_sub(POST_MESSAGES));
-    let mut pre_len: Option<usize> = None;
+    let mut first_len: Option<usize> = None;
+    let mut view_len: Option<usize> = None;
     for (i, m) in formatted.iter().enumerate().skip(start) {
+        if i == start {
+            first_len = Some(prompt.len());
+        }
         if i == post_from {
-            pre_len = Some(prompt.len());
+            view_len = Some(prompt.len());
         }
         prompt.push_str(m);
     }
-    let pre_len = pre_len.unwrap_or(prompt.len());
-    let pre_raw = prompt[..pre_len].to_string();
+    let first_len = first_len.unwrap_or(prompt.len());
+    let view_len = view_len.unwrap_or(prompt.len());
+    let first_raw = prompt[..first_len].to_string();
+    let view_raw = prompt[..view_len].to_string();
+    let hidden = post_from.saturating_sub(start).min(formatted.len().saturating_sub(start));
     prompt.push_str(&tail);
     if !cont_text.is_empty() {
         if !prompt.ends_with(char::is_whitespace) {
@@ -1149,15 +1203,19 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
         t
     };
     let prompt = tidy(&prompt);
-    // The same cleaning of the first part gives where the second begins (the
+    // The same cleaning of a first part gives where the rest begins (the
     // text both share, in case collapsing changed the seam).
-    let pre = tidy(&pre_raw);
-    let split = prompt
-        .char_indices()
-        .zip(pre.chars())
-        .find(|((_, a), b)| a != b)
-        .map(|((i, _), _)| i)
-        .unwrap_or_else(|| pre.len().min(prompt.len()));
+    let seam = |raw: &str| -> usize {
+        let pre = tidy(raw);
+        prompt
+            .char_indices()
+            .zip(pre.chars())
+            .find(|((_, a), b)| a != b)
+            .map(|((i, _), _)| i)
+            .unwrap_or_else(|| pre.len().min(prompt.len()))
+    };
+    let split = seam(&first_raw);
+    let view = seam(&view_raw).max(split);
 
     // ---- stop strings (getStoppingStrings for Text Completion)
     let mut stop: Vec<String> = Vec::new();
@@ -1181,6 +1239,8 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
         prompt,
         stop: uniq,
         split,
+        view,
+        hidden,
     }
 }
 
@@ -1220,6 +1280,8 @@ pub fn build_summary_prompt(settings: &Value, user: &str, ch: &str, body: &str) 
         prompt: prompt.replace('\r', ""),
         stop: uniq,
         split: 0,
+        view: 0,
+        hidden: 0,
     }
 }
 
@@ -1392,16 +1454,19 @@ mod tests {
         .prompt
     }
 
-    #[test]
-    fn the_split_leaves_the_last_five_messages_for_the_post_prompt() {
-        let mut h = Vec::new();
-        for i in 0..7 {
-            if i % 2 == 0 {
-                h.push(chat::user_message("Bob", &format!("m{}", i)));
-            } else {
-                h.push(chat::assistant_message("Sofia", &format!("m{}", i), "m", "t", "t"));
-            }
-        }
+    fn alternating(n: usize) -> Vec<Value> {
+        (0..n)
+            .map(|i| {
+                if i % 2 == 0 {
+                    chat::user_message("Bob", &format!("m{}", i))
+                } else {
+                    chat::assistant_message("Sofia", &format!("m{}", i), "m", "t", "t")
+                }
+            })
+            .collect()
+    }
+
+    fn pages(h: &[Value]) -> (String, String, usize) {
         let settings = settings("{{description}}");
         let ch = card();
         let tp = build_prompt(&TgArgs {
@@ -1411,32 +1476,35 @@ mod tests {
             persona: "",
             persona_position: 0,
             note: &Note::default(),
-            history: &h,
+            history: h,
             chars_per_token: 3.2,
             continue_text: None,
             nudge: None,
         });
-        let (pre, post) = tp.prompt.split_at(tp.split);
-        assert!(pre.contains("A baker.") && pre.contains("m0") && pre.contains("m1"), "{}", pre);
-        assert!(!pre.contains("m2"), "{}", pre);
-        assert!(post.starts_with("Bob: m2\n"), "{}", post);
-        assert!(post.ends_with("Bob: m6\nSofia:"), "{}", post);
-        // With fewer than five messages they are all in the post-prompt.
-        let tp = build_prompt(&TgArgs {
-            settings: &settings,
-            ch: &ch,
-            user_name: "Bob",
-            persona: "",
-            persona_position: 0,
-            note: &Note::default(),
-            history: &history(),
-            chars_per_token: 3.2,
-            continue_text: None,
-            nudge: None,
-        });
-        let (pre, post) = tp.prompt.split_at(tp.split);
+        (
+            tp.prompt[..tp.split].to_string(),
+            tp.prompt[tp.view..].to_string(),
+            tp.hidden,
+        )
+    }
+
+    #[test]
+    fn the_pre_prompt_has_no_messages_and_the_post_prompt_has_them_all() {
+        let (pre, post, hidden) = pages(&alternating(7));
         assert_eq!(pre, "A baker.\n");
-        assert!(post.starts_with("Bob: Hi\n"), "{}", post);
+        assert!(post.starts_with("Bob: m0\n"), "{}", post);
+        assert!(post.ends_with("Bob: m6\nSofia:"), "{}", post);
+        assert_eq!(hidden, 0);
+    }
+
+    #[test]
+    fn the_post_prompt_shows_only_the_latest_twenty_messages() {
+        let (pre, post, hidden) = pages(&alternating(23));
+        assert_eq!(pre, "A baker.\n");
+        assert_eq!(hidden, 3);
+        assert!(post.starts_with("Sofia: m3\n"), "{}", post);
+        assert!(!post.contains("m2\n"), "{}", post);
+        assert!(post.ends_with("m22\nSofia:") || post.contains("m22\n"), "{}", post);
     }
 
     #[test]

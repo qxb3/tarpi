@@ -52,7 +52,7 @@ use tokio::sync::oneshot;
     about = "Chat with the characters and chats of the machine named by `serve_url` in config.yaml",
     long_about = "Connect to the machine that runs `tarpi serve` (its address is `serve_url` \
                   in ~/.config/tarpi/config.yaml) and use its characters, chats, personas, \
-                  lorebooks, system prompts and API connection from this device (formatting stays on each device). A copy of \
+                  lorebooks, system prompts, vector memory settings and API connection from this device (formatting stays on each device). A copy of \
                   them is kept in ~/.config/tarpi/remote/ and brought up to date before the \
                   chat opens, every few seconds while it is open, and when you quit. Then \
                   you pick a character, as in plain `tarpi`. The token is the one `tarpi \
