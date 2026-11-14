@@ -793,10 +793,10 @@ pub async fn list_models(c: &Connection) -> Result<Vec<ModelEntry>> {
 /// here it is read as that host instead (same port).
 static REMOTE_HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-/// `serve_base` is the server's address as `tarpi connect` uses it
-/// (`http://192.168.1.20:7878`); only its host is kept.
-pub fn set_remote_host(serve_base: &str) {
-    if let Some((host, _)) = split_host(serve_base) {
+/// `serve_addr` is the server's address as `tarpi connect` uses it
+/// (`192.168.1.20:7878`); only its host is kept.
+pub fn set_remote_host(serve_addr: &str) {
+    if let Some((host, _)) = split_host(&format!("tcp://{}", serve_addr)) {
         let _ = REMOTE_HOST.set(host);
     }
 }
@@ -832,47 +832,20 @@ fn with_remote_host(url: &str, host: &str) -> String {
     }
 }
 
-/// `tarpi connect` (without `--local-api`): the server (address, token) whose
-/// backend does the tokenizing, because the connection's own address (often
-/// `127.0.0.1:8080`) belongs to the machine that runs `tarpi serve`.
-static REMOTE_TOKENIZER: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+/// `tarpi connect` (without `--local-api`): the connection to `tarpi serve`
+/// whose backend does the tokenizing, because the connection's own address
+/// (often `127.0.0.1:8080`) belongs to the machine that runs `tarpi serve`.
+static REMOTE_TOKENIZER: std::sync::OnceLock<crate::connect::Rpc> = std::sync::OnceLock::new();
 
-pub fn set_remote_tokenizer(base: String, token: String) {
-    let _ = REMOTE_TOKENIZER.set((base, token));
-}
-
-/// Ask `tarpi serve` to count `text` with its backend. `None` when that
-/// server does not know the route (an older tarpi): count directly instead.
-async fn remote_count(base: &str, token: &str, c: &Connection, text: &str) -> Result<Option<usize>> {
-    let url = format!("{}/v1/tokenize", base);
-    let mut rb = client()?
-        .post(&url)
-        .timeout(Duration::from_secs(60))
-        .json(&json!({ "text": text, "connection": c.name }));
-    if !token.is_empty() {
-        rb = rb.bearer_auth(token);
-    }
-    let resp = rb.send().await.with_context(|| format!("POST {}", url))?;
-    let status = resp.status();
-    if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::METHOD_NOT_ALLOWED {
-        return Ok(None);
-    }
-    let body = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        bail!("{} returned {}: {}", url, status, short(&body, 200));
-    }
-    let v: Value = serde_json::from_str(&body).with_context(|| format!("invalid JSON from {}", url))?;
-    v.get("tokens")
-        .and_then(|n| n.as_u64())
-        .map(|n| Some(n as usize))
-        .ok_or_else(|| anyhow!("{} gave no token count", url))
+pub fn set_remote_tokenizer(rpc: crate::connect::Rpc) {
+    let _ = REMOTE_TOKENIZER.set(rpc);
 }
 
 /// Exact token count of `text` from the backend's own tokenizer (the serving
 /// machine's, under `tarpi connect`).
 pub async fn count_tokens(c: &Connection, text: &str) -> Result<usize> {
-    if let Some((base, token)) = REMOTE_TOKENIZER.get() {
-        if let Some(n) = remote_count(base, token, c, text).await? {
+    if let Some(rpc) = REMOTE_TOKENIZER.get() {
+        if let Some(n) = rpc.tokenize(text, &c.name).await? {
             return Ok(n);
         }
     }

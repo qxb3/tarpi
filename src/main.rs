@@ -41,6 +41,7 @@ mod termcolors;
 mod textgen;
 mod tokens;
 mod ui;
+mod wire;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand};

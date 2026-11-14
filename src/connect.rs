@@ -23,24 +23,28 @@
 //!
 //! An open chat is not reloaded when another device changes it: saving it here
 //! is then refused, as when another terminal changed the file (reopen the chat).
+//!
+//! Everything goes over one persistent TCP connection (see `wire`): the sync
+//! requests, the token counts, the log lines for the server, the server's
+//! "a file changed" notes and a beat in both directions. When that link goes
+//! (the server stops, the network drops) the chat screen quits at once.
 
 use crate::config;
 use crate::mirror::{
     hash_bytes, in_scope, mtime_ms, now_ms, plan, to_fs, write_atomic, Action, Entry, Manifest,
     Scanner, DEFAULT_PORT, PROTO,
 };
+use crate::wire::{self, Message};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
-use reqwest::{Method, StatusCode};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-
-/// Seconds between two background syncs.
-const SYNC_EVERY: u64 = 3;
+use tokio::sync::oneshot;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -75,18 +79,12 @@ struct ConnectCli {
     local_api: bool,
 }
 
-/// `host:port` becomes `http://host:port` (and the default port is added when
-/// there is none).
+/// The server's address as `host:port` (the default port is added when there
+/// is none; a leading `http://` or `tcp://`, as older versions of this setting
+/// were written, is ignored).
 fn normalize(address: &str) -> String {
     let t = address.trim().trim_end_matches('/');
-    let lower = t.to_lowercase();
-    let (scheme, rest) = if lower.starts_with("http://") {
-        ("http://", &t[7..])
-    } else if lower.starts_with("https://") {
-        ("https://", &t[8..])
-    } else {
-        ("http://", t)
-    };
+    let rest = t.split_once("://").map(|(_, r)| r).unwrap_or(t);
     let host = rest.split('/').next().unwrap_or("");
     let has_port = if host.starts_with('[') {
         host.contains("]:")
@@ -94,16 +92,15 @@ fn normalize(address: &str) -> String {
         host.contains(':')
     };
     if has_port {
-        format!("{}{}", scheme, rest)
+        host.to_string()
     } else {
-        format!("{}{}:{}", scheme, rest, DEFAULT_PORT)
+        format!("{}:{}", host, DEFAULT_PORT)
     }
 }
 
 /// A folder name for a server: `192.168.1.20:7878` becomes `192.168.1.20-7878`.
-fn mirror_name(base: &str) -> String {
-    let rest = base.split_once("://").map(|(_, r)| r).unwrap_or(base);
-    let host = rest.split('/').next().unwrap_or("");
+fn mirror_name(addr: &str) -> String {
+    let host = addr.split('/').next().unwrap_or("");
     host.chars()
         .map(|c| match c {
             c if c.is_ascii_alphanumeric() || c == '.' || c == '-' => c,
@@ -172,7 +169,7 @@ static REPORTER: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<Stri
 
 /// Tell the server's log what this device just did ("opened chat Sofia03 with
 /// Sofia"). Does nothing outside `tarpi connect`, never waits, and a server
-/// that does not know the route (an older tarpi) or is gone is ignored. Lines
+/// that does not know the note (an older tarpi) or is gone is ignored. Lines
 /// are sent in the order they were reported.
 pub fn report(text: impl Into<String>) {
     if let Some(tx) = REPORTER.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
@@ -180,121 +177,173 @@ pub fn report(text: impl Into<String>) {
     }
 }
 
+/// How long one request may wait for its answer.
+const CALL_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long the server's beats may stay away before the link counts as dead:
+/// with the beat every 50 ms, a link that goes quiet (wifi dropped) is
+/// noticed within this time.
+const BEAT_TIMEOUT: Duration = Duration::from_millis(300);
+
+struct RpcInner {
+    tx: wire::Sender,
+    /// Requests waiting for their answer, by number.
+    pending: std::sync::Mutex<HashMap<u32, oneshot::Sender<Message>>>,
+    next: AtomicU32,
+}
+
+/// The persistent connection to `tarpi serve`: requests go out numbered and
+/// their answers find their way back to whoever asked, so a sync, a token
+/// count and a log line can all use the one link at the same time. Cheap to
+/// clone.
+#[derive(Clone)]
+pub struct Rpc(Arc<RpcInner>);
+
+impl Rpc {
+    /// Open the connection, do the greeting and start listening. The server's
+    /// "a file changed" notes wake the sync; the end of the link sets [`LOST`].
+    async fn connect(addr: &str) -> Result<Rpc> {
+        let mut sock = tokio::time::timeout(Duration::from_secs(10), tokio::net::TcpStream::connect(addr))
+            .await
+            .map_err(|_| anyhow!("timed out reaching tarpi serve at {}", addr))?
+            .with_context(|| format!("could not reach tarpi serve at {}", addr))?;
+        wire::client_handshake(&mut sock)
+            .await
+            .with_context(|| format!("{} did not answer like tarpi serve", addr))?;
+        let (tx, mut inbox) = wire::start(sock, BEAT_TIMEOUT);
+        let inner = Arc::new(RpcInner {
+            tx,
+            pending: std::sync::Mutex::new(HashMap::new()),
+            next: AtomicU32::new(1),
+        });
+        let dispatch = inner.clone();
+        tokio::spawn(async move {
+            while let Some(m) = inbox.recv().await {
+                if m.id == 0 {
+                    if m.op() == "changed" {
+                        WAKE.notify_one();
+                    }
+                    continue;
+                }
+                let waiter = dispatch.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&m.id);
+                if let Some(w) = waiter {
+                    let _ = w.send(m);
+                }
+            }
+            // The link is gone: nothing more will be answered.
+            LOST.store(true, Ordering::Relaxed);
+            dispatch.pending.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        });
+        Ok(Rpc(inner))
+    }
+
+    fn forget(&self, id: u32) {
+        self.0.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    }
+
+    /// Send a request and wait for its answer (which may be a refusal: see [`Rpc::checked`]).
+    async fn call(&self, head: Value, body: Vec<u8>) -> Result<Message> {
+        // While a request is out, a stall (a big file over wifi) is not yet a dead link.
+        let _busy = self.0.tx.busy();
+        let (tx, rx) = oneshot::channel();
+        let id = loop {
+            let id = self.0.next.fetch_add(1, Ordering::Relaxed);
+            if id != 0 {
+                break id;
+            }
+        };
+        self.0.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(id, tx);
+        if !self.0.tx.send(Message::new(id, head, body)) {
+            self.forget(id);
+            bail!("lost the connection to the server");
+        }
+        match tokio::time::timeout(CALL_TIMEOUT, rx).await {
+            Ok(Ok(m)) => Ok(m),
+            Ok(Err(_)) => bail!("lost the connection to the server"),
+            Err(_) => {
+                self.forget(id);
+                bail!("the server did not answer in time")
+            }
+        }
+    }
+
+    /// Tell the server something that needs no answer (queued, never waits).
+    fn notify(&self, head: Value) {
+        let _ = self.0.tx.send(Message::new(0, head, Vec::new()));
+    }
+
+    /// Turn a refused request into an error that says why.
+    fn checked(m: Message) -> Result<Message> {
+        if m.is_ok() {
+            return Ok(m);
+        }
+        if m.code() == 401 {
+            bail!(
+                "the server wants a valid token: run `tarpi connect <token>` with the one \
+                 `tarpi serve` prints (or set `serve_trust_all: true` on the serving machine)"
+            );
+        }
+        bail!("the server answered {}: {}", m.code(), m.error())
+    }
+
+    /// Token count of `text` from the serving machine's backend. `None` when
+    /// that server does not know the request (an older tarpi): count directly instead.
+    pub async fn tokenize(&self, text: &str, connection: &str) -> Result<Option<usize>> {
+        let m = self
+            .call(json!({ "op": "tokenize", "text": text, "connection": connection }), Vec::new())
+            .await?;
+        if !m.is_ok() && m.code() == 404 {
+            return Ok(None);
+        }
+        let m = Rpc::checked(m)?;
+        m.head
+            .get("tokens")
+            .and_then(|n| n.as_u64())
+            .map(|n| Some(n as usize))
+            .ok_or_else(|| anyhow!("the server gave no token count"))
+    }
+
+    /// Send what is still queued and hang up.
+    async fn close(&self) {
+        self.0.tx.close(Duration::from_secs(2)).await;
+    }
+}
+
 /// The state of one connection: where the server is, where the copy is, and
 /// what both sides agreed on last time.
 pub struct Client {
-    http: reqwest::Client,
-    base: String,
-    token: String,
+    rpc: Rpc,
+    /// The server as `host:port`.
+    addr: String,
     root: PathBuf,
     api: bool,
     state: HashMap<String, String>,
     scanner: Arc<std::sync::Mutex<Scanner>>,
 }
 
-/// Turn a refused request into an error that says why.
-async fn ok(resp: reqwest::Response) -> Result<reqwest::Response> {
-    let st = resp.status();
-    if st.is_success() {
-        return Ok(resp);
-    }
-    if st == StatusCode::UNAUTHORIZED {
-        bail!(
-            "the server wants a valid token: run `tarpi connect <token>` with the one \
-             `tarpi serve` prints (or set `serve_trust_all: true` on the serving machine)"
-        );
-    }
-    let body = resp.text().await.unwrap_or_default();
-    bail!("the server answered {}: {}", st, body.trim())
-}
-
 impl Client {
-    fn new(base: String, token: String, root: PathBuf, api: bool) -> Result<Client> {
-        let http = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(120))
-            .build()
-            .context("building HTTP client")?;
+    fn new(addr: String, rpc: Rpc, root: PathBuf, api: bool) -> Client {
         let state = std::fs::read_to_string(root.join(".sync-state.json"))
             .ok()
             .and_then(|t| serde_json::from_str::<HashMap<String, String>>(&t).ok())
             .unwrap_or_default();
-        Ok(Client {
-            http,
-            base,
-            token,
+        Client {
+            rpc,
+            addr,
             scanner: Arc::new(std::sync::Mutex::new(Scanner::new(root.clone(), api))),
             root,
             api,
             state,
-        })
-    }
-
-    fn req(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
-        let r = self.http.request(method, format!("{}{}", self.base, path));
-        // No token at all is what `serve_trust_all` is for.
-        if self.token.is_empty() {
-            r
-        } else {
-            r.bearer_auth(&self.token)
         }
-    }
-
-    /// Ask the server, without a token, whether it wants one. A server that
-    /// answers 401 wants one (older versions); a server that answers the ping
-    /// says so itself (`token`, false with `serve_trust_all: true`).
-    async fn needs_token(&self) -> Result<bool> {
-        let resp = self
-            .http
-            .get(format!("{}/v1/ping", self.base))
-            .send()
-            .await
-            .with_context(|| format!("could not reach tarpi serve at {}", self.base))?;
-        if resp.status() == StatusCode::UNAUTHORIZED {
-            return Ok(true);
-        }
-        let v: serde_json::Value = ok(resp)
-            .await?
-            .json()
-            .await
-            .with_context(|| format!("{} did not answer like tarpi serve", self.base))?;
-        Ok(v.get("token").and_then(|t| t.as_bool()).unwrap_or(false))
-    }
-
-    /// Reach the server and check the token and the protocol version.
-    async fn ping(&self) -> Result<()> {
-        let resp = self
-            .req(Method::GET, "/v1/ping")
-            .send()
-            .await
-            .with_context(|| format!("could not reach tarpi serve at {}", self.base))?;
-        let v: serde_json::Value = ok(resp)
-            .await?
-            .json()
-            .await
-            .with_context(|| format!("{} did not answer like tarpi serve", self.base))?;
-        let proto = v.get("proto").and_then(|p| p.as_u64()).unwrap_or(0);
-        if proto != PROTO as u64 {
-            bail!(
-                "the server speaks protocol {} and this tarpi {}: update the older one",
-                proto,
-                PROTO
-            );
-        }
-        Ok(())
     }
 
     async fn remote_manifest(&self) -> Result<HashMap<String, Entry>> {
-        let resp = self
-            .req(Method::GET, "/v1/manifest")
-            .send()
+        let m = self
+            .rpc
+            .call(json!({ "op": "manifest" }), Vec::new())
             .await
-            .with_context(|| format!("could not reach tarpi serve at {}", self.base))?;
-        let m: Manifest = ok(resp)
-            .await?
-            .json()
-            .await
-            .context("reading the server's file list")?;
+            .with_context(|| format!("could not reach tarpi serve at {}", self.addr))?;
+        let m = Rpc::checked(m)?;
+        let m: Manifest = serde_json::from_slice(&m.body).context("reading the server's file list")?;
         Ok(m.files
             .into_iter()
             .filter(|e| in_scope(&e.path, self.api))
@@ -304,60 +353,48 @@ impl Client {
 
     /// A file's bytes and modification time.
     async fn download(&self, rel: &str) -> Result<(Vec<u8>, u64)> {
-        let resp = self
-            .req(Method::GET, "/v1/file")
-            .query(&[("path", rel)])
-            .send()
+        let m = self
+            .rpc
+            .call(json!({ "op": "get", "path": rel }), Vec::new())
             .await
             .with_context(|| format!("downloading {}", rel))?;
-        let resp = ok(resp).await?;
-        let mtime = resp
-            .headers()
-            .get("x-tarpi-mtime")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or_else(now_ms);
-        let bytes = resp
-            .bytes()
-            .await
-            .with_context(|| format!("downloading {}", rel))?;
-        Ok((bytes.to_vec(), mtime))
+        let m = Rpc::checked(m).with_context(|| format!("downloading {}", rel))?;
+        let mtime = m.head.get("mtime").and_then(|v| v.as_u64()).unwrap_or_else(now_ms);
+        Ok((m.body, mtime))
     }
 
     /// Send a file, provided the server's copy still has hash `base` (`None`:
     /// provided it has none). `false` when it changed in the meantime.
     async fn upload(&self, rel: &str, bytes: Vec<u8>, base: Option<&str>, mtime: u64) -> Result<bool> {
-        let mt = mtime.to_string();
-        let resp = self
-            .req(Method::PUT, "/v1/file")
-            .query(&[("path", rel), ("base", base.unwrap_or("")), ("mtime", mt.as_str())])
-            .body(bytes)
-            .send()
+        if bytes.len() > wire::MAX_FILE {
+            bail!("{} is too large to share (over {} MB)", rel, wire::MAX_FILE / (1024 * 1024));
+        }
+        let m = self
+            .rpc
+            .call(
+                json!({ "op": "put", "path": rel, "base": base.unwrap_or(""), "mtime": mtime }),
+                bytes,
+            )
             .await
             .with_context(|| format!("uploading {}", rel))?;
-        if resp.status() == StatusCode::CONFLICT {
+        if !m.is_ok() && m.code() == 409 {
             return Ok(false);
         }
-        let _: serde_json::Value = ok(resp)
-            .await?
-            .json()
-            .await
-            .with_context(|| format!("uploading {}", rel))?;
+        Rpc::checked(m).with_context(|| format!("uploading {}", rel))?;
         Ok(true)
     }
 
     /// Delete a file on the server, provided it still has hash `base`.
     async fn delete_remote(&self, rel: &str, base: Option<&str>) -> Result<bool> {
-        let resp = self
-            .req(Method::DELETE, "/v1/file")
-            .query(&[("path", rel), ("base", base.unwrap_or(""))])
-            .send()
+        let m = self
+            .rpc
+            .call(json!({ "op": "delete", "path": rel, "base": base.unwrap_or("") }), Vec::new())
             .await
             .with_context(|| format!("deleting {}", rel))?;
-        if resp.status() == StatusCode::CONFLICT {
+        if !m.is_ok() && m.code() == 409 {
             return Ok(false);
         }
-        ok(resp).await?;
+        Rpc::checked(m).with_context(|| format!("deleting {}", rel))?;
         Ok(true)
     }
 
@@ -516,7 +553,8 @@ impl Client {
     }
 }
 
-/// Set by the watchdog when `tarpi serve` stopped answering (see `run`).
+/// Set when the link to `tarpi serve` has ended: the server stopped, the
+/// network dropped, or it went silent (see `Rpc::connect`).
 static LOST: AtomicBool = AtomicBool::new(false);
 
 /// `true` once the server this device is connected to has gone away. The chat
@@ -525,112 +563,18 @@ pub fn server_lost() -> bool {
     LOST.load(Ordering::Relaxed)
 }
 
-/// How often the server is asked whether it is still there, how long one
-/// answer may take, and how many misses in a row mean it is gone.
-const WATCH_EVERY: Duration = Duration::from_secs(2);
-const WATCH_TIMEOUT: Duration = Duration::from_secs(3);
-const WATCH_MISSES: u32 = 3;
-/// With the persistent connection (`watch`): the server sends a byte every
-/// 50 ms and so does this device, so this long without one from the server
-/// means the link is dead.
-const BEAT_TIMEOUT: Duration = Duration::from_millis(300);
-const BEAT_SEND: Duration = Duration::from_millis(50);
-
 /// Set when the server says a shared file changed, so the sync runs at once.
 static WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
-/// The persistent connection is up: the server tells us about changes, so the
-/// slow poll is only a safety net.
-static WATCH_ON: AtomicBool = AtomicBool::new(false);
 
-enum Watched {
-    /// The connection closed, failed or went silent.
-    Lost,
-    /// The server does not know `/v1/watch` (an older tarpi), or it is not plain HTTP.
-    Unsupported,
-}
-
-/// Hold one TCP connection to `tarpi serve` open (`GET /v1/watch`) and return
-/// when it is gone. A closed or reset connection is noticed at once; a link
-/// that just goes quiet (wifi dropped) within [`BEAT_TIMEOUT`].
-async fn watch_connection(base: &str, token: &str) -> Watched {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let Some(hostport) = base.strip_prefix("http://") else {
-        return Watched::Unsupported;
-    };
-    let hostport = hostport.trim_end_matches('/');
-    let Ok(Ok(mut sock)) = tokio::time::timeout(WATCH_TIMEOUT, tokio::net::TcpStream::connect(hostport)).await else {
-        return Watched::Lost;
-    };
-    let _ = sock.set_nodelay(true);
-    let mut req = format!("GET /v1/watch HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n", hostport);
-    if !token.is_empty() {
-        req.push_str(&format!("Authorization: Bearer {}\r\n", token));
-    }
-    req.push_str("\r\n");
-    if sock.write_all(req.as_bytes()).await.is_err() {
-        return Watched::Lost;
-    }
-    let mut head: Vec<u8> = Vec::new();
-    let mut chunk = [0u8; 256];
-    let mut checked = false;
-    loop {
-        match tokio::time::timeout(BEAT_TIMEOUT.max(WATCH_TIMEOUT), sock.read(&mut chunk)).await {
-            Ok(Ok(n)) if n > 0 => {
-                if !checked {
-                    head.extend_from_slice(&chunk[..n]);
-                    if head.windows(4).any(|w| w == b"\r\n\r\n") {
-                        // Anything but 200 (404 from an older server, 401 ...): not a watch.
-                        if !head.starts_with(b"HTTP/1.1 200") {
-                            return Watched::Unsupported;
-                        }
-                        checked = true;
-                    }
-                }
-            }
-            _ => return Watched::Lost,
-        }
-        if checked {
-            break;
-        }
-    }
-    // From here on: a byte each way every 50 ms. Writing fails at once when this
-    // device has no route any more (its wifi went off); the server's bytes
-    // stopping for BEAT_TIMEOUT or its end closing covers the rest.
-    let (mut rd, mut wr) = sock.into_split();
-    let reader = async {
-        loop {
-            match tokio::time::timeout(BEAT_TIMEOUT, rd.read(&mut chunk)).await {
-                Ok(Ok(n)) if n > 0 => {
-                    if chunk[..n].contains(&b'c') {
-                        WAKE.notify_one();
-                    }
-                }
-                _ => break,
-            }
-        }
-    };
-    let writer = async {
-        loop {
-            tokio::time::sleep(BEAT_SEND).await;
-            if wr.write_all(b"\n").await.is_err() {
-                break;
-            }
-        }
-    };
-    WATCH_ON.store(true, Ordering::Relaxed);
-    tokio::select! {
-        _ = reader => {}
-        _ = writer => {}
-    }
-    WATCH_ON.store(false, Ordering::Relaxed);
-    Watched::Lost
-}
+/// How long the sync may go without a reason: the server's notes and the
+/// local check (every 200 ms) make it run at once, this is only a safety net.
+const SYNC_EVERY: Duration = Duration::from_secs(30);
 
 /// The background sync of a running chat screen.
 pub struct Session {
     client: Arc<tokio::sync::Mutex<Client>>,
+    rpc: Rpc,
     task: tokio::task::JoinHandle<()>,
-    watchdog: tokio::task::JoinHandle<()>,
     reporter: tokio::task::JoinHandle<()>,
 }
 
@@ -640,13 +584,12 @@ impl Session {
     pub async fn finish(self) {
         self.task.abort();
         if server_lost() {
-            self.watchdog.abort();
             self.reporter.abort();
             let c = self.client.lock().await;
             eprintln!(
                 "tarpi: lost the connection to {} (is `tarpi serve` still running?); quit.\n\
                  (your changes are kept here and are sent next time you connect)",
-                c.base
+                c.addr
             );
             return;
         }
@@ -660,15 +603,15 @@ impl Session {
                 }
                 Err(e) => eprintln!(
                     "tarpi: the last sync with {} failed: {:#}\n(your changes are kept here and are sent next time you connect)",
-                    c.base, e
+                    c.addr, e
                 ),
             }
         }
-        // Let the server hear what is still queued, then close the live link
-        // (the server logs that the device left).
+        // Let the server hear what is still queued, then close the link (the
+        // server logs that the device left).
         *REPORTER.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let _ = tokio::time::timeout(Duration::from_secs(3), self.reporter).await;
-        self.watchdog.abort();
+        self.rpc.close().await;
     }
 }
 
@@ -697,20 +640,10 @@ async fn local_digest(scanner: &Arc<std::sync::Mutex<Scanner>>) -> u64 {
     .unwrap_or(0)
 }
 
-/// Connect, bring the local copy up to date, and start keeping it in step.
-/// Returns the running sync; the caller then opens the chat as usual and calls
-/// `Session::finish` after it.
-/// A reached and authenticated server, with this device's copy of its data
-/// set up as the folder every store reads and writes.
-struct Link {
-    client: Client,
-    base: String,
-    token: String,
-}
-
 /// Find the server named by `serve_url`, make sure of the token, set the copy
 /// in `~/.config/tarpi/remote/` as the data folder and check the server answers.
-async fn open(token_arg: Option<String>, local_api: bool) -> Result<Link> {
+/// The returned client holds the open connection.
+async fn open(token_arg: Option<String>, local_api: bool) -> Result<Client> {
     let cfg = config::load()?;
     let address = cfg
         .serve_url
@@ -725,25 +658,39 @@ async fn open(token_arg: Option<String>, local_api: bool) -> Result<Link> {
                     .unwrap_or_else(|| "config.yaml".to_string())
             )
         })?;
-    let base = normalize(&address);
+    let addr = normalize(&address);
 
     let local = config::local_dir().ok_or_else(|| anyhow!("no config directory on this system"))?;
-    let root = local.join("remote").join(mirror_name(&base));
+    let root = local.join("remote").join(mirror_name(&addr));
     std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
 
     // From here on every store reads and writes the copy.
     config::set_data_dir(root.clone());
     config::set_api_local(local_api);
 
-    let mut client = Client::new(base.clone(), String::new(), root.clone(), !local_api)?;
+    let rpc = Rpc::connect(&addr).await?;
 
-    // Ask the server whether it wants a token. If not, none is asked for or
-    // sent. If so: the one given now, else the one remembered, else ask.
-    let token_file = root.join(".token");
-    let (token, is_new) = if !client.needs_token().await? {
-        (String::new(), false)
-    } else {
-        match token_arg.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
+    // The greeting is answered without a token: it says which protocol the
+    // server speaks and whether it wants a token.
+    let hello = rpc
+        .call(json!({ "op": "hello", "proto": PROTO }), Vec::new())
+        .await?;
+    let hello = Rpc::checked(hello).with_context(|| format!("{} did not answer like tarpi serve", addr))?;
+    let proto = hello.head.get("proto").and_then(|p| p.as_u64()).unwrap_or(0);
+    if proto != PROTO as u64 {
+        bail!(
+            "the server speaks protocol {} and this tarpi {}: update the older one",
+            proto,
+            PROTO
+        );
+    }
+    let wants_token = hello.head.get("token").and_then(|t| t.as_bool()).unwrap_or(true);
+
+    // If the server wants no token, none is asked for or sent. If it does:
+    // the one given now, else the one remembered, else ask.
+    if wants_token {
+        let token_file = root.join(".token");
+        let (token, is_new) = match token_arg.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
             Some(t) => (t, true),
             None => match std::fs::read_to_string(&token_file)
                 .ok()
@@ -753,17 +700,20 @@ async fn open(token_arg: Option<String>, local_api: bool) -> Result<Link> {
                 Some(t) => (t, false),
                 None => (ask_token()?, true),
             },
+        };
+        let answer = rpc.call(json!({ "op": "auth", "token": token }), Vec::new()).await?;
+        Rpc::checked(answer)?;
+        if is_new {
+            let _ = std::fs::write(&token_file, format!("{}\n", token));
+            private(&token_file);
         }
-    };
-    client.token = token.clone();
-    client.ping().await?;
-    if is_new {
-        let _ = std::fs::write(&token_file, format!("{}\n", token));
-        private(&token_file);
     }
-    Ok(Link { client, base, token })
+    Ok(Client::new(addr, rpc, root, !local_api))
 }
 
+/// Connect, bring the local copy up to date, and start keeping it in step.
+/// Returns the running sync; the caller then opens the chat as usual and calls
+/// `Session::finish` after it.
 pub async fn run() -> Result<Session> {
     // argv is `tarpi connect ...`; drop the program name so "connect" plays
     // the part of the binary name in clap's messages.
@@ -775,35 +725,30 @@ pub async fn run() -> Result<Session> {
         }
     }
     let cli = ConnectCli::parse_from(argv);
-    let Link { mut client, base, token } = open(cli.token.clone(), cli.local_api).await?;
+    let mut client = open(cli.token.clone(), cli.local_api).await?;
     let root = client.root.clone();
+    let addr = client.addr.clone();
+    let rpc = client.rpc.clone();
     // The shared connection's address belongs to the server: it counts tokens,
     // and a loopback / 0.0.0.0 address is read as the server's host.
     if !cli.local_api {
-        crate::conn::set_remote_tokenizer(base.clone(), token.clone());
-        crate::conn::set_remote_host(&base);
+        crate::conn::set_remote_tokenizer(rpc.clone());
+        crate::conn::set_remote_host(&addr);
     }
 
     // What this device does is told to the server's log (see `report`).
     let (report_tx, mut report_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     *REPORTER.lock().unwrap_or_else(|e| e.into_inner()) = Some(report_tx);
     let reporter = {
-        let (http, url, tok) = (client.http.clone(), format!("{}/v1/event", base), token.clone());
+        let rpc = rpc.clone();
         tokio::spawn(async move {
             while let Some(text) = report_rx.recv().await {
-                let mut rb = http
-                    .post(&url)
-                    .timeout(Duration::from_secs(5))
-                    .json(&serde_json::json!({ "text": text }));
-                if !tok.is_empty() {
-                    rb = rb.bearer_auth(&tok);
-                }
-                let _ = rb.send().await;
+                rpc.notify(json!({ "op": "event", "text": text }));
             }
         })
     };
 
-    println!("Syncing with {} ...", base);
+    println!("Syncing with {} ...", addr);
     let stats = client.cycle().await?;
     report(match stats.describe() {
         Some(t) => format!("first sync: {}", t),
@@ -829,22 +774,17 @@ pub async fn run() -> Result<Session> {
     let bg = client.clone();
     let log_root = root.clone();
     // Sync as soon as something changed: here (looked at every 200 ms) or on
-    // the server (it tells us over the watch connection). Without the watch
-    // connection (an older server), and as a safety net with it, every so often.
+    // the server (it tells us over the connection), and every so often as a
+    // safety net.
     let task = tokio::spawn(async move {
         let mut last_err: Option<String> = None;
         let mut last = local_digest(&scanner).await;
         let mut since = std::time::Instant::now();
         loop {
-            let every = if WATCH_ON.load(Ordering::Relaxed) {
-                Duration::from_secs(30)
-            } else {
-                Duration::from_secs(SYNC_EVERY)
-            };
             tokio::select! {
                 _ = WAKE.notified() => {}
                 _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                    if local_digest(&scanner).await == last && since.elapsed() < every {
+                    if local_digest(&scanner).await == last && since.elapsed() < SYNC_EVERY {
                         continue;
                     }
                 }
@@ -873,41 +813,7 @@ pub async fn run() -> Result<Session> {
         }
     });
 
-    // Keep an eye on the server apart from the sync (which can sit in a long
-    // request): when it stops answering, the chat screen quits.
-    let ping_url = format!("{}/v1/ping", base);
-    let (watch_base, watch_token) = (base.clone(), token.clone());
-    let watchdog = tokio::spawn(async move {
-        // The persistent connection first: it notices a loss at once. An older
-        // server without it is watched by asking every few seconds instead.
-        match watch_connection(&watch_base, &watch_token).await {
-            Watched::Lost => {
-                LOST.store(true, Ordering::Relaxed);
-                return;
-            }
-            Watched::Unsupported => {}
-        }
-        let Ok(http) = reqwest::Client::builder().timeout(WATCH_TIMEOUT).build() else {
-            return;
-        };
-        let mut misses = 0u32;
-        loop {
-            tokio::time::sleep(WATCH_EVERY).await;
-            // Any answer, even a refusal, means the server is there.
-            match http.get(&ping_url).send().await {
-                Ok(_) => misses = 0,
-                Err(_) => {
-                    misses += 1;
-                    if misses >= WATCH_MISSES {
-                        LOST.store(true, Ordering::Relaxed);
-                        break;
-                    }
-                }
-            }
-        }
-    });
-
-    Ok(Session { client, task, watchdog, reporter })
+    Ok(Session { client, rpc, task, reporter })
 }
 
 #[cfg(test)]
@@ -915,19 +821,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn addresses_get_a_scheme_and_a_port() {
-        assert_eq!(normalize("192.168.1.20:9000"), "http://192.168.1.20:9000");
-        assert_eq!(normalize("192.168.1.20"), "http://192.168.1.20:7878");
-        assert_eq!(normalize("http://host:1/"), "http://host:1");
-        assert_eq!(normalize("https://host"), "https://host:7878");
-        assert_eq!(normalize("[::1]:5"), "http://[::1]:5");
-        assert_eq!(normalize("[::1]"), "http://[::1]:7878");
+    fn addresses_get_a_port() {
+        assert_eq!(normalize("192.168.1.20:9000"), "192.168.1.20:9000");
+        assert_eq!(normalize("192.168.1.20"), "192.168.1.20:7878");
+        assert_eq!(normalize("http://host:1/"), "host:1");
+        assert_eq!(normalize("tcp://host"), "host:7878");
+        assert_eq!(normalize("[::1]:5"), "[::1]:5");
+        assert_eq!(normalize("[::1]"), "[::1]:7878");
     }
 
     #[test]
     fn mirror_folders_are_plain_names() {
-        assert_eq!(mirror_name("http://192.168.1.20:7878"), "192.168.1.20-7878");
-        assert_eq!(mirror_name("http://[::1]:5"), "_--1_-5");
-        assert_eq!(mirror_name("http://phone.local:1/x"), "phone.local-1");
+        assert_eq!(mirror_name("192.168.1.20:7878"), "192.168.1.20-7878");
+        assert_eq!(mirror_name("[::1]:5"), "_--1_-5");
+        assert_eq!(mirror_name("phone.local:1"), "phone.local-1");
     }
 }

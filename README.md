@@ -259,8 +259,8 @@ $ tarpi serve
 $ tarpi connect <token>
 ```
 
-`tarpi serve` prints the token. Use it on a network you trust: it is plain HTTP
-with a token, not encrypted. Whichever copy of a file is newer wins, and the
+`tarpi serve` prints the token. Use it on a network you trust: it is a plain TCP
+connection with a token, not encrypted. Whichever copy of a file is newer wins, and the
 older one is kept as `<file>.conflict-<time>`.
 
 ## something is wrong?

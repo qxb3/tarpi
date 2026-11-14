@@ -18,8 +18,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Version of the serve / connect protocol (`GET /v1/ping`).
-pub const PROTO: u32 = 1;
+/// Version of the serve / connect protocol (the `hello` request, see `wire`).
+/// 1 was HTTP; 2 is the persistent TCP link.
+pub const PROTO: u32 = 2;
 /// Port `tarpi serve` listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7878;
 
@@ -346,45 +347,6 @@ pub fn plan(
     out
 }
 
-// -------------------------------------------------------------- url helpers
-
-/// `%41` and `+` in a query string value. `None` when it is not valid UTF-8.
-pub fn url_decode(s: &str) -> Option<String> {
-    let b = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b'%' => {
-                let hex = s.get(i + 1..i + 3)?;
-                out.push(u8::from_str_radix(hex, 16).ok()?);
-                i += 3;
-            }
-            c => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8(out).ok()
-}
-
-/// `a=1&b=x%20y` as a map (later keys win).
-pub fn parse_query(q: &str) -> HashMap<String, String> {
-    let mut m = HashMap::new();
-    for pair in q.split('&').filter(|p| !p.is_empty()) {
-        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-        if let (Some(k), Some(v)) = (url_decode(k), url_decode(v)) {
-            m.insert(k, v);
-        }
-    }
-    m
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
@@ -519,16 +481,6 @@ mod tests {
         let b = base(&[("f", "h1")]);
         let a = plan(&b, &HashMap::new(), &HashMap::new());
         assert_eq!(a, vec![Action::Settled("f".into())]);
-    }
-
-    #[test]
-    fn query_values_are_decoded() {
-        let q = parse_query("path=chats%2FS%C3%B3fia%2Fa+b.jsonl&base=&mtime=5");
-        assert_eq!(q["path"], "chats/Sófia/a b.jsonl");
-        assert_eq!(q["base"], "");
-        assert_eq!(q["mtime"], "5");
-        assert!(url_decode("%zz").is_none());
-        assert!(url_decode("%").is_none());
     }
 
     #[test]

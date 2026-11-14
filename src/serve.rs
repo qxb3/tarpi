@@ -3,39 +3,45 @@
 //! `tarpi connect`. It does not open the chat screen; it just answers requests
 //! until you stop it (Ctrl+C).
 //!
-//! The protocol is a handful of HTTP/1.1 requests (hand-written on top of
-//! tokio, so no web framework is needed). Every request must carry the
-//! server's token (`Authorization: Bearer <token>`); the token is made the
-//! first time and kept in `~/.config/tarpi/serve-token`. With
+//! Each device keeps **one persistent TCP connection** (framing and messages:
+//! see `wire`). Everything goes over it: file sync, token counts, log lines,
+//! the note that a shared file changed, and a beat in both directions that
+//! lets either side see at once when the other is gone. The server's token is
+//! made the first time and kept in `~/.config/tarpi/serve-token`; a device
+//! proves it knows it with `auth` before anything else is answered. With
 //! `serve_trust_all: true` in `config.yaml` no token is asked for at all.
 //!
-//! | Request | Does |
+//! Requests (the `"op"` of a message from the device):
+//!
+//! | op | Does |
 //! | --- | --- |
-//! | `GET /v1/ping` | `{"tarpi": version, "proto": 1}` (checks the token too) |
-//! | `GET /v1/manifest` | every shared file: path, size, modification time, hash |
-//! | `GET /v1/file?path=P` | the file's bytes (its time is in `X-Tarpi-Mtime`) |
-//! | `PUT /v1/file?path=P&base=H&mtime=M` | write the file, but only if it still has hash `H` (empty: only if it does not exist yet); otherwise `409` |
-//! | `DELETE /v1/file?path=P&base=H` | delete it, same rule |
-//! | `GET /v1/watch` | stays open; a byte every 50 ms (both ways), so the other side sees at once when this one is gone |
-//! | `POST /v1/tokenize` | `{"text", "connection"}`: token count from this machine's backend |
-//! | `POST /v1/event` | `{"text"}`: a line about what the device just did (opened a chat, ...), printed in this machine's log |
+//! | `hello` | `{"proto"}`: answered even before `auth`: `{"tarpi": version, "proto": 2, "token": bool}` (does this server want a token) |
+//! | `auth` | `{"token"}`: `ok`, or `401` and the server closes the link |
+//! | `manifest` | every shared file: path, size, modification time, hash (the body is the JSON list) |
+//! | `get` | `{"path"}`: the file's bytes in the body, its time in `mtime` |
+//! | `put` | `{"path", "base", "mtime"}` + the bytes: write the file, but only if it still has hash `base` (empty: only if it does not exist yet); otherwise `409` |
+//! | `delete` | `{"path", "base"}`: delete it, same rule |
+//! | `tokenize` | `{"text", "connection"}`: token count from this machine's backend |
+//! | `event` | `{"text"}` (no reply): a line about what the device just did (opened a chat, ...), printed in this machine's log |
+//!
+//! The server sends `{"op": "changed"}` (no reply wanted) to every
+//! authenticated device when a shared file changes here or through another
+//! device, so each syncs at once.
 //!
 //! Only the files listed in `mirror` can be reached; any other path is
-//! refused. The connection is plain HTTP: use it on a network you trust, or
-//! with `--local` through an SSH tunnel.
+//! refused. The link is plain TCP: use it on a network you trust, or with
+//! `--local` through an SSH tunnel.
 
 use crate::config;
 use crate::mirror::{self, Entry, Manifest, Scanner, DEFAULT_PORT, PROTO};
+use crate::wire::{self, Message};
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
-use serde::Serialize;
 use serde_json::json;
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 #[derive(Parser, Debug)]
@@ -50,7 +56,7 @@ use tokio::net::{TcpListener, TcpStream};
                   machine. Clients need the token it prints (kept in \
                   ~/.config/tarpi/serve-token), unless `serve_trust_all: true` is set in \
                   config.yaml: then anyone who can reach the port is let in. The \
-                  connection is plain HTTP, so only use it on a network you trust.",
+                  connection is a plain, unencrypted TCP link, so only use it on a network you trust.",
     after_help = concat!(
         "EXAMPLES:\n",
         "  tarpi serve                 share on the network, port 7878\n",
@@ -73,8 +79,12 @@ struct ServeCli {
     new_token: bool,
 }
 
-const MAX_HEAD: usize = 16 * 1024;
-const MAX_BODY: usize = 256 * 1024 * 1024;
+const MAX_BODY: usize = wire::MAX_FILE;
+
+/// How long a device may be silent (it beats every 50 ms) before the server
+/// lets go of it. Longer than the device's own limit: the server only has to
+/// free what is dead, the device is the one that has to react quickly.
+const SILENCE: Duration = Duration::from_secs(5);
 
 struct State {
     root: PathBuf,
@@ -85,44 +95,9 @@ struct State {
     /// Held while a file is checked and changed, so two clients cannot both
     /// pass the "still the version you saw" check.
     write_lock: tokio::sync::Mutex<()>,
-    /// Changes whenever a shared file does (see `monitor`); every watching
+    /// Changes whenever a shared file does (see `monitor`); every connected
     /// device is told at once and syncs.
     changes: tokio::sync::watch::Sender<u64>,
-}
-
-struct Req {
-    method: String,
-    path: String,
-    query: HashMap<String, String>,
-    bearer: Option<String>,
-    body: Vec<u8>,
-}
-
-struct Reply {
-    code: u16,
-    ctype: &'static str,
-    body: Vec<u8>,
-    headers: Vec<(String, String)>,
-}
-
-impl Reply {
-    fn json<T: Serialize>(code: u16, v: &T) -> Reply {
-        Reply {
-            code,
-            ctype: "application/json",
-            body: serde_json::to_vec(v).unwrap_or_default(),
-            headers: Vec::new(),
-        }
-    }
-
-    fn text(code: u16, msg: &str) -> Reply {
-        Reply {
-            code,
-            ctype: "text/plain; charset=utf-8",
-            body: msg.as_bytes().to_vec(),
-            headers: Vec::new(),
-        }
-    }
 }
 
 /// The token kept in `serve-token`, made first if there is none (or `renew`).
@@ -234,7 +209,7 @@ pub async fn run() -> Result<()> {
         };
         let st = state.clone();
         tokio::spawn(async move {
-            handle(sock, peer, st).await;
+            session(sock, peer, st).await;
         });
     }
 }
@@ -261,176 +236,80 @@ async fn monitor(st: Arc<State>) {
     }
 }
 
-/// How often a `tarpi connect` device that watches this server is sent a byte.
-const BEAT: Duration = Duration::from_millis(50);
-
-async fn handle(mut sock: TcpStream, peer: SocketAddr, st: Arc<State>) {
-    let limit = Duration::from_secs(300);
-    let req = match tokio::time::timeout(limit, read_req(&mut sock)).await {
-        Ok(Ok(req)) => req,
-        Ok(Err(r)) => return write_reply(&mut sock, r).await,
-        Err(_) => return,
-    };
-    // The one request that is not answered and closed: see `watch`.
-    if req.method == "GET" && req.path == "/v1/watch" {
-        return watch(sock, &req, &st, peer).await;
-    }
-    let reply = match tokio::time::timeout(limit, route(&st, req, peer)).await {
-        Ok(r) => r,
-        Err(_) => Reply::text(504, "timed out"),
-    };
-    write_reply(&mut sock, reply).await;
-}
-
-/// `GET /v1/watch`: a connection that stays open and gets a byte every
-/// 50 ms ([`BEAT`]), so a `tarpi connect` device on the other end learns at once when
-/// this machine or the link goes away (the connection closes or the bytes
-/// stop). It ends when the device hangs up.
-async fn watch(mut sock: TcpStream, req: &Req, st: &Arc<State>, peer: SocketAddr) {
-    if !st.trust_all && !token_ok(&st.token, req.bearer.as_deref()) {
-        println!("{}  {}  refused: missing or wrong token", stamp(), peer.ip());
-        return write_reply(&mut sock, Reply::text(401, "missing or wrong token")).await;
-    }
-    let _ = sock.set_nodelay(true);
-    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
-    if sock.write_all(head.as_bytes()).await.is_err() {
+/// One device, from its greeting to its goodbye.
+async fn session(mut sock: TcpStream, peer: SocketAddr, st: Arc<State>) {
+    if !wire::server_handshake(&mut sock).await {
         return;
     }
-    println!("{}  {}  connected", stamp(), peer.ip());
-    let since = std::time::Instant::now();
-    let mut tick = tokio::time::interval(BEAT);
-    let mut scratch = [0u8; 64];
+    let (tx, mut inbox) = wire::start(sock, SILENCE);
+    let mut authed = st.trust_all;
+    let mut since: Option<std::time::Instant> = None;
     let mut changes = st.changes.subscribe();
-    // The state at the start is what the device has just synced to.
+    // The state at the start is what the device is about to sync to.
     changes.borrow_and_update();
+    if authed {
+        println!("{}  {}  connected", stamp(), peer.ip());
+        since = Some(std::time::Instant::now());
+    }
     loop {
         tokio::select! {
-            _ = tick.tick() => {
-                if sock.write_all(b"\n").await.is_err() {
+            m = inbox.recv() => {
+                let Some(m) = m else {
+                    break;
+                };
+                let op = m.op().to_string();
+                match op.as_str() {
+                    // Always answered, so the device learns whether a token is wanted.
+                    "hello" => {
+                        tx.send(Message::ok(
+                            m.id,
+                            json!({ "tarpi": env!("CARGO_PKG_VERSION"), "proto": PROTO, "token": !st.trust_all }),
+                        ));
+                    }
+                    "auth" => {
+                        if authed || token_ok(&st.token, m.str("token")) {
+                            if !authed {
+                                authed = true;
+                                println!("{}  {}  connected", stamp(), peer.ip());
+                                since = Some(std::time::Instant::now());
+                            }
+                            tx.send(Message::ok(m.id, json!({})));
+                        } else {
+                            println!("{}  {}  refused: missing or wrong token", stamp(), peer.ip());
+                            tx.send(Message::fail(m.id, 401, "missing or wrong token"));
+                            tx.close(Duration::from_millis(500)).await;
+                            break;
+                        }
+                    }
+                    _ if !authed => {
+                        println!("{}  {}  refused: missing or wrong token", stamp(), peer.ip());
+                        tx.send(Message::fail(m.id, 401, "missing or wrong token"));
+                        tx.close(Duration::from_millis(500)).await;
+                        break;
+                    }
+                    _ => {
+                        // Answered apart from the loop, so a slow request
+                        // (a token count) does not hold up the others.
+                        let (st2, tx2) = (st.clone(), tx.clone());
+                        tokio::spawn(async move {
+                            if let Some(r) = route(&st2, m, peer).await {
+                                tx2.send(r);
+                            }
+                        });
+                    }
+                }
+            }
+            // A shared file changed: sync now.
+            c = changes.changed(), if authed => {
+                if c.is_err() || !tx.send(Message::new(0, json!({ "op": "changed" }), Vec::new())) {
                     break;
                 }
             }
-            // `c`: a shared file changed, sync now.
-            c = changes.changed() => {
-                if c.is_err() || sock.write_all(b"c").await.is_err() {
-                    break;
-                }
-            }
-            // The device never sends anything more; a read that ends means it left.
-            r = sock.read(&mut scratch) => {
-                if matches!(r, Ok(0) | Err(_)) {
-                    break;
-                }
-            }
         }
     }
-    println!("{}  {}  disconnected after {}", stamp(), peer.ip(), how_long(since.elapsed()));
-}
-
-fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    hay.windows(needle.len()).position(|w| w == needle)
-}
-
-async fn read_req(sock: &mut TcpStream) -> std::result::Result<Req, Reply> {
-    let bad = |m: &str| Reply::text(400, m);
-
-    let mut buf: Vec<u8> = Vec::new();
-    let mut chunk = [0u8; 4096];
-    let head_end = loop {
-        if let Some(i) = find_sub(&buf, b"\r\n\r\n") {
-            break i;
-        }
-        if buf.len() > MAX_HEAD {
-            return Err(Reply::text(431, "request headers too large"));
-        }
-        let n = sock.read(&mut chunk).await.map_err(|_| bad("read error"))?;
-        if n == 0 {
-            return Err(bad("connection closed"));
-        }
-        buf.extend_from_slice(&chunk[..n]);
-    };
-
-    let head = std::str::from_utf8(&buf[..head_end]).map_err(|_| bad("bad request"))?;
-    let mut lines = head.split("\r\n");
-    let first = lines.next().ok_or_else(|| bad("bad request"))?;
-    let mut parts = first.split(' ');
-    let method = parts.next().unwrap_or("").to_string();
-    let target = parts.next().ok_or_else(|| bad("bad request line"))?;
-
-    let mut content_length: Option<usize> = None;
-    let mut bearer: Option<String> = None;
-    for line in lines {
-        let Some((k, v)) = line.split_once(':') else {
-            continue;
-        };
-        let (k, v) = (k.trim().to_ascii_lowercase(), v.trim());
-        match k.as_str() {
-            "content-length" => content_length = v.parse().ok(),
-            "authorization" => bearer = v.strip_prefix("Bearer ").map(|t| t.trim().to_string()),
-            _ => {}
-        }
+    if let Some(since) = since {
+        println!("{}  {}  disconnected after {}", stamp(), peer.ip(), how_long(since.elapsed()));
     }
-
-    let (path, query) = match target.split_once('?') {
-        Some((p, q)) => (p.to_string(), mirror::parse_query(q)),
-        None => (target.to_string(), HashMap::new()),
-    };
-
-    let mut body: Vec<u8> = Vec::new();
-    if method == "PUT" || method == "POST" {
-        let len = content_length.ok_or_else(|| Reply::text(411, "Content-Length required"))?;
-        if len > MAX_BODY {
-            return Err(Reply::text(413, "file too large"));
-        }
-        body = buf[head_end + 4..].to_vec();
-        if body.len() > len {
-            body.truncate(len);
-        } else if body.len() < len {
-            let mut rest = vec![0u8; len - body.len()];
-            sock.read_exact(&mut rest)
-                .await
-                .map_err(|_| bad("body cut short"))?;
-            body.extend_from_slice(&rest);
-        }
-    }
-
-    Ok(Req {
-        method,
-        path,
-        query,
-        bearer,
-        body,
-    })
-}
-
-async fn write_reply(sock: &mut TcpStream, r: Reply) {
-    let reason = match r.code {
-        200 => "OK",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        409 => "Conflict",
-        411 => "Length Required",
-        413 => "Payload Too Large",
-        504 => "Gateway Timeout",
-        431 => "Request Header Fields Too Large",
-        _ => "Error",
-    };
-    let mut head = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n",
-        r.code,
-        reason,
-        r.ctype,
-        r.body.len()
-    );
-    for (k, v) in &r.headers {
-        head.push_str(&format!("{}: {}\r\n", k, v));
-    }
-    head.push_str("\r\n");
-    let _ = sock.write_all(head.as_bytes()).await;
-    let _ = sock.write_all(&r.body).await;
-    let _ = sock.shutdown().await;
 }
 
 /// Compare without stopping at the first difference.
@@ -460,20 +339,15 @@ fn clean_event(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).take(300).collect()
 }
 
-/// `POST /v1/event`: print a line about what a `tarpi connect` device did.
-fn event(req: &Req, peer: SocketAddr) -> Reply {
-    let v: serde_json::Value = match serde_json::from_slice(&req.body) {
-        Ok(v) => v,
-        Err(_) => return Reply::text(400, "expected JSON"),
-    };
-    let Some(text) = v.get("text").and_then(|t| t.as_str()) else {
-        return Reply::text(400, "missing text");
+/// `event`: print a line about what a `tarpi connect` device did.
+fn event(m: &Message, peer: SocketAddr) {
+    let Some(text) = m.str("text") else {
+        return;
     };
     let text = clean_event(text);
     if !text.is_empty() {
         println!("{}  {}  {}", stamp(), peer.ip(), text);
     }
-    Reply::json(200, &json!({ "ok": true }))
 }
 
 fn stamp() -> String {
@@ -482,18 +356,14 @@ fn stamp() -> String {
 
 /// Count `text` with this machine's own backend, for a `tarpi connect` device
 /// that cannot reach it. The connection is the named one, else the active one.
-async fn tokenize(req: &Req) -> Reply {
-    let v: serde_json::Value = match serde_json::from_slice(&req.body) {
-        Ok(v) => v,
-        Err(_) => return Reply::text(400, "expected JSON"),
+async fn tokenize(m: &Message) -> Message {
+    let Some(text) = m.str("text") else {
+        return Message::fail(m.id, 400, "missing text");
     };
-    let Some(text) = v.get("text").and_then(|t| t.as_str()) else {
-        return Reply::text(400, "missing text");
-    };
-    let name = v.get("connection").and_then(|n| n.as_str()).unwrap_or("");
+    let name = m.str("connection").unwrap_or("");
     let store = match crate::conn::Store::load() {
         Ok(s) => s,
-        Err(e) => return Reply::text(500, &format!("{:#}", e)),
+        Err(e) => return Message::fail(m.id, 500, format!("{:#}", e)),
     };
     let conn = store
         .connections
@@ -502,75 +372,77 @@ async fn tokenize(req: &Req) -> Reply {
         .cloned()
         .or_else(|| store.active_connection());
     let Some(conn) = conn else {
-        return Reply::text(409, "this server has no API connection");
+        return Message::fail(m.id, 409, "this server has no API connection");
     };
     match crate::conn::count_tokens(&conn, text).await {
-        Ok(n) => Reply::json(200, &json!({ "tokens": n })),
-        Err(e) => Reply::text(502, &format!("{:#}", e)),
+        Ok(n) => Message::ok(m.id, json!({ "tokens": n })),
+        Err(e) => Message::fail(m.id, 502, format!("{:#}", e)),
     }
 }
 
-async fn route(st: &Arc<State>, req: Req, peer: SocketAddr) -> Reply {
-    // A ping without a token is always answered, so `tarpi connect` can learn
-    // whether this server wants one. A ping that does bring a token is checked.
-    let open_ping = req.method == "GET" && req.path == "/v1/ping" && req.bearer.is_none();
-    if !st.trust_all && !open_ping && !token_ok(&st.token, req.bearer.as_deref()) {
-        println!("{}  {}  refused: missing or wrong token", stamp(), peer.ip());
-        return Reply::text(401, "missing or wrong token");
-    }
-    match (req.method.as_str(), req.path.as_str()) {
-        ("GET", "/v1/ping") => Reply::json(200, &json!({ "tarpi": env!("CARGO_PKG_VERSION"), "proto": PROTO, "token": !st.trust_all })),
-        ("GET", "/v1/manifest") => {
-            let st2 = st.clone();
-            let files: Vec<Entry> = match tokio::task::spawn_blocking(move || {
-                st2.scanner
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .scan()
-            })
-            .await
-            {
-                Ok(f) => f,
-                Err(_) => return Reply::text(500, "scan failed"),
-            };
-            Reply::json(200, &Manifest { files })
+/// The answer to one request of an authenticated device (`None`: a note that
+/// wants none).
+async fn route(st: &Arc<State>, m: Message, peer: SocketAddr) -> Option<Message> {
+    let id = m.id;
+    let reply = match m.op() {
+        "event" => {
+            event(&m, peer);
+            return None;
         }
-        ("POST", "/v1/tokenize") => tokenize(&req).await,
-        ("POST", "/v1/event") => event(&req, peer),
-        ("GET", "/v1/file") => get_file(st, &req),
-        ("PUT", "/v1/file") => put_file(st, &req, peer).await,
-        ("DELETE", "/v1/file") => delete_file(st, &req, peer).await,
-        ("GET", _) | ("PUT", _) | ("DELETE", _) => Reply::text(404, "not found"),
-        _ => Reply::text(405, "method not allowed"),
+        // Anything else without a number cannot be answered.
+        _ if id == 0 => return None,
+        "manifest" => manifest(st, id).await,
+        "tokenize" => tokenize(&m).await,
+        "get" => get_file(st, &m),
+        "put" => put_file(st, &m, peer).await,
+        "delete" => delete_file(st, &m, peer).await,
+        other => Message::fail(id, 404, format!("unknown operation {}", other)),
+    };
+    Some(reply)
+}
+
+async fn manifest(st: &Arc<State>, id: u32) -> Message {
+    let st2 = st.clone();
+    let scanned = tokio::task::spawn_blocking(move || {
+        st2.scanner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .scan()
+    })
+    .await;
+    match scanned {
+        Ok(files) => {
+            let files: Vec<Entry> = files;
+            Message::ok(id, json!({})).with_body(serde_json::to_vec(&Manifest { files }).unwrap_or_default())
+        }
+        Err(_) => Message::fail(id, 500, "scan failed"),
     }
 }
 
 /// The `path` of a request, if it names a shared file.
-fn shared_path(req: &Req) -> std::result::Result<String, Reply> {
-    match req.query.get("path") {
-        Some(p) if mirror::valid_path(p) => Ok(p.clone()),
-        _ => Err(Reply::text(400, "not a shared file")),
+fn shared_path(m: &Message) -> std::result::Result<String, Message> {
+    match m.str("path") {
+        Some(p) if mirror::valid_path(p) => Ok(p.to_string()),
+        _ => Err(Message::fail(m.id, 400, "not a shared file")),
     }
 }
 
-fn get_file(st: &Arc<State>, req: &Req) -> Reply {
-    let rel = match shared_path(req) {
+fn get_file(st: &Arc<State>, m: &Message) -> Message {
+    let rel = match shared_path(m) {
         Ok(p) => p,
         Err(r) => return r,
     };
     let path = mirror::to_fs(&st.root, &rel);
     let Ok(bytes) = std::fs::read(&path) else {
-        return Reply::text(404, "no such file");
+        return Message::fail(m.id, 404, "no such file");
     };
-    let mtime = std::fs::metadata(&path)
-        .map(|m| mirror::mtime_ms(&m))
-        .unwrap_or(0);
-    Reply {
-        code: 200,
-        ctype: "application/octet-stream",
-        body: bytes,
-        headers: vec![("X-Tarpi-Mtime".to_string(), mtime.to_string())],
+    if bytes.len() > MAX_BODY {
+        return Message::fail(m.id, 413, "file too large");
     }
+    let mtime = std::fs::metadata(&path)
+        .map(|meta| mirror::mtime_ms(&meta))
+        .unwrap_or(0);
+    Message::ok(m.id, json!({ "mtime": mtime })).with_body(bytes)
 }
 
 /// The hash of the file as it is now, `None` when there is none.
@@ -579,39 +451,46 @@ fn current_hash(path: &std::path::Path) -> Option<String> {
 }
 
 /// `base` of a request: `None` means "the file must not exist".
-fn base_of(req: &Req) -> Option<&str> {
-    req.query.get("base").map(|s| s.as_str()).filter(|s| !s.is_empty())
+fn base_of(m: &Message) -> Option<&str> {
+    m.str("base").filter(|s| !s.is_empty())
 }
 
-async fn put_file(st: &Arc<State>, req: &Req, peer: SocketAddr) -> Reply {
-    let rel = match shared_path(req) {
+/// A refused write or delete: the file is not the version the device saw.
+fn changed(id: u32, now: Option<String>) -> Message {
+    let mut r = Message::fail(id, 409, "changed");
+    r.head["hash"] = json!(now);
+    r
+}
+
+async fn put_file(st: &Arc<State>, m: &Message, peer: SocketAddr) -> Message {
+    let rel = match shared_path(m) {
         Ok(p) => p,
         Err(r) => return r,
     };
+    if m.body.len() > MAX_BODY {
+        return Message::fail(m.id, 413, "file too large");
+    }
     let path = mirror::to_fs(&st.root, &rel);
-    let mtime: Option<u64> = req.query.get("mtime").and_then(|m| m.parse().ok());
+    let mtime: Option<u64> = m.head.get("mtime").and_then(|v| v.as_u64());
 
     let _guard = st.write_lock.lock().await;
     let now = current_hash(&path);
-    if now.as_deref() != base_of(req) {
+    if now.as_deref() != base_of(m) {
         println!("{}  {}  refused {}: it changed here in the meantime", stamp(), peer.ip(), mirror::describe(&rel));
-        return Reply::json(409, &json!({ "error": "changed", "hash": now }));
+        return changed(m.id, now);
     }
-    if let Err(e) = mirror::write_atomic(&path, &req.body, mtime) {
-        return Reply::text(500, &format!("{:#}", e));
+    if let Err(e) = mirror::write_atomic(&path, &m.body, mtime) {
+        return Message::fail(m.id, 500, format!("{:#}", e));
     }
     // A file that did not exist yet is a new chat, a new character (imported
     // on the device) and so on; otherwise it is a change to an existing one.
     let verb = if now.is_none() { "added" } else { "updated" };
     println!("{}  {}  {} {} (uploaded)", stamp(), peer.ip(), verb, mirror::describe(&rel));
-    Reply::json(
-        200,
-        &json!({ "hash": mirror::hash_bytes(&req.body), "mtime": mtime }),
-    )
+    Message::ok(m.id, json!({ "hash": mirror::hash_bytes(&m.body), "mtime": mtime }))
 }
 
-async fn delete_file(st: &Arc<State>, req: &Req, peer: SocketAddr) -> Reply {
-    let rel = match shared_path(req) {
+async fn delete_file(st: &Arc<State>, m: &Message, peer: SocketAddr) -> Message {
+    let rel = match shared_path(m) {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -619,16 +498,16 @@ async fn delete_file(st: &Arc<State>, req: &Req, peer: SocketAddr) -> Reply {
 
     let _guard = st.write_lock.lock().await;
     let Some(now) = current_hash(&path) else {
-        return Reply::json(200, &json!({ "deleted": false }));
+        return Message::ok(m.id, json!({ "deleted": false }));
     };
-    if Some(now.as_str()) != base_of(req) {
-        return Reply::json(409, &json!({ "error": "changed", "hash": now }));
+    if Some(now.as_str()) != base_of(m) {
+        return changed(m.id, Some(now));
     }
     if let Err(e) = std::fs::remove_file(&path) {
-        return Reply::text(500, &format!("{}", e));
+        return Message::fail(m.id, 500, format!("{}", e));
     }
     println!("{}  {}  deleted {}", stamp(), peer.ip(), mirror::describe(&rel));
-    Reply::json(200, &json!({ "deleted": true }))
+    Message::ok(m.id, json!({ "deleted": true }))
 }
 
 #[cfg(test)]
@@ -646,5 +525,13 @@ mod tests {
     fn events_lose_control_characters_and_length() {
         assert_eq!(clean_event("opened\x1b[2J chat\n"), "opened[2J chat");
         assert_eq!(clean_event(&"a".repeat(500)).chars().count(), 300);
+    }
+
+    #[test]
+    fn tokens_are_compared_whole() {
+        assert!(token_ok("abc", Some("abc")));
+        assert!(!token_ok("abc", Some("abd")));
+        assert!(!token_ok("abc", Some("ab")));
+        assert!(!token_ok("abc", None));
     }
 }
