@@ -1,6 +1,6 @@
 //! The `/character` window: every field of the character card in one form,
 //! with Cancel and Save. State and text editing live here; drawing is in
-//! `ui::draw_card_modal`, key / mouse routing and saving in `app.rs`.
+//! `ui::draw_card_modal`, key / mouse routing and saving in `app/card_modal.rs`.
 
 use crate::character::Character;
 use crate::input::{Input, Mode};

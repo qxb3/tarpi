@@ -1,6 +1,6 @@
 //! `/summarize`: cutting a chat into parts a single request can digest, and
 //! writing the instructions for each request. This file is plain text work;
-//! the generation itself is driven by `app.rs` (`App::summarize`).
+//! the generation itself is driven by `app/summarize.rs` (`App::summarize`).
 
 use crate::chat;
 use crate::prompt;
