@@ -41,11 +41,15 @@ fn words(text: &str) -> Vec<String> {
     let flush = |cur: &mut String, out: &mut Vec<String>| {
         let w = cur.trim_matches('\'').to_string();
         cur.clear();
+        // `dragon's` is about the dragon.
+        let w = w.strip_suffix("'s").map(str::to_string).unwrap_or(w);
         if !w.is_empty() && !STOP.contains(&w.as_str()) {
             out.push(w);
         }
     };
     for c in text.chars() {
+        // Models and phones write the curly apostrophe.
+        let c = if c == '\u{2019}' || c == '\u{2018}' { '\'' } else { c };
         if c.is_alphanumeric() || c == '\'' {
             cur.extend(c.to_lowercase());
         } else {
@@ -253,5 +257,15 @@ mod tests {
         let one = vec!["Bob: hi".to_string()];
         assert_eq!(render("Remember:", &one).unwrap(), "Remember:\nBob: hi");
         assert_eq!(render("  ", &one).unwrap(), render(DEFAULT_TEMPLATE, &one).unwrap());
+    }
+
+    #[test]
+    fn curly_apostrophes_and_possessives_are_the_same_word() {
+        let a = embed("the dragon\u{2019}s cave");
+        let b = embed("dragon cave");
+        assert!((cosine(&a, &b) - 1.0).abs() < 1e-5);
+        let c = embed("Elena's piano");
+        let d = embed("Elena\u{2019}s piano");
+        assert!((cosine(&c, &d) - 1.0).abs() < 1e-5);
     }
 }

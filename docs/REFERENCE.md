@@ -778,7 +778,7 @@ Off by default. Type `/memory` to open a window of rows; change a row with Left 
 | --- | --- | --- |
 | Memory | on / off | off |
 | Results | how many old messages come back (0 to 20) | 3 |
-| Skip | the latest this-many messages are not searched, because they are normally still in the prompt | 12 |
+| Skip | the latest this-many messages are not searched, because they are normally still in the prompt (the two messages your search is made of are never searched, so 0 and 1 act as 2) | 12 |
 | Match | how alike a message must be to come back, in percent: higher is stricter | 15 |
 | Depth | where the memories go: this many messages from the end of the chat (0 = after the last message) | 4 |
 | Role | who the memory note is said by: system, user or assistant | system |
@@ -799,6 +799,8 @@ If the template has no `{{result}}`, the messages are added on a new line after 
 There is no setting for it in `config.yaml`, not even the on / off switch. The window saves everything in `~/.config/tarpi/vector-memory.yaml` (shared between devices by `tarpi serve` / `tarpi connect` like your other data). Deleting that file turns it off and restores the defaults.
 
 Before each reply tarpi turns every message of the chat (except the latest *Skip* ones) into a vector: a hashed bag of words, so it works offline with no model and no extra download. It compares them with your latest two messages (cosine similarity) and adds the best matches, in story order, as one note built from the Template. Each memory is cut at 600 characters. Nothing is stored: the chat file is the memory, and the `/prompt` window shows what was added.
+
+Only the text of a message is compared, not who said it, so a question that names a character does not pull in everything that character said. A curly apostrophe counts as a straight one and `dragon's` counts as `dragon`.
 
 Limit: it matches words, not meaning, so "car" does not find "automobile".
 

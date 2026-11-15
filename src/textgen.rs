@@ -1008,6 +1008,15 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
     // ---- vector memory: older messages close in meaning to the latest ones
     // (off unless switched on in the `/memory` window)
     if let Some(vm) = Some(crate::config::load_vector_memory()).filter(|v| v.enabled) {
+        // What is compared is the text alone: a speaker's name in front of
+        // every message would make all of that speaker's messages match any
+        // question that mentions the name. The name only goes into the note.
+        let texts: Vec<String> = a
+            .history
+            .iter()
+            .filter(|m| !chat::is_system(m))
+            .map(|m| chat::mes(m).to_string())
+            .collect();
         let said: Vec<String> = a
             .history
             .iter()
@@ -1026,11 +1035,13 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
         if let Some(t) = a.continue_text {
             query.push(t);
         }
+        // The two messages the query is made of are never searched, whatever
+        // Skip says: they would come back as the best match for themselves.
         let hits = crate::memory::recall(
-            &said,
+            &texts,
             &query.join(" "),
             vm.results,
-            vm.recent,
+            vm.recent.max(2),
             vm.min_score.min(100) as f32 / 100.0,
         );
         let lines: Vec<String> = hits.into_iter().map(|i| said[i].clone()).collect();

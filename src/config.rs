@@ -198,7 +198,9 @@ pub fn save_vector_memory(cfg: &VectorMemoryConfig) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
-    std::fs::write(&path, cfg.to_yaml()).with_context(|| format!("writing {}", path.display()))
+    // Written whole or not at all: `tarpi serve` may read the file while it is
+    // saved, and a half-written one reads as "off, all defaults".
+    crate::mirror::write_atomic(&path, cfg.to_yaml().as_bytes(), None)
 }
 
 /// `msg_seperator:` section: the rule drawn between two messages.
