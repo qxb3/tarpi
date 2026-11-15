@@ -10,7 +10,7 @@
 **Roleplay from the command line.**
 
 ```
- tarpi 0.9.6  Tarpi/Tarpi01 • User • llamacpp@127.0.0.1:8080
+ tarpi 0.9.7  Tarpi/Tarpi01 • User • llamacpp@127.0.0.1:8080
 ────────────────────────────────────────────────────────────
  Tarpi
  *Spins around in the chair.* "Finally. I was about to start
@@ -28,7 +28,6 @@
  └ INSERT ──────────────────────────────────────────────────┘
                                       3 messages · 412 tokens
 ```
-<sub>illustrative</sub>
 
 ---
 

@@ -207,6 +207,7 @@ impl Lorebook {
     /// budget the entries with the highest `order` are tried first; one that
     /// no longer fits is skipped, and smaller ones after it still get their
     /// turn. (An entry bigger than the whole budget is never used.)
+    #[cfg(test)]
     pub fn activate(&self, messages: &[String], chars_per_token: f32) -> Vec<&Entry> {
         self.activate_within(messages, chars_per_token, 0)
     }

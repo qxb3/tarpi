@@ -1020,6 +1020,7 @@ The box starts in INSERT mode (normal typing), also when you open a message to e
 | `p` `P` | Replace the selection with the register (`p` keeps the replaced text in the register). |
 | `i` / `a` + an object | Select a text object (`viw`, `vi"`, `va(`, `vi*`, ... as in the table above). |
 | `o` | Jump to the other end of the selection. |
+| `j` `k` (after `V`) | Move by whole lines, as in vim, however many rows a long line is wrapped over (so one `j` always adds the next line). With `v` and in NORMAL mode they follow the wrapped rows. |
 | `v` `V` | Switch between character / line selection. Pressing the active one leaves VISUAL. |
 | Esc | Leave VISUAL mode (Esc again cancels an edit, as before). |
 

@@ -106,6 +106,29 @@ fn line_end(ch: &[char], i: usize) -> usize {
     i
 }
 
+/// The cursor one line (not one display row) up (`dir < 0`) or down, at the
+/// same offset in that line or at its last char when it is shorter. It stays
+/// where it is on the first / last line.
+fn line_vertical(ch: &[char], cursor: usize, dir: i32) -> usize {
+    let cur = cursor.min(ch.len());
+    let ls = line_start(ch, cur);
+    let col = cur - ls;
+    let (ts, te) = if dir < 0 {
+        if ls == 0 {
+            return cur;
+        }
+        let nl = ls - 1;
+        (line_start(ch, nl), nl)
+    } else {
+        let le = line_end(ch, cur);
+        if le >= ch.len() {
+            return cur;
+        }
+        (le + 1, line_end(ch, le + 1))
+    };
+    ts + col.min((te - ts).saturating_sub(1))
+}
+
 fn first_nonblank(ch: &[char], i: usize) -> usize {
     let mut j = line_start(ch, i);
     while j < ch.len() && (ch[j] == ' ' || ch[j] == '\t') {
@@ -1355,8 +1378,16 @@ impl Input {
             }
             'j' | 'k' => {
                 let dir = if c == 'j' { 1 } else { -1 };
+                let whole_lines = self.mode == Mode::Visual && self.vis_line;
                 for _ in 0..n {
-                    self.cursor = crate::ui::vertical_target(&self.text, self.cursor, width, dir);
+                    self.cursor = if whole_lines {
+                        // `V` selects whole lines, and as in vim `j` / `k`
+                        // there go to the next / previous line of the text,
+                        // however many rows a long line is wrapped over.
+                        line_vertical(&ch, self.cursor, dir)
+                    } else {
+                        crate::ui::vertical_target(&self.text, self.cursor, width, dir)
+                    };
                 }
             }
             'w' | 'W' => {
@@ -2426,6 +2457,28 @@ mod tests {
         type_cmd(&mut i, "%s/zzz/y");
         let l = i.command_live().unwrap();
         assert!(l.text.is_none() && l.count == 0);
+    }
+
+    #[test]
+    fn v_mode_j_and_k_move_by_whole_lines_not_wrapped_rows() {
+        // The first line wraps over several rows at width 10.
+        let mut i = vim("aaaaaaaaaaaaaaaaaaaaaaaaa\nbb\ncc");
+        i.cursor = 0;
+        i.normal_key('V', 10);
+        i.normal_key('j', 10);
+        assert_eq!(i.cursor, 26, "one `j` reaches the next line");
+        assert_eq!(i.selection(), Some((0, 29)));
+        i.normal_key('j', 10);
+        assert_eq!(i.cursor, 29);
+        i.normal_key('j', 10);
+        assert_eq!(i.cursor, 29, "the last line stays");
+        i.normal_key('k', 10);
+        i.normal_key('k', 10);
+        assert_eq!(i.cursor, 0);
+        // Outside V mode `j` still follows the wrapped rows.
+        i.normal_key('V', 10); // leave VISUAL
+        i.normal_key('j', 10);
+        assert!(i.cursor > 0 && i.cursor < 26, "still inside the first line: {}", i.cursor);
     }
 
     #[test]
