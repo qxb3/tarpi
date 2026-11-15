@@ -15,9 +15,10 @@
 //! * `*narration*`: a neutral grey between the foreground's and the
 //!   background's brightness (readable on both dark and light themes), bold;
 //! * `"speech"`: the theme's own yellow;
-//! * prose inside other prose (`*he said "hi"*`, `"well *sigh* ok"`): the
-//!   inner colour pulled part of the way towards the outer one, so it blends
-//!   in but is still a visible step away from both.
+//! * speech inside narration (`*he said "hi"*`): the plain speech colour, no
+//!   blending;
+//! * narration inside speech (`"well *sigh* ok"`): bold, and the speech yellow
+//!   lifted towards the foreground, so it is lighter than the quote around it.
 
 use ratatui::style::Color;
 use std::sync::OnceLock;
@@ -29,9 +30,10 @@ pub type Rgb = (u8, u8, u8);
 /// more different from plain text, lower = easier to read.
 const NARRATION_FADE: f32 = 0.52;
 
-/// How far the inner colour of nested prose moves towards the outer colour
-/// (0 = no change, 1 = the outer colour).
-const NEST_BLEND: f32 = 0.4;
+/// How far the speech yellow is lifted towards the foreground for narration
+/// inside speech (`"hello *you*"`), so it stands out from the quote around it
+/// (0 = the plain speech colour, 1 = the plain foreground).
+const NARRATION_IN_QUOTE_LIFT: f32 = 0.45;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
@@ -84,12 +86,17 @@ impl Palette {
                 Color::Yellow
             }),
             (true, true) => {
-                let (inner, outer) = if quote_outer {
-                    (self.narration(), self.yellow)
+                if quote_outer {
+                    // Narration inside speech: a lighter shade of the speech colour.
+                    Some(rgb(mix(self.yellow, self.fg, NARRATION_IN_QUOTE_LIFT)))
                 } else {
-                    (self.yellow, self.narration())
-                };
-                Some(rgb(mix(inner, outer, NEST_BLEND)))
+                    // Speech inside narration: the plain speech colour.
+                    Some(if self.yellow_real {
+                        rgb(self.yellow)
+                    } else {
+                        Color::Yellow
+                    })
+                }
             }
         }
     }
@@ -316,24 +323,19 @@ mod tests {
     }
 
     #[test]
-    fn nested_prose_blends_but_stays_distinct() {
+    fn narration_in_speech_is_lighter_than_speech() {
+        // Dark theme: white foreground on black, pure yellow speech.
         let p = from_reply("\x1b]10;rgb:ffff/ffff/ffff\x07\x1b]11;rgb:0000/0000/0000\x07\x1b]4;3;rgb:ffff/ffff/0000\x07");
         let n = |c: Option<Color>| match c {
             Some(Color::Rgb(r, g, b)) => (r, g, b),
             _ => panic!("expected rgb"),
         };
-        let narr = n(p.prose_color(true, false, false));
         let quote = n(p.prose_color(false, true, false));
-        let quote_in_narr = n(p.prose_color(true, true, false));
         let narr_in_quote = n(p.prose_color(true, true, true));
-        // Each nested colour differs from both pure colours...
-        for c in [quote_in_narr, narr_in_quote] {
-            assert_ne!(c, narr);
-            assert_ne!(c, quote);
-        }
-        // ...and the inner prose leans towards its own colour.
-        assert_ne!(quote_in_narr, narr_in_quote);
-        assert!(quote_in_narr.2 < narr_in_quote.2 || quote_in_narr.0 != narr_in_quote.0);
+        assert!(luminance(narr_in_quote) > luminance(quote));
+        assert_ne!(narr_in_quote, quote);
+        // Speech inside narration is just the plain speech colour.
+        assert_eq!(p.prose_color(true, true, false), p.prose_color(false, true, false));
     }
 
     #[test]

@@ -31,8 +31,9 @@ pub const NARROW_BTN_W: u16 = 6;
 
 /// Style of one char given the markdown state it sits in. The colours come
 /// from the terminal's own theme (see `termcolors`): narration is the
-/// foreground faded towards the background, speech is the theme's yellow, and
-/// prose nested in the other kind is a blend of the two. `quote_outer` says
+/// foreground faded towards the background, speech is the theme's yellow,
+/// speech nested in narration is the plain speech colour, and narration nested
+/// in speech is a lighter shade of the speech colour (and always bold). `quote_outer` says
 /// which one was opened first when both are active. They are RGB, so "bold"
 /// doesn't turn them bright in terminals that render bold as bright.
 fn mk_style(italic: bool, bold: bool, quote: bool, quote_outer: bool) -> Style {
@@ -47,6 +48,10 @@ fn mk_style(italic: bool, bold: bool, quote: bool, quote_outer: bool) -> Style {
     }
     if quote && (!italic || !quote_outer) {
         style = style.remove_modifier(Modifier::BOLD);
+    }
+    // Narration nested in speech (`"hello *you*"`) is always bold.
+    if italic && quote && quote_outer {
+        style = style.add_modifier(Modifier::BOLD);
     }
     if bold {
         style = style.add_modifier(Modifier::BOLD);

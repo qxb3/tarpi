@@ -642,7 +642,8 @@ At start-up tarpi asks the terminal for its foreground, background and yellow (`
 - Plain text keeps the terminal's default colour.
 - `*narration*` is bold and a neutral grey between the theme's foreground and background brightness (readable on light and dark themes).
 - `"speech"` is the theme's yellow.
-- Prose inside the other kind (`*he said "hi"*`, `"well *sigh* ok"`) is blended: the inner colour is pulled 40% of the way towards the outer one, so it fits in but is still a visible step away from both.
+- Speech inside narration (`*he said "hi"*`) is just the plain speech colour (no blending).
+- Narration inside speech (`"well *sigh* ok"`) is bold and a lighter shade of the speech colour (the yellow lifted 45% of the way towards your terminal's text colour), so it stands out from the quote around it. The rest of the quote is not bold.
 
 Terminals that don't answer cost at most 300 ms once. Then `COLORFGBG` (light / dark) and xterm-like colours are used.
 
