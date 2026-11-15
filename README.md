@@ -10,7 +10,7 @@
 **Roleplay from the command line.**
 
 ```
- tarpi 0.9.3  Tarpi/Tarpi01 • User • llamacpp@127.0.0.1:8080
+ tarpi 0.9.5  Tarpi/Tarpi01 • User • llamacpp@127.0.0.1:8080
 ────────────────────────────────────────────────────────────
  Tarpi
  *Spins around in the chair.* "Finally. I was about to start
@@ -20,8 +20,7 @@
  *Drops a bag on the desk.* "Can you help me plan a week of dinners?"
 
  Tarpi
- *Cracks knuckles.* "Fine. But you're eating a vegetable.
- Monday: pasta. Yes, tomatoes count."
+ *Cracks knuckles.* "Fine. But you're eating a vegetable."
 ────────────────────────────────────────────────────────────
  ┌──────────────────────────────────────────────────────────┐
  │ ❚                                                        │
