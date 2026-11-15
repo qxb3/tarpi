@@ -988,6 +988,7 @@ The box starts in INSERT mode (normal typing), also when you open a message to e
 | `x` `X` `r<c>` | Delete char / char before / replace char. |
 | `dd` `cc` `yy` `D` `C` `S` `s` | Line and to-end-of-line operations. |
 | `d` `c` `y` + `w` `W` `e` `E` `b` `B` `$` `0` `^` `h` `l` | Operator + motion (`dw`, `cW`, `y$`, ...). |
+| `d` `c` `y` + `i` / `a` + an object | Text objects: `iw` `aw` `iW` `aW` (word), `i"` `a"` `i'` `a'` ``i` `` ``a` `` (quotes, on the line), `i*` `a*` (the `*narration*` around the cursor, within the paragraph), `i(` `a(` `ib` `ab` / `i[` `a[` / `i{` `a{` `iB` `aB` / `i<` `a<` (brackets, nested, over several lines). `ci"` changes the text inside the quotes, `da(` deletes a bracket pair with its brackets, `yiw` yanks a word. `i` is the inside, `a` also takes the marks (and the spaces after a word or quote). When the cursor is before a quote pair on the line, the next pair is used. |
 | `Y` | Yank the line (same as `yy`). |
 | `gg` `G` (in the `/char`, persona, system prompt and note windows) | First line of the first field / last line of the last field of the whole window, not just of the field being edited. |
 | `<leader>y` + motion, `<leader>yy`, `<leader>Y` | The same yanks, but the text also goes to the **system clipboard** (a count goes before the leader: `3<leader>yy`). |
@@ -1008,6 +1009,7 @@ The box starts in INSERT mode (normal typing), also when you open a message to e
 | `<leader>y` `<leader>Y` | Same, and copy to the system clipboard. |
 | `c` `s` | Change the selection (`C` `S` `R`: whole lines). |
 | `p` `P` | Replace the selection with the register (`p` keeps the replaced text in the register). |
+| `i` / `a` + an object | Select a text object (`viw`, `vi"`, `va(`, `vi*`, ... as in the table above). |
 | `o` | Jump to the other end of the selection. |
 | `v` `V` | Switch between character / line selection. Pressing the active one leaves VISUAL. |
 | Esc | Leave VISUAL mode (Esc again cancels an edit, as before). |

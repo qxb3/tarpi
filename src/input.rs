@@ -25,10 +25,14 @@ pub struct Input {
     /// Cursor position in chars (not bytes).
     pub cursor: usize,
     pub mode: Mode,
-    /// Operator / prefix waiting for its second key (`d`, `c`, `y`, `g`, `r`).
+    /// Operator / prefix waiting for its second key (`d`, `c`, `y`, `g`, `r`; `I` / `A`
+    /// after `i` / `a` of a text object; `i` / `a` in VISUAL mode).
     pending: Option<char>,
     /// Count typed before `pending`.
     pend_n: usize,
+    /// The operator (`d`, `c` or `y`) waiting for a text object, while
+    /// `pending` is `I` (after `i`) or `A` (after `a`).
+    obj_op: char,
     /// Digits typed so far (`3` in `3w`).
     count: String,
     /// Unnamed register.
@@ -184,6 +188,202 @@ fn line_bounds(ch: &[char], n: usize) -> (usize, usize) {
         }
     }
     (s, line_end(ch, s))
+}
+
+// ----------------------------------------------------------- text objects
+
+/// Start and end (the newline, or text end) of the paragraph `cur` is in
+/// (lines up to the next blank line).
+fn para_bounds(ch: &[char], cur: usize) -> (usize, usize) {
+    let blank = |ls: usize| {
+        let le = line_end(ch, ls);
+        ch[ls..le].iter().all(|c| c.is_whitespace())
+    };
+    let mut s = line_start(ch, cur);
+    while s > 0 {
+        let ps = line_start(ch, s - 1);
+        if blank(ps) {
+            break;
+        }
+        s = ps;
+    }
+    let mut e = line_end(ch, cur);
+    while e < ch.len() {
+        let ns = e + 1;
+        if ns >= ch.len() || blank(ns) {
+            break;
+        }
+        e = line_end(ch, ns);
+    }
+    (s, e)
+}
+
+/// `iw` / `aw` (`iW` / `aW` with `big`): the word under the cursor on its line.
+/// `aw` also takes the whitespace after it (before it, when nothing follows).
+fn obj_word(ch: &[char], cur: usize, around: bool, big: bool) -> Option<(usize, usize)> {
+    if cur >= ch.len() || ch[cur] == '\n' {
+        return None;
+    }
+    let ls = line_start(ch, cur);
+    let le = line_end(ch, cur);
+    let same = |a: usize, b: usize| cls(ch[a], big) == cls(ch[b], big);
+    let run = |from: usize| -> (usize, usize) {
+        let mut s = from;
+        while s > ls && same(s - 1, from) {
+            s -= 1;
+        }
+        let mut e = from + 1;
+        while e < le && same(e, from) {
+            e += 1;
+        }
+        (s, e)
+    };
+    let (s, e) = run(cur);
+    if !around {
+        return Some((s, e));
+    }
+    if cls(ch[cur], big) == 0 {
+        // On whitespace: it, and the word after it.
+        if e < le {
+            return Some((s, run(e).1));
+        }
+        return Some((s, e));
+    }
+    if e < le && cls(ch[e], big) == 0 {
+        return Some((s, run(e).1));
+    }
+    if s > ls && cls(ch[s - 1], big) == 0 {
+        return Some((run(s - 1).0, e));
+    }
+    Some((s, e))
+}
+
+/// `i"` `a"` `i'` `i`` and `i*` `a*`: the text between a pair of `q` on the
+/// cursor's line (for `*`, in its paragraph, like the prose styling). The
+/// pair around the cursor is used, else the next one after it. `a` also takes
+/// the spaces after the pair (before it, when nothing follows).
+fn obj_quote(ch: &[char], cur: usize, q: char, around: bool) -> Option<(usize, usize)> {
+    if cur > ch.len() {
+        return None;
+    }
+    let (lo, hi) = if q == '*' {
+        para_bounds(ch, cur)
+    } else {
+        (line_start(ch, cur), line_end(ch, cur))
+    };
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut open: Option<usize> = None;
+    for i in lo..hi {
+        if ch[i] != q {
+            continue;
+        }
+        if q == '*' {
+            // `**` is bold, not narration. A `*` opens when text follows it and
+            // closes when text precedes it; others (`2 * 3`) are left alone.
+            if (i + 1 < hi && ch[i + 1] == '*') || (i > lo && ch[i - 1] == '*') {
+                continue;
+            }
+            match open {
+                None => {
+                    if i + 1 < hi && !ch[i + 1].is_whitespace() {
+                        open = Some(i);
+                    }
+                }
+                Some(s) => {
+                    if !ch[i - 1].is_whitespace() {
+                        pairs.push((s, i));
+                        open = None;
+                    }
+                }
+            }
+        } else {
+            match open {
+                None => open = Some(i),
+                Some(s) => {
+                    pairs.push((s, i));
+                    open = None;
+                }
+            }
+        }
+    }
+    let &(s, e) = pairs
+        .iter()
+        .find(|(s, e)| *s <= cur && cur <= *e)
+        .or_else(|| pairs.iter().find(|(s, _)| *s > cur))?;
+    if !around {
+        return Some((s + 1, e));
+    }
+    let blank = |c: char| c == ' ' || c == '\t';
+    let mut end = e + 1;
+    while end < hi && blank(ch[end]) {
+        end += 1;
+    }
+    let mut start = s;
+    if end == e + 1 {
+        while start > lo && blank(ch[start - 1]) {
+            start -= 1;
+        }
+    }
+    Some((start, end))
+}
+
+/// `i(` `a(` `ib` `i[` `i{` `iB` `i<` ...: the text between the pair of
+/// brackets around the cursor, nesting and several lines allowed.
+fn obj_bracket(ch: &[char], cur: usize, o: char, cl: char, around: bool) -> Option<(usize, usize)> {
+    let len = ch.len();
+    if cur >= len {
+        return None;
+    }
+    let start = if ch[cur] == o {
+        cur
+    } else {
+        let mut depth = 0usize;
+        let mut j = cur;
+        let mut found = None;
+        while j > 0 {
+            j -= 1;
+            if ch[j] == cl {
+                depth += 1;
+            } else if ch[j] == o {
+                if depth == 0 {
+                    found = Some(j);
+                    break;
+                }
+                depth -= 1;
+            }
+        }
+        found?
+    };
+    let mut depth = 0usize;
+    let mut end = None;
+    for k in start + 1..len {
+        if ch[k] == o {
+            depth += 1;
+        } else if ch[k] == cl {
+            if depth == 0 {
+                end = Some(k);
+                break;
+            }
+            depth -= 1;
+        }
+    }
+    let end = end?;
+    Some(if around { (start, end + 1) } else { (start + 1, end) })
+}
+
+/// The range (half-open, in chars) of the text object `key` (`w`, `"`, `(`,
+/// `*`, ...) around `cur`; `around` is `a` instead of `i`.
+fn text_object(ch: &[char], cur: usize, key: char, around: bool) -> Option<(usize, usize)> {
+    match key {
+        'w' => obj_word(ch, cur, around, false),
+        'W' => obj_word(ch, cur, around, true),
+        '"' | '\'' | '`' | '*' => obj_quote(ch, cur, key, around),
+        '(' | ')' | 'b' => obj_bracket(ch, cur, '(', ')', around),
+        '[' | ']' => obj_bracket(ch, cur, '[', ']', around),
+        '{' | '}' | 'B' => obj_bracket(ch, cur, '{', '}', around),
+        '<' | '>' => obj_bracket(ch, cur, '<', '>', around),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------- command line
@@ -1455,6 +1655,16 @@ impl Input {
             if p == 'g' && c == 'g' {
                 let ch = self.chars();
                 self.cursor = first_nonblank(&ch, 0);
+            } else if p == 'i' || p == 'a' {
+                // `vi"`, `vaw`, `va(`: select the text object.
+                let ch = self.chars();
+                let cur = self.cursor.min(ch.len());
+                if let Some((s, e)) = text_object(&ch, cur, c, p == 'a') {
+                    if e > s {
+                        self.anchor = s;
+                        self.cursor = e - 1;
+                    }
+                }
             }
             return;
         }
@@ -1503,6 +1713,10 @@ impl Input {
                 }
             }
             'o' | 'O' => std::mem::swap(&mut self.anchor, &mut self.cursor),
+            'i' | 'a' => {
+                self.pending = Some(c);
+                self.pend_n = n;
+            }
             ':' => self.enter_command(true),
             'y' | 'Y' => {
                 let lines = was_lines || c == 'Y';
@@ -1675,9 +1889,25 @@ impl Input {
             _ => None,
         };
         let Some((s, e)) = range else { return };
+        self.apply_range(p, &ch, s, e);
+    }
+
+    /// `d` / `c` / `y` + a text object (`diw`, `ci"`, `ya(`, ...).
+    fn operator_obj(&mut self, p: char, around: bool, key: char) {
+        let ch = self.chars();
+        let cur = self.cursor.min(ch.len());
+        let Some((s, e)) = text_object(&ch, cur, key, around) else {
+            return;
+        };
+        self.apply_range(p, &ch, s, e);
+    }
+
+    /// Run operator `p` (`d`, `c` or `y`) on the chars `s..e`.
+    fn apply_range(&mut self, p: char, ch: &[char], s: usize, e: usize) {
         if s >= e {
             if p == 'c' {
                 self.snapshot();
+                self.cursor = s.min(ch.len());
                 self.enter_insert();
             }
             return;
@@ -1763,7 +1993,23 @@ impl Input {
                         self.cursor = first_nonblank(&ch, 0);
                     }
                 }
+                // `di"`, `caw`, `ya(`: the text object's key.
+                'I' | 'A' => {
+                    self.yanked = false;
+                    let op = self.obj_op;
+                    self.operator_obj(op, p == 'A', c);
+                    if op == 'y' && self.sys_yank && self.yanked {
+                        self.queue_clipboard();
+                    }
+                }
                 _ => {
+                    // `i` / `a` after an operator start a text object.
+                    if (c == 'i' || c == 'a') && matches!(p, 'd' | 'c' | 'y') {
+                        self.obj_op = p;
+                        self.pending = Some(if c == 'i' { 'I' } else { 'A' });
+                        self.pend_n = n;
+                        return;
+                    }
                     self.yanked = false;
                     self.operator(p, c, n);
                     if p == 'y' && self.sys_yank && self.yanked {
@@ -1916,6 +2162,119 @@ mod tests {
         let r = i.run_command();
         assert_eq!(i.mode, Mode::Normal);
         (i.text.clone(), r)
+    }
+
+    fn keys(i: &mut Input, ks: &str) {
+        for c in ks.chars() {
+            i.normal_key(c, 80);
+        }
+    }
+
+    fn at(text: &str, cursor: usize) -> Input {
+        let mut i = vim(text);
+        i.cursor = cursor;
+        i
+    }
+
+    #[test]
+    fn inner_and_around_quotes() {
+        let mut i = at("say \"hello world\" ok", 8);
+        keys(&mut i, "ci\"");
+        assert_eq!(i.text, "say \"\" ok");
+        assert_eq!(i.mode, Mode::Insert);
+        assert_eq!(i.cursor, 5);
+        let mut i = at("say \"hello\" ok", 7);
+        keys(&mut i, "da\"");
+        assert_eq!(i.text, "say ok");
+        let mut i = at("say \"hello\"", 7);
+        keys(&mut i, "da\"");
+        assert_eq!(i.text, "say");
+    }
+
+    #[test]
+    fn quote_object_finds_next_pair_and_handles_empty() {
+        let mut i = at("go \"a\" and \"b\"", 0);
+        keys(&mut i, "di\"");
+        assert_eq!(i.text, "go \"\" and \"b\"");
+        let mut i = at("x \"\" y", 2);
+        keys(&mut i, "ci\"");
+        assert_eq!(i.cursor, 3);
+        assert_eq!(i.mode, Mode::Insert);
+    }
+
+    #[test]
+    fn narration_object() {
+        let mut i = at("\"hi *you* there\"", 6);
+        keys(&mut i, "ci*");
+        assert_eq!(i.text, "\"hi ** there\"");
+        let mut i = at("*waves* \"hi\"", 2);
+        keys(&mut i, "da*");
+        assert_eq!(i.text, "\"hi\"");
+        // `2 * 3` is not narration.
+        let mut i = at("2 * 3 *x*", 8);
+        keys(&mut i, "di*");
+        assert_eq!(i.text, "2 * 3 **");
+    }
+
+    #[test]
+    fn word_objects() {
+        let mut i = at("one two three", 5);
+        keys(&mut i, "diw");
+        assert_eq!(i.text, "one  three");
+        let mut i = at("one two three", 5);
+        keys(&mut i, "daw");
+        assert_eq!(i.text, "one three");
+        let mut i = at("one two", 5);
+        keys(&mut i, "daw");
+        assert_eq!(i.text, "one");
+        let mut i = at("foo.bar baz", 1);
+        keys(&mut i, "ciW");
+        assert_eq!(i.text, " baz");
+    }
+
+    #[test]
+    fn bracket_objects_nest() {
+        let mut i = at("f(a, (b), c) z", 4);
+        keys(&mut i, "di(");
+        assert_eq!(i.text, "f() z");
+        let mut i = at("f(a, (b), c) z", 7);
+        keys(&mut i, "da(");
+        assert_eq!(i.text, "f(a, , c) z");
+        let mut i = at("x [one\ntwo] y", 8);
+        keys(&mut i, "ci]");
+        assert_eq!(i.text, "x [] y");
+    }
+
+    #[test]
+    fn yank_object_and_paste() {
+        let mut i = at("say \"hello\"", 6);
+        keys(&mut i, "yi\"$p");
+        assert_eq!(i.text, "say \"hello\"hello");
+    }
+
+    #[test]
+    fn unknown_object_does_nothing() {
+        let mut i = at("one two", 1);
+        keys(&mut i, "diz");
+        assert_eq!(i.text, "one two");
+        assert_eq!(i.mode, Mode::Normal);
+        keys(&mut i, "x");
+        assert_eq!(i.text, "ne two");
+    }
+
+    #[test]
+    fn visual_objects() {
+        let mut i = at("say \"hello\" ok", 7);
+        keys(&mut i, "vi\"");
+        assert_eq!(i.selection(), Some((5, 10)));
+        keys(&mut i, "d");
+        assert_eq!(i.text, "say \"\" ok");
+        let mut i = at("f(a, b) z", 3);
+        keys(&mut i, "va(");
+        assert_eq!(i.selection(), Some((1, 7)));
+        let mut i = at("one two", 5);
+        keys(&mut i, "viw");
+        assert_eq!(i.selection(), Some((4, 7)));
     }
 
     #[test]
