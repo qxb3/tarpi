@@ -291,8 +291,8 @@ const TEMPLATE: &str = "\
 # Lower is more conservative.
 # chars_per_token: 3.2
 
-# Auto-close quotes, *asterisks* and brackets while typing: \" gives \"|\",
-# ' gives '|', * gives *|*, ** gives **|**, ( gives (|). Typing the closer steps
+# Auto-close quotes, *asterisks*, `backticks` and brackets while typing: \" gives \"|\",
+# ' gives '|', ` gives `|`, * gives *|*, ** gives **|**, ( gives (|). Typing the closer steps
 # over it, and Backspace between a pair removes both. Stays off next to words
 # (2*3, 5\", don't).
 # autopair: true

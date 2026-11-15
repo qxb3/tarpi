@@ -59,7 +59,7 @@ pub struct Input {
     clip: Option<String>,
     /// `true`: no vim modes, the box is plain text editing (config `vim.enabled`).
     vim_off: bool,
-    /// Auto-close quotes, `*` and brackets while typing (config `autopair`).
+    /// Auto-close quotes, `*`, `` ` `` and brackets while typing (config `autopair`).
     autopair: bool,
     /// Keys typed quickly in INSERT mode to reach NORMAL mode (default `qq`).
     normal_keys: Vec<char>,
@@ -796,7 +796,7 @@ impl Input {
             if let (Some(&a), Some(&b)) = (ch.get(self.cursor - 1), ch.get(self.cursor)) {
                 if matches!(
                     (a, b),
-                    ('(', ')') | ('[', ']') | ('{', '}') | ('"', '"') | ('\'', '\'') | ('*', '*')
+                    ('(', ')') | ('[', ']') | ('{', '}') | ('"', '"') | ('\'', '\'') | ('*', '*') | ('`', '`')
                 ) {
                     let start = self.byte_idx(self.cursor - 1);
                     let end = self.byte_idx(self.cursor + 1);
@@ -1023,7 +1023,7 @@ impl Input {
     ///
     /// - `(` `[` `{` insert the pair when what follows is blank, the end or a closer.
     /// - `)` `]` `}` step over the matching closer that is already there.
-    /// - `"`, `'` and `*` open a pair, close an open one (step over it), or stay
+    /// - `"`, `'`, `*` and `` ` `` open a pair, close an open one (step over it), or stay
     ///   single next to a word (`2*3`, `5"`, `don't`) or when the paragraph
     ///   already has an unclosed one. `*|*` followed by `*` becomes `**|**` (bold).
     ///   For `'`, an apostrophe inside a word (`don't`) does not count as a quote.
@@ -1062,7 +1062,12 @@ impl Input {
                     false
                 }
             }
-            '"' | '\'' | '*' => {
+            '"' | '\'' | '*' | '`' => {
+                // `` ` `` right after a backtick is a longer run (``` ``code`` ```):
+                // leave it single.
+                if c == '`' && prev == Some('`') && next != Some('`') {
+                    return false;
+                }
                 // `*|*` + `*` -> `**|**`
                 if c == '*' && prev == Some('*') && next == Some('*') {
                     let before = cur.checked_sub(2).and_then(|i| ch.get(i)).copied();
@@ -2581,8 +2586,27 @@ mod tests {
     }
 
     #[test]
+    fn autopair_backtick() {
+        let i = typed("`", true);
+        assert_eq!((i.text.as_str(), i.cursor), ("``", 1));
+        // typing the closer steps over it
+        let i = typed("`ls -la`", true);
+        assert_eq!((i.text.as_str(), i.cursor), ("`ls -la`", 8));
+        let i = typed("run `ls` now", true);
+        assert_eq!(i.text, "run `ls` now");
+        // backspace between an empty pair removes both
+        let mut i = typed("`", true);
+        i.backspace();
+        assert_eq!((i.text.as_str(), i.cursor), ("", 0));
+        // stays single next to a word, and a third backtick makes a run
+        assert_eq!(typed("a`", true).text, "a`");
+        assert_eq!(typed("```", true).text, "```");
+    }
+
+    #[test]
     fn autopair_off_changes_nothing() {
         assert_eq!(typed("\"*('", false).text, "\"*('");
+        assert_eq!(typed("`", false).text, "`");
         let mut i = typed("\"", false);
         i.backspace();
         assert_eq!(i.text, "");
