@@ -14,6 +14,7 @@
 //!   (a lone trailing `*` is not turned into `**`).
 //! * `2 * 3`, `* bullets`, a `*` glued to the end of a word (`5*3`) and
 //!   other asterisks that cannot open anything are left alone.
+//! * Inside `` `code` `` everything is literal: no other marker is looked at.
 //! * Only the current paragraph is looked at; styles never cross a blank line.
 //! * Markers that were opened in one order are closed in the reverse
 //!   order, and ones the model already closed are not touched.
@@ -25,6 +26,8 @@ enum Kind {
     Bold,
     /// A quote; the char is the one that closes it.
     Quote(char),
+    /// `` `code` ``; the number is the length of the backtick run that closes it.
+    Code(usize),
 }
 
 struct Open {
@@ -61,6 +64,31 @@ fn analyze(text: &str) -> (bool, String) {
     let mut i = 0usize;
     while i < n {
         let c = ch[i];
+        if c == '`' {
+            let run = ch[i..].iter().take_while(|&&x| x == '`').count();
+            if let Some(p) = open.iter().rposition(|o| o.kind == Kind::Code(run)) {
+                // The model closed it itself.
+                open.remove(p);
+            } else if !open.iter().any(|o| matches!(o.kind, Kind::Code(_))) {
+                open.push(Open {
+                    kind: Kind::Code(run),
+                    content: false,
+                });
+            }
+            i += run;
+            continue;
+        }
+        let in_code = open.iter().any(|o| matches!(o.kind, Kind::Code(_)));
+        if in_code {
+            // Everything inside `code` is literal.
+            if !c.is_whitespace() {
+                for o in open.iter_mut() {
+                    o.content = true;
+                }
+            }
+            i += 1;
+            continue;
+        }
         if c == '*' {
             let double = i + 1 < n && ch[i + 1] == '*';
             let w = if double { 2 } else { 1 };
@@ -145,6 +173,7 @@ fn analyze(text: &str) -> (bool, String) {
             Kind::Bold => out.push_str("**"),
             Kind::Italic => out.push('*'),
             Kind::Quote(close) => out.push(*close),
+            Kind::Code(n) => out.push_str(&"`".repeat(*n)),
         }
     }
     (trailing_single_star && trailing_star_after_space, out)
@@ -230,6 +259,20 @@ mod tests {
         assert_eq!(closers("*she says \"hi"), "\"*");
         assert_eq!(closers("*she says \"hi*"), "\"");
         assert_eq!(closers("**big *small"), "***");
+    }
+
+    #[test]
+    fn closes_open_code() {
+        assert_eq!(close_for_display("run `ls -la"), "run `ls -la`");
+        assert_eq!(closers("run `ls` now"), "");
+        assert_eq!(closers("a ``x ` y"), "``");
+    }
+
+    #[test]
+    fn code_is_literal() {
+        assert_eq!(closers("`2 * \"x *y"), "`");
+        assert_eq!(closers("*she types `ls"), "`*");
+        assert_eq!(closers("`"), "");
     }
 
     #[test]

@@ -36,7 +36,7 @@ pub const NARROW_BTN_W: u16 = 6;
 /// in speech is a lighter shade of the speech colour (and always bold). `quote_outer` says
 /// which one was opened first when both are active. They are RGB, so "bold"
 /// doesn't turn them bright in terminals that render bold as bright.
-fn mk_style(italic: bool, bold: bool, quote: bool, quote_outer: bool) -> Style {
+fn mk_style(italic: bool, bold: bool, quote: bool, quote_outer: bool, code: bool) -> Style {
     let mut style = Style::default();
     // Narration is always bold, also when it sits inside speech. Speech is
     // not bold, also when it sits inside narration.
@@ -56,7 +56,38 @@ fn mk_style(italic: bool, bold: bool, quote: bool, quote_outer: bool) -> Style {
     if bold {
         style = style.add_modifier(Modifier::BOLD);
     }
+    if code {
+        style = style.bg(termcolors::palette().code_bg());
+    }
     style
+}
+
+/// Length of the run of backticks starting at `from`.
+fn tick_run(chars: &[char], from: usize) -> usize {
+    chars[from..].iter().take_while(|&&c| c == '`').count()
+}
+
+/// Is there a closing run of exactly `n` backticks at or after `(li, from)`,
+/// before the paragraph ends (a blank line)?
+fn code_closer_ahead(lines: &[Vec<char>], li: usize, from: usize, n: usize) -> bool {
+    for (k, line) in lines.iter().enumerate().skip(li) {
+        if k > li && line.iter().all(|c| c.is_whitespace()) {
+            return false;
+        }
+        let mut j = if k == li { from } else { 0 };
+        while j < line.len() {
+            if line[j] == '`' {
+                let run = tick_run(line, j);
+                if run == n {
+                    return true;
+                }
+                j += run;
+            } else {
+                j += 1;
+            }
+        }
+    }
+    false
 }
 
 /// Is there a closing `*` (or `**` when `double`) at or after `(li, from)`,
@@ -94,6 +125,9 @@ fn style_text(text: &str) -> Vec<Vec<StyledChar>> {
     let mut in_italic = false;
     let mut in_bold = false;
     let mut in_quote = false;
+    // Inside `code` (the number of backticks that closes it, 0 = not in code):
+    // everything is literal, on a lighter background.
+    let mut code_ticks = 0usize;
     // Which of quote / italic was opened first (only read while both are on).
     let mut quote_outer = false;
     let mut lines: Vec<Vec<StyledChar>> = Vec::new();
@@ -113,11 +147,35 @@ fn style_text(text: &str) -> Vec<Vec<StyledChar>> {
             in_italic = false;
             in_bold = false;
             in_quote = false;
+            code_ticks = 0;
         }
         let mut line: Vec<StyledChar> = Vec::new();
         let mut i = 0usize;
         while i < chars.len() {
             let c = chars[i];
+            if c == '`' {
+                let n = tick_run(chars, i);
+                let is_marker = if code_ticks > 0 {
+                    n == code_ticks
+                } else {
+                    code_closer_ahead(&raw_lines, li, i + n, n)
+                };
+                if is_marker {
+                    code_ticks = if code_ticks > 0 { 0 } else { n };
+                } else {
+                    let st = mk_style(in_italic, in_bold, in_quote, quote_outer, code_ticks > 0);
+                    for _ in 0..n {
+                        line.push(('`', st));
+                    }
+                }
+                i += n;
+                continue;
+            }
+            if code_ticks > 0 {
+                line.push((c, mk_style(in_italic, in_bold, in_quote, quote_outer, true)));
+                i += 1;
+                continue;
+            }
             if c == '*' {
                 let double = i + 1 < chars.len() && chars[i + 1] == '*';
                 let w = if double { 2 } else { 1 };
@@ -139,7 +197,7 @@ fn style_text(text: &str) -> Vec<Vec<StyledChar>> {
                         in_italic = !in_italic;
                     }
                 } else {
-                    let st = mk_style(in_italic, in_bold, in_quote, quote_outer);
+                    let st = mk_style(in_italic, in_bold, in_quote, quote_outer, false);
                     for _ in 0..w {
                         line.push(('*', st));
                     }
@@ -166,7 +224,7 @@ fn style_text(text: &str) -> Vec<Vec<StyledChar>> {
                 }
             }
 
-            line.push((c, mk_style(in_italic, in_bold, in_quote, quote_outer)));
+            line.push((c, mk_style(in_italic, in_bold, in_quote, quote_outer, false)));
             if closes_quote {
                 in_quote = false;
             }

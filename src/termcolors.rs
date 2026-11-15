@@ -15,6 +15,8 @@
 //! * `*narration*`: a neutral grey between the foreground's and the
 //!   background's brightness (readable on both dark and light themes), bold;
 //! * `"speech"`: the theme's own yellow;
+//! * `` `code` ``: the surrounding colours, on a background 5% lighter than the
+//!   terminal's (5% darker on a light theme);
 //! * speech inside narration (`*he said "hi"*`): the plain speech colour, no
 //!   blending;
 //! * narration inside speech (`"well *sigh* ok"`): bold, and the speech yellow
@@ -34,6 +36,11 @@ const NARRATION_FADE: f32 = 0.52;
 /// inside speech (`"hello *you*"`), so it stands out from the quote around it
 /// (0 = the plain speech colour, 1 = the plain foreground).
 const NARRATION_IN_QUOTE_LIFT: f32 = 0.45;
+
+/// How far the terminal's background is shifted for the background of
+/// `` `code` `` (0.05 = 5%): towards white on a dark theme, towards black on a
+/// light one (white cannot get lighter).
+const CODE_BG_SHIFT: f32 = 0.05;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
@@ -71,6 +78,17 @@ impl Palette {
             .round()
             .clamp(0.0, 255.0) as u8;
         (g, g, g)
+    }
+
+    /// Background of `` `code` ``: the terminal's background 5% lighter, or
+    /// 5% darker on a light theme.
+    pub fn code_bg(&self) -> Color {
+        let target = if luminance(self.bg) > 128.0 {
+            (0, 0, 0)
+        } else {
+            (255, 255, 255)
+        };
+        rgb(mix(self.bg, target, CODE_BG_SHIFT))
     }
 
     /// Foreground colour of prose, or `None` for plain text (which keeps the

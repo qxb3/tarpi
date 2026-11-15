@@ -648,6 +648,7 @@ At start-up tarpi asks the terminal for its foreground, background and yellow (`
 - `"speech"` is the theme's yellow.
 - Speech inside narration (`*he said "hi"*`) is just the plain speech colour (no blending).
 - Narration inside speech (`"well *sigh* ok"`) is bold and a lighter shade of the speech colour (the yellow lifted 45% of the way towards your terminal's text colour), so it stands out from the quote around it. The rest of the quote is not bold.
+- `` `code` `` has its backticks hidden and sits on a background 5% lighter than your terminal's background (5% darker on a light theme, where it cannot get lighter). Inside it everything is literal: `*`, `**` and quotes are not styled. It keeps the colour of the narration or speech around it. Use more backticks (``` ``a ` b`` ```) to put a backtick inside. A `` ` `` with no closing one in the same paragraph is shown as a plain backtick; while a reply streams, an open `` `code `` is closed for you like the other markers.
 
 Terminals that don't answer cost at most 300 ms once. Then `COLORFGBG` (light / dark) and xterm-like colours are used.
 
@@ -1066,6 +1067,6 @@ Everything tarpi needs is its own: cards in `~/.config/tarpi/characters/`, perso
 - **Lorebooks** (a card's own, or your own in `/lore`) use plain-text keys and are deliberately minimal (see [Lorebooks](#lorebooks)). Vector memory is only a simple word match (see [Vector memory](#vector-memory)); no group chats or tool calling.
 - **Token counts** used to trim history to the context window are an estimate (`chars_per_token`), not a real tokenizer. The totals in the status row are exact once the connection's tokenizer has answered (see [Keys](#keys)). Without a tokenizer route (OpenRouter, OpenAI) they are the `usage` the backend reports with each reply (prompt plus reply), exact until the chat changes.
 - **Unfinished prose** is closed for you while a reply streams: an open `*narration`, `**bold` or `"speech` is shown with its closing marker added, and the model's own closer simply takes its place. Nothing is added for a lone trailing `*`, `2 * 3`, bullets, a `*` inside a word, or past a blank line. When a reply ends with markers still open, they are closed in the saved text too (Ctrl+K takes them off again before continuing).
-- **Markdown** is minimal: `*narration*` is bold and a neutral grey, `**bold**` is bold and "quoted speech" is yellow. Styles end at a blank line, and a `*` that has no partner (`2 * 3`, a `* ` bullet, an unclosed one) is shown as a plain asterisk.
+- **Markdown** is minimal: `*narration*` is bold and a neutral grey, `**bold**` is bold, "quoted speech" is yellow and `` `code` `` has a slightly lighter background. Styles end at a blank line, and a `*` that has no partner (`2 * 3`, a `* ` bullet, an unclosed one) is shown as a plain asterisk.
 - **Colours** come from your terminal's theme (see [Prose colours](#prose-colours)).
 - **Mouse capture** is on (for the Send button and click-to-edit). Hold Shift to select text with the terminal's own selection.
