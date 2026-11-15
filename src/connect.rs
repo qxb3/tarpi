@@ -14,7 +14,13 @@
 //!   changed (or created) is uploaded, deletes are passed on;
 //! - a file changed on both sides keeps the newer version, and the older one is
 //!   kept next to it as `<file>.conflict-<time>` (not shown by tarpi, not shared);
-//! - a file that one side changed and the other deleted is never deleted.
+//! - a file that one side changed and the other deleted is never deleted;
+//! - a file that cannot be read (here or on the server) is not "deleted" either:
+//!   it is left alone for that round (see `mirror::Scanner::unreadable`), and a
+//!   copy that lists no files at all is filled from the server again instead of
+//!   emptying the server;
+//! - a file changed here after the listing is not replaced or deleted by the
+//!   round that made the listing (see `copy_unchanged`).
 //!
 //! What was in step the last time is remembered in `.sync-state.json` inside
 //! the copy. `config.yaml`, the command history and the spell-check dictionary
@@ -31,8 +37,8 @@
 
 use crate::config;
 use crate::mirror::{
-    hash_bytes, in_scope, mtime_ms, now_ms, plan, to_fs, write_atomic, Action, Entry, Manifest,
-    Scanner, DEFAULT_PORT, PROTO,
+    hash_bytes, in_scope, is_skipped, mtime_ms, now_ms, plan, to_fs, write_atomic, Action, Entry,
+    Manifest, Scanner, DEFAULT_PORT, PROTO,
 };
 use crate::wire::{self, Message};
 use anyhow::{anyhow, bail, Context, Result};
@@ -49,7 +55,7 @@ use tokio::sync::oneshot;
 #[derive(Parser, Debug)]
 #[command(
     name = "tarpi connect",
-    about = "Chat with the characters and chats of the machine named by `serve_url` in config.yaml",
+    about = "Chat with the characters and chats of the machine named by `serve_url` (under `sync:`) in config.yaml",
     long_about = "Connect to the machine that runs `tarpi serve` (its address is `serve_url` \
                   in ~/.config/tarpi/config.yaml) and use its characters, chats, personas, \
                   lorebooks, system prompts, vector memory settings and API connection from this device (formatting stays on each device). A copy of \
@@ -57,7 +63,7 @@ use tokio::sync::oneshot;
                   chat opens, every few seconds while it is open, and when you quit. Then \
                   you pick a character, as in plain `tarpi`. The token is the one `tarpi \
                   serve` prints; it is remembered for next time. tarpi asks the server whether \
-                  it needs one, so with `serve_trust_all: true` on the server no token is asked for.",
+                  it needs one, so with `serve_trust_all: true` (under `sync:`) on the server no token is asked for.",
     after_help = concat!(
         "EXAMPLES:\n",
         "  tarpi connect                 serve_url is set; the token is remembered (or not needed)\n",
@@ -65,7 +71,7 @@ use tokio::sync::oneshot;
         "  tarpi connect --local-api     keep this device's own API connection\n",
         "\n",
         "In ~/.config/tarpi/config.yaml:\n",
-        "  serve_url: 192.168.1.20:7878"
+        "  sync:\n    serve_url: 192.168.1.20:7878"
     )
 )]
 struct ConnectCli {
@@ -186,6 +192,8 @@ const BEAT_TIMEOUT: Duration = Duration::from_millis(300);
 
 struct RpcInner {
     tx: wire::Sender,
+    /// The binding of an encrypted link (what the token proofs are tied to).
+    binding: Option<[u8; 32]>,
     /// Requests waiting for their answer, by number.
     pending: std::sync::Mutex<HashMap<u32, oneshot::Sender<Message>>>,
     next: AtomicU32,
@@ -201,17 +209,27 @@ pub struct Rpc(Arc<RpcInner>);
 impl Rpc {
     /// Open the connection, do the greeting and start listening. The server's
     /// "a file changed" notes wake the sync; the end of the link sets [`LOST`].
-    async fn connect(addr: &str) -> Result<Rpc> {
+    async fn connect(addr: &str, encrypted: bool) -> Result<Rpc> {
         let mut sock = tokio::time::timeout(Duration::from_secs(10), tokio::net::TcpStream::connect(addr))
             .await
             .map_err(|_| anyhow!("timed out reaching tarpi serve at {}", addr))?
             .with_context(|| format!("could not reach tarpi serve at {}", addr))?;
-        wire::client_handshake(&mut sock)
-            .await
-            .with_context(|| format!("{} did not answer like tarpi serve", addr))?;
-        let (tx, mut inbox) = wire::start(sock, BEAT_TIMEOUT);
+        let link = match wire::client_handshake(&mut sock, encrypted).await {
+            Ok(link) => link,
+            Err(e) => {
+                // Two tarpis that are set differently about `encrypted` did
+                // answer like tarpi serve: say what to change instead.
+                if let Some(m) = e.downcast_ref::<wire::EncryptionMismatch>() {
+                    bail!("{}", m.explain(addr));
+                }
+                return Err(e.context(format!("{} did not answer like tarpi serve", addr)));
+            }
+        };
+        let binding = link.binding();
+        let (tx, mut inbox) = wire::start(sock, BEAT_TIMEOUT, link);
         let inner = Arc::new(RpcInner {
             tx,
+            binding,
             pending: std::sync::Mutex::new(HashMap::new()),
             next: AtomicU32::new(1),
         });
@@ -279,7 +297,7 @@ impl Rpc {
         if m.code() == 401 {
             bail!(
                 "the server wants a valid token: run `tarpi connect <token>` with the one \
-                 `tarpi serve` prints (or set `serve_trust_all: true` on the serving machine)"
+                 `tarpi serve` prints (or set `serve_trust_all: true` under `sync:` on the serving machine)"
             );
         }
         bail!("the server answered {}: {}", m.code(), m.error())
@@ -305,6 +323,19 @@ impl Rpc {
     /// Send what is still queued and hang up.
     async fn close(&self) {
         self.0.tx.close(Duration::from_secs(2)).await;
+    }
+}
+
+/// Is the file at `path` still what the last listing saw (`scanned` is its
+/// hash there; `None`: the listing found no such file)? Asked right before a
+/// step that replaces or deletes this device's copy, because the chat screen
+/// may have saved the file since the listing was made. A file that cannot be
+/// read now counts as changed.
+fn copy_unchanged(path: &std::path::Path, scanned: Option<&str>) -> bool {
+    match std::fs::read(path) {
+        Ok(bytes) => scanned.map_or(false, |h| h == hash_bytes(&bytes)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => scanned.is_none(),
+        Err(_) => false,
     }
 }
 
@@ -336,7 +367,9 @@ impl Client {
         }
     }
 
-    async fn remote_manifest(&self) -> Result<HashMap<String, Entry>> {
+    /// The server's files, and what it has but could not read (those are not
+    /// in the first list, and must not be taken for deleted).
+    async fn remote_manifest(&self) -> Result<(HashMap<String, Entry>, Vec<String>)> {
         let m = self
             .rpc
             .call(json!({ "op": "manifest" }), Vec::new())
@@ -344,11 +377,14 @@ impl Client {
             .with_context(|| format!("could not reach tarpi serve at {}", self.addr))?;
         let m = Rpc::checked(m)?;
         let m: Manifest = serde_json::from_slice(&m.body).context("reading the server's file list")?;
-        Ok(m.files
+        let unreadable = m.unreadable;
+        let files = m
+            .files
             .into_iter()
             .filter(|e| in_scope(&e.path, self.api))
             .map(|e| (e.path.clone(), e))
-            .collect())
+            .collect();
+        Ok((files, unreadable))
     }
 
     /// A file's bytes and modification time.
@@ -464,6 +500,13 @@ impl Client {
                 }
             },
             Action::Pull(p) => {
+                // The listing is a moment old (the server's copy may take a
+                // while to arrive): if this device changed the file since, the
+                // download would wipe that change out. Leave it; the next
+                // round sees both versions and settles it as a conflict.
+                if !copy_unchanged(&to_fs(&self.root, &p), local.get(&p).map(|e| e.hash.as_str())) {
+                    return Ok(());
+                }
                 self.pull(&p).await?;
                 stats.pulled += 1;
             }
@@ -474,6 +517,11 @@ impl Client {
                 stats.conflicts += 1;
             }
             Action::DeleteLocal(p) => {
+                // Same reason as for a download: never delete a file that was
+                // changed here after the listing (a chat that just got a new message).
+                if !copy_unchanged(&to_fs(&self.root, &p), local.get(&p).map(|e| e.hash.as_str())) {
+                    return Ok(());
+                }
                 match std::fs::remove_file(to_fs(&self.root, &p)) {
                     Ok(()) => {}
                     Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -514,7 +562,7 @@ impl Client {
     /// One round: compare, then bring both sides level. Carries on past a file
     /// that fails (and reports the first failure at the end).
     pub async fn cycle(&mut self) -> Result<Stats> {
-        let remote = self.remote_manifest().await?;
+        let (remote, remote_unreadable) = self.remote_manifest().await?;
         if remote.is_empty() && !self.state.is_empty() {
             bail!(
                 "the server lists no files, but this copy has been in step with it before; \
@@ -522,15 +570,32 @@ impl Client {
             );
         }
         let sc = self.scanner.clone();
-        let found = tokio::task::spawn_blocking(move || {
-            sc.lock().unwrap_or_else(|e| e.into_inner()).scan()
+        let (found, local_unreadable) = tokio::task::spawn_blocking(move || {
+            let mut scanner = sc.lock().unwrap_or_else(|e| e.into_inner());
+            let found = scanner.scan();
+            (found, scanner.unreadable())
         })
         .await
         .context("listing the local files")?;
         let local: HashMap<String, Entry> =
             found.into_iter().map(|e| (e.path.clone(), e)).collect();
 
-        let actions = plan(&self.state, &local, &remote);
+        // This side lists nothing at all, yet it has been in step with the
+        // server before: the shared files are gone from here (the folder was
+        // wiped or moved, a storage was not mounted), not deleted one by one.
+        // Passing that on would delete everything on the server, and from
+        // there on every device. Forget what was agreed on, so that the
+        // server's files are simply downloaded again.
+        if local.is_empty() && local_unreadable.is_empty() && !self.state.is_empty() {
+            self.state.clear();
+        }
+
+        // Files either side has but could not read are neither deleted nor
+        // overwritten this round: not being in a list is no sign of a delete.
+        let mut skip = local_unreadable;
+        skip.extend(remote_unreadable);
+        let mut actions = plan(&self.state, &local, &remote);
+        actions.retain(|a| !is_skipped(&skip, a.path()));
         let mut stats = Stats {
             pulled: 0,
             pushed: 0,
@@ -645,14 +710,15 @@ async fn local_digest(scanner: &Arc<std::sync::Mutex<Scanner>>) -> u64 {
 /// The returned client holds the open connection.
 async fn open(token_arg: Option<String>, local_api: bool) -> Result<Client> {
     let cfg = config::load()?;
-    let address = cfg
+    let sync = cfg.sync();
+    let address = sync
         .serve_url
         .clone()
         .map(|u| u.trim().to_string())
         .filter(|u| !u.is_empty())
         .ok_or_else(|| {
             anyhow!(
-                "no server address: set `serve_url: host:port` in {}",
+                "no server address: set `serve_url: host:port` under `sync:` in {}",
                 config::config_path()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "config.yaml".to_string())
@@ -668,7 +734,7 @@ async fn open(token_arg: Option<String>, local_api: bool) -> Result<Client> {
     config::set_data_dir(root.clone());
     config::set_api_local(local_api);
 
-    let rpc = Rpc::connect(&addr).await?;
+    let rpc = Rpc::connect(&addr, sync.encrypted).await?;
 
     // The greeting is answered without a token: it says which protocol the
     // server speaks and whether it wants a token.
@@ -701,8 +767,20 @@ async fn open(token_arg: Option<String>, local_api: bool) -> Result<Client> {
                 None => (ask_token()?, true),
             },
         };
-        let answer = rpc.call(json!({ "op": "auth", "token": token }), Vec::new()).await?;
-        Rpc::checked(answer)?;
+        // On an encrypted link the token is proved, not sent, and the server has
+        // to prove it knows it too: someone in the middle can do neither.
+        let request = match rpc.0.binding {
+            Some(b) => json!({ "op": "auth", "proof": wire::proof(&token, &b, "client") }),
+            None => json!({ "op": "auth", "token": token }),
+        };
+        let answer = rpc.call(request, Vec::new()).await?;
+        let answer = Rpc::checked(answer)?;
+        if let Some(b) = rpc.0.binding {
+            let want = wire::proof(&token, &b, "server");
+            if answer.str("proof") != Some(want.as_str()) {
+                bail!("the server could not prove that it knows the token: it may not be the tarpi serve you meant");
+            }
+        }
         if is_new {
             let _ = std::fs::write(&token_file, format!("{}\n", token));
             private(&token_file);
@@ -828,6 +906,30 @@ mod tests {
         assert_eq!(normalize("tcp://host"), "host:7878");
         assert_eq!(normalize("[::1]:5"), "[::1]:5");
         assert_eq!(normalize("[::1]"), "[::1]:7878");
+    }
+
+    fn temp_file(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("tarpi-test-{}-{}", tag, uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&d).unwrap();
+        d.join("f.jsonl")
+    }
+
+    #[test]
+    fn a_copy_changed_since_the_listing_is_not_replaced() {
+        let p = temp_file("unchanged");
+        std::fs::write(&p, b"one").unwrap();
+        let listed = hash_bytes(b"one");
+        assert!(copy_unchanged(&p, Some(listed.as_str())));
+        // The chat screen saved a new message after the listing.
+        std::fs::write(&p, b"one two").unwrap();
+        assert!(!copy_unchanged(&p, Some(listed.as_str())));
+        // The listing saw no file, but there is one now.
+        assert!(!copy_unchanged(&p, None));
+        // Deleted since the listing: fine to treat as unchanged only if none was listed.
+        std::fs::remove_file(&p).unwrap();
+        assert!(!copy_unchanged(&p, Some(listed.as_str())));
+        assert!(copy_unchanged(&p, None));
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 
     #[test]

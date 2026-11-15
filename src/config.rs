@@ -24,6 +24,27 @@ pub struct FileConfig {
     /// (`/char`, `/persona`, `/lore`): misspelled words get a red underline.
     /// Default false (off).
     pub spellcheck: Option<bool>,
+    /// `sync:` section: sharing between devices (`tarpi serve` / `tarpi connect`).
+    sync: Option<SyncSection>,
+    mouse: Option<MouseConfig>,
+    vim: Option<VimConfig>,
+    /// `msg_seperator:` section (`msg_separator:` is read too).
+    #[serde(rename = "msg_seperator", alias = "msg_separator")]
+    msg_separator: Option<MsgSeparatorConfig>,
+}
+
+/// `sync:` section as written in the file (every key optional).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+struct SyncSection {
+    serve_url: Option<String>,
+    serve_trust_all: Option<bool>,
+    encrypted: Option<bool>,
+}
+
+/// The sharing settings with their defaults filled in (see [`FileConfig::sync`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncConfig {
     /// Address of the machine that runs `tarpi serve`, e.g. "192.168.1.20:7878"
     /// (port 7878 if left out). `tarpi connect` uses it. Default: none.
     pub serve_url: Option<String>,
@@ -31,12 +52,10 @@ pub struct FileConfig {
     /// On the serving machine, `serve` lets every client in; on the other
     /// device, `connect` does not ask for a token. `false` (default): the
     /// token is required.
-    pub serve_trust_all: Option<bool>,
-    mouse: Option<MouseConfig>,
-    vim: Option<VimConfig>,
-    /// `msg_seperator:` section (`msg_separator:` is read too).
-    #[serde(rename = "msg_seperator", alias = "msg_separator")]
-    msg_separator: Option<MsgSeparatorConfig>,
+    pub serve_trust_all: bool,
+    /// `true` (default): the link between `serve` and `connect` is encrypted.
+    /// Both sides must have the same setting; they tell each other when not.
+    pub encrypted: bool,
 }
 
 /// `mouse:` section.
@@ -238,6 +257,16 @@ impl VimConfig {
 }
 
 impl FileConfig {
+    /// The `sync:` settings, with the defaults filled in.
+    pub fn sync(&self) -> SyncConfig {
+        let sec = self.sync.clone().unwrap_or_default();
+        SyncConfig {
+            serve_url: sec.serve_url,
+            serve_trust_all: sec.serve_trust_all.unwrap_or(false),
+            encrypted: sec.encrypted.unwrap_or(true),
+        }
+    }
+
     pub fn mouse(&self) -> MouseConfig {
         self.mouse.clone().unwrap_or_default()
     }
@@ -281,16 +310,26 @@ const TEMPLATE: &str = "\
 # spellcheck: false
 
 # Sharing between devices (`tarpi serve` / `tarpi connect`).
-# serve_url: the machine that runs `tarpi serve`, for `tarpi connect` on this
-# device (host:port; the port may be left out for 7878).
-# serve_url: 192.168.1.20:7878
-# serve_trust_all: true needs no token: `tarpi serve` (on the serving machine)
-# lets every client in without one, and `tarpi connect` finds that out from the
-# server and does not ask for one (it only matters on the serving machine).
-# Anyone who can reach the port can then read and change everything shared,
-# API keys included, so only use it on a network you fully trust.
-# false: the token `tarpi serve` prints is required.
-# serve_trust_all: false
+sync:
+  # serve_url: the machine that runs `tarpi serve`, for `tarpi connect` on this
+  # device (host:port; the port may be left out for 7878).
+  # serve_url: 192.168.1.20:7878
+  # serve_trust_all: true needs no token: `tarpi serve` (on the serving
+  # machine) lets every client in without one, and `tarpi connect` finds that
+  # out from the server and does not ask for one (it only matters on the
+  # serving machine). Anyone who can reach the port can then read and change
+  # everything shared, API keys included, so only use it on a network you
+  # fully trust. With `encrypted: true` they cannot listen in, but the server
+  # cannot be told from an impostor either. false: the token `tarpi serve`
+  # prints is required.
+  serve_trust_all: false
+  # encrypted: true encrypts everything between `tarpi serve` and `tarpi
+  # connect` (X25519 key exchange, ChaCha20-Poly1305), and the token is proved
+  # without being sent, so nobody on the network can read the chats or the API
+  # keys, or change them on the way. Set it the same on both devices: one that
+  # is set differently says so and does not connect. false: plain TCP, only
+  # for a network you trust (or through an SSH tunnel).
+  encrypted: true
 
 mouse:
   # Phones (Termux): tapping the input box opens the on-screen keyboard.
@@ -558,6 +597,21 @@ mod tests {
         assert_eq!(sep.glyph(), Some('\u{254C}'));
         // Same as leaving the section out.
         assert_eq!(MsgSeparatorConfig::default().ch, sep.ch);
+    }
+
+    #[test]
+    fn sync_settings_have_defaults_and_the_template_matches_them() {
+        let d = parse_text("autopair: false\n").unwrap().sync();
+        assert_eq!(
+            d,
+            SyncConfig { serve_url: None, serve_trust_all: false, encrypted: true }
+        );
+        assert_eq!(parse_text(TEMPLATE).unwrap().sync(), d);
+        let cfg = parse_text("sync:\n  serve_url: 10.0.0.2:9000\n  serve_trust_all: true\n  encrypted: false\n").unwrap();
+        let s = cfg.sync();
+        assert_eq!(s.serve_url.as_deref(), Some("10.0.0.2:9000"));
+        assert!(s.serve_trust_all);
+        assert!(!s.encrypted);
     }
 
     #[test]

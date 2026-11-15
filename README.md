@@ -20,7 +20,8 @@
  *Drops a bag on the desk.* "Can you help me plan a week of dinners?"
 
  Tarpi
- *Cracks knuckles.* "Fine. But you're eating a vegetable."
+ *Cracks knuckles.* "Fine. But you're eating a vegetable.
+ Monday: pasta. Yes, tomatoes count."
 ────────────────────────────────────────────────────────────
  ┌──────────────────────────────────────────────────────────┐
  │ ❚                                                        │
@@ -256,12 +257,13 @@ One computer keeps the data; your other devices connect to it.
 # on the computer that keeps the data
 $ tarpi serve
 
-# on another device: put  serve_url: 192.168.1.20:7878  in config.yaml, then
+# on another device: put  sync: {serve_url: 192.168.1.20:7878}  in config.yaml, then
 $ tarpi connect <token>
 ```
 
-`tarpi serve` prints the token. Use it on a network you trust: it is a plain TCP
-connection with a token, not encrypted. Whichever copy of a file is newer wins, and the
+`tarpi serve` prints the token. The link is encrypted by default (`sync: encrypted: true`,
+set it the same on both devices); with `encrypted: false` it is plain TCP, so use it only on
+a network you trust. Whichever copy of a file is newer wins, and the
 older one is kept as `<file>.conflict-<time>`.
 
 ## something is wrong?
@@ -273,6 +275,7 @@ older one is kept as `<file>.conflict-<time>`.
 | an error mentioning chat completions | Your model is only offered as a chat model. tarpi needs text completion. |
 | replies are cut short or forget things | Raise *Context size* in `/api` (press `c` to copy the server's size). |
 | `command not found: tarpi` | See [install](#install) above. |
+| `encryption settings do not match` (on `tarpi connect`; `tarpi serve` logs `refused: encryption mismatch`) | `sync: encrypted` is set differently on the two machines. Set it the same (`true` is the default and the safe one) and restart `tarpi serve`. |
 | can't select text with the mouse | Hold **Shift** while selecting. |
 | Shift+Enter does nothing | Your terminal is old. Use Alt+Enter or Ctrl+J. |
 

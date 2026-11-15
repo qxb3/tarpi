@@ -45,6 +45,14 @@ pub struct Entry {
 #[derive(Serialize, Deserialize)]
 pub struct Manifest {
     pub files: Vec<Entry>,
+    /// Files (and folders, written with a trailing `/`) that exist on the
+    /// serving side but could not be read when the list was made. They are
+    /// missing from `files`, but that does not mean they were deleted: the
+    /// other side must leave them alone (see [`is_skipped`]). Left out of the
+    /// message when empty, and optional when reading it, so an older tarpi
+    /// that does not know the field still understands the list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unreadable: Vec<String>,
 }
 
 /// FNV-1a over the bytes, as 16 hex digits.
@@ -163,10 +171,18 @@ pub fn write_atomic(path: &Path, bytes: &[u8], mtime: Option<u64>) -> Result<()>
 
 /// Lists the shared files under `root`. Hashes are kept between scans, and a
 /// file is only read again when its size or modification time changed.
+///
+/// A file or folder that is there but cannot be read (a permission error, a
+/// file another program holds, a storage that went away for a moment) is not
+/// in the list, and it is not "deleted" either: [`Scanner::unreadable`] names
+/// it after each scan, so the sync can leave it alone instead of passing a
+/// delete on to the other side.
 pub struct Scanner {
     root: PathBuf,
     api: bool,
     cache: HashMap<String, (u64, u64, String)>,
+    /// What the last scan could not read (see [`Scanner::unreadable`]).
+    skipped: Vec<String>,
 }
 
 impl Scanner {
@@ -175,22 +191,33 @@ impl Scanner {
             root,
             api,
             cache: HashMap::new(),
+            skipped: Vec::new(),
         }
+    }
+
+    /// What the last [`Scanner::scan`] found but could not read: file paths,
+    /// and folders written with a trailing `/` (everything below them).
+    pub fn unreadable(&self) -> Vec<String> {
+        self.skipped.clone()
     }
 
     pub fn scan(&mut self) -> Vec<Entry> {
         let mut found: Vec<(String, PathBuf)> = Vec::new();
+        let mut bad: Vec<String> = Vec::new();
         for f in FILES {
             if !self.api && *f == API_FILE {
                 continue;
             }
             let p = self.root.join(f);
-            if p.is_file() {
-                found.push((f.to_string(), p));
+            match std::fs::metadata(&p) {
+                Ok(m) if m.is_file() => found.push((f.to_string(), p)),
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => bad.push(f.to_string()),
             }
         }
         for d in DIRS {
-            walk(&self.root.join(d), d, 1, &mut found);
+            walk(&self.root.join(d), d, 1, &mut found, &mut bad);
         }
 
         let mut out = Vec::new();
@@ -200,6 +227,7 @@ impl Scanner {
                 continue;
             }
             let Ok(meta) = std::fs::metadata(&path) else {
+                bad.push(rel);
                 continue;
             };
             let (size, mtime) = (meta.len(), mtime_ms(&meta));
@@ -207,7 +235,10 @@ impl Scanner {
                 Some((s, m, h)) if *s == size && *m == mtime => h.clone(),
                 _ => match std::fs::read(&path) {
                     Ok(bytes) => hash_bytes(&bytes),
-                    Err(_) => continue,
+                    Err(_) => {
+                        bad.push(rel);
+                        continue;
+                    }
                 },
             };
             seen.insert(rel.clone(), (size, mtime, hash.clone()));
@@ -219,9 +250,23 @@ impl Scanner {
             });
         }
         self.cache = seen;
+        self.skipped = bad;
         out.sort_by(|a, b| a.path.cmp(&b.path));
         out
     }
+}
+
+/// Is `path` one of the `skipped` entries of a scan (see
+/// [`Scanner::unreadable`] and [`Manifest::unreadable`])? An entry that ends
+/// in `/` stands for everything below that folder.
+pub fn is_skipped(skipped: &[String], path: &str) -> bool {
+    skipped.iter().any(|s| {
+        if s.ends_with('/') {
+            path.starts_with(s.as_str())
+        } else {
+            s.as_str() == path
+        }
+    })
 }
 
 /// One number for a whole file list (paths and contents): it changes when
@@ -237,23 +282,38 @@ pub fn digest(entries: &[Entry]) -> u64 {
 }
 
 /// Collect the regular files below `dir` (symbolic links are not followed).
-fn walk(dir: &Path, rel: &str, depth: usize, out: &mut Vec<(String, PathBuf)>) {
+/// A folder that exists but cannot be listed is put in `bad` (with a trailing
+/// `/`), so it is not mistaken for an empty one; one that is not there holds
+/// no files and is not an error.
+fn walk(dir: &Path, rel: &str, depth: usize, out: &mut Vec<(String, PathBuf)>, bad: &mut Vec<String>) {
     if depth > 3 {
         return;
     }
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                bad.push(format!("{}/", rel));
+            }
+            return;
+        }
     };
-    for e in rd.flatten() {
-        let Ok(ft) = e.file_type() else {
+    for e in rd {
+        let Ok(e) = e else {
+            // An entry that cannot even be named: the whole folder is in doubt.
+            bad.push(format!("{}/", rel));
             continue;
         };
         let Some(name) = e.file_name().to_str().map(str::to_string) else {
             continue;
         };
         let child = format!("{}/{}", rel, name);
+        let Ok(ft) = e.file_type() else {
+            bad.push(child);
+            continue;
+        };
         if ft.is_dir() {
-            walk(&e.path(), &child, depth + 1, out);
+            walk(&e.path(), &child, depth + 1, out, bad);
         } else if ft.is_file() && !is_temp_name(&name) {
             out.push((child, e.path()));
         }
@@ -281,6 +341,21 @@ pub enum Action {
     /// Changed on both sides and this side's is newer: the server's copy is
     /// kept here as `<file>.conflict-<time>`, this side's is sent.
     ConflictPush(String),
+}
+
+impl Action {
+    /// The file this action is about.
+    pub fn path(&self) -> &str {
+        match self {
+            Action::Settled(p)
+            | Action::Pull(p)
+            | Action::Push(p)
+            | Action::DeleteLocal(p)
+            | Action::DeleteRemote(p)
+            | Action::ConflictPull(p)
+            | Action::ConflictPush(p) => p.as_str(),
+        }
+    }
 }
 
 /// Compare this side (`local`), the server (`remote`) and what both agreed on
@@ -491,5 +566,75 @@ mod tests {
         assert_eq!(hash_bytes(b"abc"), hash_bytes(b"abc"));
         assert_ne!(hash_bytes(b"abc"), hash_bytes(b"abd"));
         assert_eq!(hash_bytes(b"").len(), 16);
+    }
+
+    #[test]
+    fn an_action_knows_its_file() {
+        assert_eq!(Action::Pull("a".into()).path(), "a");
+        assert_eq!(Action::DeleteRemote("b/c".into()).path(), "b/c");
+        assert_eq!(Action::ConflictPush("d".into()).path(), "d");
+    }
+
+    #[test]
+    fn skipped_entries_cover_files_and_folders() {
+        let s = vec!["chats/Sofia/".to_string(), "api.yaml".to_string()];
+        assert!(is_skipped(&s, "chats/Sofia/Sofia01.jsonl"));
+        assert!(is_skipped(&s, "api.yaml"));
+        assert!(!is_skipped(&s, "chats/Sofia2/x.jsonl"));
+        assert!(!is_skipped(&s, "chats/Other/x.jsonl"));
+        assert!(!is_skipped(&s, "api.yaml.bak"));
+        assert!(!is_skipped(&[], "api.yaml"));
+    }
+
+    #[test]
+    fn a_manifest_without_the_unreadable_field_still_reads() {
+        // What an older `tarpi serve` sends.
+        let m: Manifest = serde_json::from_str(r#"{"files":[]}"#).unwrap();
+        assert!(m.unreadable.is_empty());
+        // And an empty list is not even written.
+        let text = serde_json::to_string(&m).unwrap();
+        assert!(!text.contains("unreadable"));
+        let m = Manifest { files: Vec::new(), unreadable: vec!["chats/a/".into()] };
+        let back: Manifest = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back.unreadable, vec!["chats/a/".to_string()]);
+    }
+
+    fn temp_root(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("tarpi-test-{}-{}", tag, uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_missing_folder_is_empty_not_unreadable() {
+        let root = temp_root("missing");
+        let mut sc = Scanner::new(root.clone(), true);
+        assert!(sc.scan().is_empty());
+        assert!(sc.unreadable().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_that_cannot_be_listed_is_reported_not_forgotten() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp_root("unreadable");
+        let chats = root.join("chats").join("Sofia");
+        std::fs::create_dir_all(&chats).unwrap();
+        std::fs::write(chats.join("Sofia01.jsonl"), b"{}").unwrap();
+        let mut sc = Scanner::new(root.clone(), true);
+        assert_eq!(sc.scan().len(), 1);
+        assert!(sc.unreadable().is_empty());
+
+        std::fs::set_permissions(&chats, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Running as root ignores the permissions: nothing to check then.
+        if std::fs::read_dir(&chats).is_err() {
+            assert!(sc.scan().is_empty());
+            assert!(is_skipped(&sc.unreadable(), "chats/Sofia/Sofia01.jsonl"));
+        }
+        std::fs::set_permissions(&chats, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(sc.scan().len(), 1);
+        assert!(sc.unreadable().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

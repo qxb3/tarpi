@@ -224,7 +224,8 @@ It prints an address, a port and a **token** (a password). Leave it running.
 **2. On the other device**, open `~/.config/tarpi/config.yaml` and add the server's address:
 
 ```yaml
-serve_url: 192.168.1.20:7878   # host:port; the port may be left out for 7878
+sync:
+  serve_url: 192.168.1.20:7878   # host:port; the port may be left out for 7878
 ```
 
 **3. Still on the other device**, run (first time only, with the token):
@@ -248,7 +249,7 @@ tarpi connect                # afterwards
 tarpi connect --local-api    # keep this device's own API connection (see below)
 ```
 
-You can also give the token in the `TARPI_TOKEN` environment variable. `serve_url` is `host:port` (an old-style `http://` in front is ignored). Without it, `connect` tells you it is missing.
+You can also give the token in the `TARPI_TOKEN` environment variable. `serve_url` (under `sync:`) is `host:port` (an old-style `http://` in front is ignored). Without it, `connect` tells you it is missing.
 
 ### What `tarpi serve` does
 
@@ -280,19 +281,22 @@ It keeps a **copy** of the server's data in `~/.config/tarpi/remote/<host>-<port
 
 - **Syncing.** The copy is brought up to date before the screen opens, and synced once more when you quit. While it is open, a change here (checked every 0.2 seconds) or on the server (the server pushes a note) is synced at once. A slow check every 30 seconds is only a safety net. The last result is in `sync.log` in the copy's folder.
 - **Who wins.** A file only the server changed is downloaded. A file only this device changed or created is uploaded. Deletes are passed on. Downloaded files keep the server's modification time, so "latest chat" is the same on every device.
-- **Both sides changed the same file.** The newer version wins, and the older one is kept beside it as `<file>.conflict-<time>` (not listed by tarpi, not shared). A file that one side changed and the other deleted is never deleted. A server that suddenly lists no files at all is never treated as "delete everything".
+- **Both sides changed the same file.** The newer version wins, and the older one is kept beside it as `<file>.conflict-<time>` (not listed by tarpi, not shared). A file that one side changed and the other deleted is never deleted. A server that suddenly lists no files at all is never treated as "delete everything", and neither is a copy here that suddenly lists none: its files are downloaded again.
+- **Files that cannot be read.** A file or folder that is there but cannot be read (a permission error, a program holding the file, a storage that is not mounted) is not "deleted": that round leaves it alone on both sides, and a server tells the device which files it could not read. A file that was changed here while the sync was downloading or deleting it is left as it is; the next round settles it like any other change on both sides.
 - **Token counts** (in the status row) are asked from the server's own backend through `tarpi serve`, so the address in the shared connection does not have to be reachable from this device. For replies and the connection check, a shared address of `127.0.0.1`, `localhost` or `0.0.0.0` is read as the server's host (same port). So llama.cpp must listen on a network address there (`--host 0.0.0.0`).
 - **One persistent connection.** `tarpi connect` opens a single TCP connection to `tarpi serve` and keeps it for the whole session: the sync, the token counts, the notes for the server's log and the server's "a file changed" notes all travel over it (no HTTP, no new connection per request). While it is quiet, both sides send a tiny beat every 50 ms, and any data counts as a beat, so a long upload does not look like a dead link. If `tarpi serve` stops, the machine goes away, or this device loses its network, `tarpi connect` quits at once; a link that goes silent is noticed after 0.3 seconds when idle, and after 5 seconds while a request or a big file is in flight (a closed or reset connection is always noticed at once). The server lets go of a silent device after 5 seconds. A busy or slow link can close it by mistake; nothing is lost when that happens. Your changes stay in the local copy and are sent the next time you connect. Both machines must run the same version of tarpi: an older `tarpi serve` (HTTP) is refused with a message saying so.
 - **`--local-api`** keeps `api.yaml` on this device. A phone usually can't reach a model at the server's `127.0.0.1:8080`, so give it its own connection with `/api`. Without it, API connections are shared like everything else.
 - **Characters** are added with `/import` and deleted with `d` in `/chars` on the connected device just like on a single machine; the sync carries both (see [Importing and deleting while connected](#importing-and-deleting-while-connected)).
 - **Lorebooks** (`lorebooks/<name>-<id>.json`, one file each) are shared like everything else. A book written on the phone is on the server, and the other way round; its on / off switch and its *On for* list travel with it. `/lore` reads a book when you open it. If another device changed or deleted that book meanwhile, saving is refused (`not saved: this lorebook was changed ... somewhere else`) and nothing is lost: leave without saving (`q`, then `n`) and open it again. A new book's file name ends in six random characters, so two devices that create a book with the same name never write the same file.
-- **The same chat open on two devices** behaves like two terminals on one file. When another device has changed the open chat, saving is refused (`save refused ... Reopen tarpi`) and nothing is lost. Reopen the chat to load the other version.
+- **The same chat open on two devices** behaves like two terminals on one file. When another device has changed the open chat (its file here is no longer the one tarpi loaded or last wrote, even if the other device only added messages), saving is refused (`save refused ... Reopen tarpi`) and nothing is lost. Reopen the chat to load the other version.
 
 ### Security (please read)
 
-- `serve_trust_all` (in `config.yaml`, default `false`) decides whether a token is needed. With `false`, `tarpi serve` makes and requires the token, and `tarpi connect` asks for it when it has none.
+- `serve_trust_all` (under `sync:` in `config.yaml`, default `false`) decides whether a token is needed. With `false`, `tarpi serve` makes and requires the token, and `tarpi connect` asks for it when it has none.
 - With `true`, **anyone who can reach the port gets in without a token** (`tarpi serve` says so when it starts). Only do that on a network you fully trust. `tarpi connect` does not need the setting: it first asks the server whether a token is wanted.
-- The connection is **plain TCP, not encrypted**. Use it on a network you trust, or use `--local` and an SSH tunnel: `ssh -L 7878:127.0.0.1:7878 server`, then `serve_url: 127.0.0.1:7878` and `tarpi connect`.
+- **`encrypted`** (under `sync:`, default `true`) encrypts the whole link: every device gets its own fresh keys for each connection (X25519 key exchange, ChaCha20-Poly1305), so nobody on the network can read the chats, characters or API keys, and a message that is changed, dropped or repeated on the way ends the link. The token is not sent either: each side proves it knows it, tied to that connection's keys, so someone sitting in the middle can neither listen in nor pass the token check, and `tarpi connect` refuses a server that cannot prove it knows the token. **Set it the same on both devices.** When they differ, nothing connects, and both sides say so: `tarpi connect` prints `encryption settings do not match` with the value on each side and what to change (the setting is read when `tarpi serve` starts, so restart it after changing it), and `tarpi serve` logs `refused: encryption mismatch` with the device's address. A tarpi from before this setting does not connect to an encrypted one: update both.
+- With `serve_trust_all: true` there is no token, so the link is protected against listening in, but nothing tells the real server from an impostor on the network. Use a token on any network you do not fully trust.
+- With `encrypted: false` the connection is **plain TCP**: use it only on a network you trust, or use `--local` and an SSH tunnel: `ssh -L 7878:127.0.0.1:7878 server`, then `serve_url: 127.0.0.1:7878` and `tarpi connect`.
 - Anyone who has the token can read and change every shared file, **including any API key in `api.yaml`**.
 - `--new-token` locks everyone out until they are given the new one.
 - If the port does not answer from another device, check the firewall of the serving machine.
@@ -904,8 +908,10 @@ The first run creates the file with the defaults, fully commented. A `config.tom
 # spellcheck: false
 
 # Sharing between devices (see "Sharing between devices")
-# serve_url: 192.168.1.20:7878
-# serve_trust_all: false
+sync:
+  # serve_url: 192.168.1.20:7878
+  serve_trust_all: false
+  encrypted: true
 
 mouse:
   # Phones (Termux): tapping the input box opens the on-screen keyboard
@@ -932,7 +938,7 @@ msg_seperator:
 **What each setting does:**
 
 - **`chars_per_token`**: how many characters tarpi assumes make one token when it has no exact count. It uses this to decide how much old history fits.
-- **`serve_url`** is the address `tarpi connect` uses (`host:port`). **`serve_trust_all: true`** (read by `tarpi serve` only) means no token is needed (default `false`: the token is required); `tarpi connect` asks the server and adapts. See [Sharing between devices](#sharing-between-devices-serve-and-connect).
+- **`sync:`** holds the sharing settings. **`serve_url`** is the address `tarpi connect` uses (`host:port`). **`serve_trust_all: true`** (read by `tarpi serve` only) means no token is needed (default `false`: the token is required); `tarpi connect` asks the server and adapts. **`encrypted`** (default `true`) encrypts the link; set it the same on both devices. See [Sharing between devices](#sharing-between-devices-serve-and-connect).
 - **`command_menu: true`** (default) opens the `/command` menu above the input box while you type a slash (see [Command menu](#command-menu)). `false` turns it off: nothing opens, Tab / Up / Down / Esc keep their old meaning (Up / Down scroll the chat), and Enter runs exactly what you typed. The command history (Up on a bare `/`) still works.
 - **`autopair: true`** (default) closes `"`, `'`, `*` and `(` `[` `{` as you type them, in INSERT mode and in the `/char` window. `"` gives `"|"`, `'` gives `'|'`, `*` gives `*|*`, and a second `*` inside an empty pair gives `**|**`. Typing the closing character steps over the one already there, and Backspace between an empty pair removes both. It stays out of the way next to words (`2*3`, `5"`, apostrophes like `don't` or `Tarpi's`), when the paragraph already has an unclosed one (so the second `"` closes), and when the next character is a letter. An apostrophe at the start of a word (`'em`, `'til`) opens a pair like any quote; Backspace removes it while it is still empty. **Pasted text is never changed.** Set `autopair: false` to turn it off.
 - **`spellcheck: true`** turns on offline spell checking in the chat input box and in the `/char`, persona and `/lore` windows (default `false`). The Name fields are not checked, and in `/lore` only a book's Description and an entry's Text are. Misspelled words get a red underline (the red of the terminal's theme; the text keeps its colour). Words of one or two letters are checked too (`ho` and `x` are marked; `a`, `I`, `of`, `up` are not). The word you are still typing is not marked until the cursor leaves it. The word list is English and built into the program, so no internet or system dictionary is needed. It includes common roleplay and chat words (`yandere`, `waifu`, `tiefling`, `smirked`, `ooc`, `npc`, ...), kept in `tools/gen_dict.py`. **Extra words** go in `~/.config/tarpi/dictionary.txt` (one per line, `#` starts a comment). The character's name and your persona's name are always accepted. Details: `src/spell.rs`.
@@ -1052,7 +1058,7 @@ Everything tarpi needs is its own: cards in `~/.config/tarpi/characters/`, perso
 ## Limitations
 
 - **Backends:** only text completion is supported, through a standalone connection (`/api`): llama.cpp, any OpenAI-compatible `/v1/completions` server (OpenRouter included) and Ollama's `/api/generate`. The chat completions endpoint is not used. No other server is contacted (apart from `tarpi serve` when you use `tarpi connect`, a SillyTavern server for `import-st`, and the link you give to `/import`).
-- **Sync:** `tarpi connect` syncs whole files. There is no merging inside a chat, no encryption (plain TCP with a token), and an open chat is not reloaded when another device changes it.
+- **Sync:** `tarpi connect` syncs whole files. There is no merging inside a chat, the link is encrypted by default (`sync: encrypted`, but without a token a server can't be told from an impostor), and an open chat is not reloaded when another device changes it.
 - **Lorebooks** (a card's own, or your own in `/lore`) use plain-text keys and are deliberately minimal (see [Lorebooks](#lorebooks)). Vector memory is only a simple word match (see [Vector memory](#vector-memory)); no group chats or tool calling.
 - **Token counts** used to trim history to the context window are an estimate (`chars_per_token`), not a real tokenizer. The totals in the status row are exact once the connection's tokenizer has answered (see [Keys](#keys)). Without a tokenizer route (OpenRouter, OpenAI) they are the `usage` the backend reports with each reply (prompt plus reply), exact until the chat changes.
 - **Unfinished prose** is closed for you while a reply streams: an open `*narration`, `**bold` or `"speech` is shown with its closing marker added, and the model's own closer simply takes its place. Nothing is added for a lone trailing `*`, `2 * 3`, bullets, a `*` inside a word, or past a blank line. When a reply ends with markers still open, they are closed in the saved text too (Ctrl+K takes them off again before continuing).

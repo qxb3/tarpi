@@ -9,14 +9,14 @@
 //! lets either side see at once when the other is gone. The server's token is
 //! made the first time and kept in `~/.config/tarpi/serve-token`; a device
 //! proves it knows it with `auth` before anything else is answered. With
-//! `serve_trust_all: true` in `config.yaml` no token is asked for at all.
+//! `sync: serve_trust_all: true` in `config.yaml` no token is asked for at all.
 //!
 //! Requests (the `"op"` of a message from the device):
 //!
 //! | op | Does |
 //! | --- | --- |
 //! | `hello` | `{"proto"}`: answered even before `auth`: `{"tarpi": version, "proto": 2, "token": bool}` (does this server want a token) |
-//! | `auth` | `{"token"}`: `ok`, or `401` and the server closes the link |
+//! | `auth` | `{"token"}`, or `{"proof"}` on an encrypted link (see `wire::proof`): `ok` (with the server's own `proof` on an encrypted link), or `401` and the server closes the link |
 //! | `manifest` | every shared file: path, size, modification time, hash (the body is the JSON list) |
 //! | `get` | `{"path"}`: the file's bytes in the body, its time in `mtime` |
 //! | `put` | `{"path", "base", "mtime"}` + the bytes: write the file, but only if it still has hash `base` (empty: only if it does not exist yet); otherwise `409` |
@@ -54,7 +54,7 @@ use tokio::net::{TcpListener, TcpStream};
                   screen: the command just runs until you stop it with Ctrl+C. By default \
                   it listens on every network interface; --local limits it to this \
                   machine. Clients need the token it prints (kept in \
-                  ~/.config/tarpi/serve-token), unless `serve_trust_all: true` is set in \
+                  ~/.config/tarpi/serve-token), unless `serve_trust_all: true` is set under `sync:` in \
                   config.yaml: then anyone who can reach the port is let in. The \
                   connection is a plain, unencrypted TCP link, so only use it on a network you trust.",
     after_help = concat!(
@@ -89,8 +89,10 @@ const SILENCE: Duration = Duration::from_secs(5);
 struct State {
     root: PathBuf,
     token: String,
-    /// `serve_trust_all`: no token is asked for.
+    /// `sync.serve_trust_all`: no token is asked for.
     trust_all: bool,
+    /// `sync.encrypted`: the link to every device is encrypted.
+    encrypted: bool,
     scanner: std::sync::Mutex<Scanner>,
     /// Held while a file is checked and changed, so two clients cannot both
     /// pass the "still the version you saw" check.
@@ -150,7 +152,9 @@ pub async fn run() -> Result<()> {
     }
     let cli = ServeCli::parse_from(argv);
     let cfg = config::load()?;
-    let trust_all = cfg.serve_trust_all.unwrap_or(false);
+    let sync = cfg.sync();
+    let trust_all = sync.serve_trust_all;
+    let encrypted = sync.encrypted;
     let root = config::data_root().ok_or_else(|| anyhow!("no config directory on this system"))?;
     std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
     // With `serve_trust_all` there is no token to make or to print.
@@ -177,14 +181,22 @@ pub async fn run() -> Result<()> {
         println!("tarpi serve  {}:{}{}  [no token]", host, cli.port, scope);
         println!();
         println!("  connect  tarpi connect");
-        println!("           serve_url: {}:{}  serve_trust_all: true", host, cli.port);
+        println!("           sync: serve_url: {}:{}  serve_trust_all: true", host, cli.port);
         println!("  warning  anyone who can reach this port can read and change everything shared");
+        if encrypted {
+            println!("           (the link is encrypted, but without a token nobody can tell this server from an impostor)");
+        }
     } else {
         println!("tarpi serve  {}:{}{}", host, cli.port, scope);
         println!();
         println!("  token    {}", token);
         println!("  connect  tarpi connect {}", token);
-        println!("           serve_url: {}:{}", host, cli.port);
+        println!("           sync: serve_url: {}:{}", host, cli.port);
+    }
+    if encrypted {
+        println!("  link     encrypted (sync: encrypted: true)");
+    } else {
+        println!("  warning  the link is NOT encrypted (sync: encrypted: false): use it on a network you trust");
     }
     println!();
     println!("Ctrl+C to stop\n");
@@ -194,6 +206,7 @@ pub async fn run() -> Result<()> {
         root,
         token,
         trust_all,
+        encrypted,
         write_lock: tokio::sync::Mutex::new(()),
         changes: tokio::sync::watch::channel(0u64).0,
     });
@@ -238,10 +251,20 @@ async fn monitor(st: Arc<State>) {
 
 /// One device, from its greeting to its goodbye.
 async fn session(mut sock: TcpStream, peer: SocketAddr, st: Arc<State>) {
-    if !wire::server_handshake(&mut sock).await {
-        return;
-    }
-    let (tx, mut inbox) = wire::start(sock, SILENCE);
+    let link = match wire::server_handshake(&mut sock, st.encrypted).await {
+        Ok(link) => link,
+        Err(refusal) => {
+            // Said in the log, so whoever runs this machine can see why a
+            // device cannot connect (a peer that just left says nothing).
+            if let Some(line) = refusal.describe() {
+                println!("{}  {}  {}", stamp(), peer.ip(), line);
+            }
+            return;
+        }
+    };
+    // On an encrypted link the token is proved, not sent (see `wire::proof`).
+    let binding = link.binding();
+    let (tx, mut inbox) = wire::start(sock, SILENCE, link);
     let mut authed = st.trust_all;
     let mut since: Option<std::time::Instant> = None;
     let mut changes = st.changes.subscribe();
@@ -267,13 +290,22 @@ async fn session(mut sock: TcpStream, peer: SocketAddr, st: Arc<State>) {
                         ));
                     }
                     "auth" => {
-                        if authed || token_ok(&st.token, m.str("token")) {
+                        let known = match &binding {
+                            Some(b) => token_ok(&wire::proof(&st.token, b, "client"), m.str("proof")),
+                            None => token_ok(&st.token, m.str("token")),
+                        };
+                        if authed || known {
                             if !authed {
                                 authed = true;
                                 println!("{}  {}  connected", stamp(), peer.ip());
                                 since = Some(std::time::Instant::now());
                             }
-                            tx.send(Message::ok(m.id, json!({})));
+                            // The device checks that this server knows the token too.
+                            let extra = match &binding {
+                                Some(b) if !st.trust_all => json!({ "proof": wire::proof(&st.token, b, "server") }),
+                                _ => json!({}),
+                            };
+                            tx.send(Message::ok(m.id, extra));
                         } else {
                             println!("{}  {}  refused: missing or wrong token", stamp(), peer.ip());
                             tx.send(Message::fail(m.id, 401, "missing or wrong token"));
@@ -404,16 +436,18 @@ async fn route(st: &Arc<State>, m: Message, peer: SocketAddr) -> Option<Message>
 async fn manifest(st: &Arc<State>, id: u32) -> Message {
     let st2 = st.clone();
     let scanned = tokio::task::spawn_blocking(move || {
-        st2.scanner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .scan()
+        let mut scanner = st2.scanner.lock().unwrap_or_else(|e| e.into_inner());
+        let files = scanner.scan();
+        (files, scanner.unreadable())
     })
     .await;
     match scanned {
-        Ok(files) => {
+        Ok((files, unreadable)) => {
+            // What could not be read is told too: a file missing from the list
+            // for that reason is not a file that was deleted here.
             let files: Vec<Entry> = files;
-            Message::ok(id, json!({})).with_body(serde_json::to_vec(&Manifest { files }).unwrap_or_default())
+            Message::ok(id, json!({}))
+                .with_body(serde_json::to_vec(&Manifest { files, unreadable }).unwrap_or_default())
         }
         Err(_) => Message::fail(id, 500, "scan failed"),
     }
