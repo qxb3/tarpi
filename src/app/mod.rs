@@ -55,7 +55,7 @@ use crate::cmds;
 use crate::config;
 use crate::conn;
 use crate::formatting;
-use crate::gen::{self, GenEvent, GenMsg};
+use crate::gen::{GenEvent, GenMsg};
 use crate::health::Health;
 use crate::history::History;
 use crate::input::{Input, Mode};

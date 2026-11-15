@@ -14,20 +14,6 @@ pub fn host_of(url: &str) -> String {
 /// `(source, model, api type for the title bar)` for the active API.
 pub(super) fn backend_info(settings: &Value) -> (String, String, String) {
     match jstr(settings, "main_api").as_str() {
-        "openai" => {
-            let oai = settings.get("oai_settings").cloned().unwrap_or(Value::Null);
-            let source = {
-                let s = jstr(&oai, "chat_completion_source");
-                if s.is_empty() {
-                    "openai".to_string()
-                } else {
-                    s
-                }
-            };
-            let model = gen::model_for(&oai, &source);
-            let label = source.clone();
-            (source, model, label)
-        }
         "textgenerationwebui" => {
             let ty = textgen::api_type(settings);
             let label = ty.clone();
