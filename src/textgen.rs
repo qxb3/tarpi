@@ -18,6 +18,10 @@ use std::collections::HashMap;
 
 static NULL: Value = Value::Null;
 
+/// A `chars_per_token` that keeps the history from being trimmed (the status
+/// row counts the whole prompt with it).
+pub const NO_TRIM: f32 = 1.0e6;
+
 fn sub<'a>(v: &'a Value, key: &str) -> &'a Value {
     v.get(key).unwrap_or(&NULL)
 }
@@ -865,12 +869,34 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
         if let Some(t) = a.continue_text {
             scanned.push(t.to_string());
         }
+        // The token count of the status row builds the prompt with a huge
+        // `chars_per_token` so that nothing is trimmed; entries must not all
+        // cost one token there, or the budget would not count.
+        let lore_cpt = if a.chars_per_token >= NO_TRIM { 3.2 } else { a.chars_per_token };
+        // A book with no token budget of its own shares a quarter of the room
+        // the prompt has (as SillyTavern's default), so that lore cannot push
+        // the whole chat out of the context.
+        let mut room = {
+            let max_ctx = ji64(a.settings, "max_context", 8192).max(256) as usize;
+            let amount = ji64(a.settings, "amount_gen", 350).max(1) as usize;
+            (max_ctx.saturating_sub(amount) / 4).max(1)
+        };
+        let mut seen: Vec<(Place, String)> = Vec::new();
         for book in books {
-            for e in book.activate(&scanned, a.chars_per_token) {
+            for e in book.activate_within(&scanned, lore_cpt, room) {
+                room = room
+                    .saturating_sub(crate::prompt::est_tokens(&e.content, lore_cpt))
+                    .max(1);
                 let text = subst(&e.content, &ctx).trim().to_string();
                 if text.is_empty() {
                     continue;
                 }
+                // The same text twice in the same place (a card's book and a
+                // file of the same book imported by hand, say) is sent once.
+                if seen.iter().any(|(p, t)| *p == e.place && *t == text) {
+                    continue;
+                }
+                seen.push((e.place, text.clone()));
                 match e.place {
                     Place::Before => wi_before.push(text),
                     Place::After => wi_after.push(text),

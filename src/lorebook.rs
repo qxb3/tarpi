@@ -56,7 +56,7 @@ pub struct Lorebook {
     pub entries: Vec<Entry>,
     /// How many of the latest messages are searched.
     pub scan_depth: usize,
-    /// Most tokens the entries may add together; 0 for no limit.
+    /// Most tokens the entries may add together; 0 for the default share (see `activate_within`).
     pub token_budget: usize,
 }
 
@@ -69,6 +69,32 @@ pub(crate) fn strings(v: Option<&Value>) -> Vec<String> {
         _ => Vec::new(),
     };
     list.into_iter().filter(|s| !s.is_empty()).collect()
+}
+
+/// Text as keys are compared: curly quotes become straight ones and every run
+/// of white space (new lines, tabs, no-break spaces) becomes one space. Models
+/// and phones write `Jack\u{2019}s` and `Silver\nTower`, cards write
+/// `Jack's` and `Silver Tower`.
+fn fold(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut space = false;
+    for c in s.chars() {
+        let c = match c {
+            '\u{2018}' | '\u{2019}' | '\u{201B}' | '\u{2032}' => '\'',
+            '\u{201C}' | '\u{201D}' | '\u{201E}' => '"',
+            c => c,
+        };
+        if c.is_whitespace() {
+            if !space {
+                out.push(' ');
+            }
+            space = true;
+        } else {
+            out.push(c);
+            space = false;
+        }
+    }
+    out
 }
 
 impl Entry {
@@ -116,26 +142,26 @@ impl Entry {
         })
     }
 
-    /// Does any of `keys` appear in the text? (`lower` is `text` lowercased.)
+    /// Does this one key appear in the text? Both sides are folded the same
+    /// way (see `fold`), so a key typed with a straight apostrophe matches the
+    /// curly one a model writes. (`lower` is `text` lowercased.)
+    fn key_in(&self, key: &str, text: &str, lower: &str) -> bool {
+        let k = fold(key);
+        if self.case_sensitive {
+            text.contains(k.as_str())
+        } else {
+            lower.contains(&k.to_lowercase())
+        }
+    }
+
+    /// Does any of `keys` appear in the text?
     fn any_key_in(&self, keys: &[String], text: &str, lower: &str) -> bool {
-        keys.iter().any(|k| {
-            if self.case_sensitive {
-                text.contains(k.as_str())
-            } else {
-                lower.contains(&k.to_lowercase())
-            }
-        })
+        keys.iter().any(|k| self.key_in(k, text, lower))
     }
 
     /// Does every one of `keys` appear in the text?
     fn all_keys_in(&self, keys: &[String], text: &str, lower: &str) -> bool {
-        keys.iter().all(|k| {
-            if self.case_sensitive {
-                text.contains(k.as_str())
-            } else {
-                lower.contains(&k.to_lowercase())
-            }
-        })
+        keys.iter().all(|k| self.key_in(k, text, lower))
     }
 
     fn fires(&self, text: &str, lower: &str) -> bool {
@@ -182,17 +208,30 @@ impl Lorebook {
     /// no longer fits is skipped, and smaller ones after it still get their
     /// turn. (An entry bigger than the whole budget is never used.)
     pub fn activate(&self, messages: &[String], chars_per_token: f32) -> Vec<&Entry> {
+        self.activate_within(messages, chars_per_token, 0)
+    }
+
+    /// Like `activate`, with `room` tokens as the budget of a book that sets
+    /// none of its own (`token_budget` 0), so that a big book cannot crowd the
+    /// chat out of the prompt. `room` 0 means no limit.
+    pub fn activate_within(
+        &self,
+        messages: &[String],
+        chars_per_token: f32,
+        room: usize,
+    ) -> Vec<&Entry> {
         let from = messages.len().saturating_sub(self.scan_depth);
-        let text = messages[from..].join("\n");
+        let text = fold(&messages[from..].join("\n"));
         let lower = text.to_lowercase();
         let mut on: Vec<&Entry> = self.entries.iter().filter(|e| e.fires(&text, &lower)).collect();
-        if self.token_budget > 0 {
+        let budget = if self.token_budget > 0 { self.token_budget } else { room };
+        if budget > 0 {
             on.sort_by(|a, b| b.order.cmp(&a.order));
             let mut used = 0usize;
             let mut kept = Vec::new();
             for e in on {
                 let cost = est_tokens(&e.content, chars_per_token);
-                if used + cost > self.token_budget {
+                if used + cost > budget {
                     continue;
                 }
                 used += cost;
@@ -379,5 +418,34 @@ mod tests {
     fn keys_may_be_a_comma_list() {
         let b = book(json!([{ "keys": "elf, dwarf", "content": "c" }]));
         assert_eq!(texts(&b, &["a dwarf"]).len(), 1);
+    }
+
+    #[test]
+    fn curly_quotes_and_line_breaks_do_not_hide_a_key() {
+        let b = book(json!([
+            { "keys": ["Jack's"], "content": "j" },
+            { "keys": ["Silver Tower"], "content": "s" },
+        ]));
+        assert_eq!(texts(&b, &["Jack\u{2019}s boat"]), vec!["j"]);
+        assert_eq!(texts(&b, &["the silver\n  tower"]), vec!["s"]);
+    }
+
+    #[test]
+    fn a_book_without_a_budget_gets_the_room_it_is_given() {
+        let text = "x".repeat(32); // ~10 tokens
+        let b = book(json!([
+            { "keys": ["a"], "content": text, "insertion_order": 1 },
+            { "keys": ["a"], "content": text, "insertion_order": 2 },
+            { "keys": ["a"], "content": text, "insertion_order": 3 },
+        ]));
+        let m = msgs(&["a"]);
+        assert_eq!(b.activate(&m, 3.2).len(), 3);
+        let on = b.activate_within(&m, 3.2, 25);
+        assert_eq!(on.iter().map(|e| e.order).collect::<Vec<_>>(), vec![2, 3]);
+        // A budget of its own wins over the room.
+        let b = Lorebook::from_card_data(&json!({ "character_book": { "token_budget": 100,
+            "entries": [{ "keys": ["a"], "content": text }] } }))
+        .unwrap();
+        assert_eq!(b.activate_within(&m, 3.2, 5).len(), 1);
     }
 }

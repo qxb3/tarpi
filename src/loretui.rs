@@ -751,7 +751,7 @@ impl Tui {
                     self.say(
                         format!(
                             "saved, but {} {} bigger than the token budget and will never be used \
-                             (raise the budget, or set it to 0 for no limit)",
+                             (raise the budget, or set it to 0 for the default share of the prompt)",
                             big,
                             if big == 1 { "entry is" } else { "entries are" }
                         ),
@@ -1069,7 +1069,7 @@ impl Tui {
             Target::Book(BF::Description) => "Description",
             Target::Book(BF::Characters) => "Characters (comma-separated)",
             Target::Book(BF::ScanDepth) => "Scan depth (messages)",
-            Target::Book(BF::TokenBudget) => "Token budget (0 = no limit)",
+            Target::Book(BF::TokenBudget) => "Token budget (0 = a quarter of the prompt)",
             Target::Book(BF::Global) => "Lorebook",
             Target::Item(f) => ef_label(f),
         }
@@ -1819,7 +1819,7 @@ fn bf_help(f: BF, char_name: &str, active: bool) -> String {
             if char_name.is_empty() { "this chat's character" } else { char_name }
         ),
         BF::ScanDepth => "How many of the latest messages are searched for trigger words. Higher finds older mentions. Left / Right: 1, Enter: type a number.".to_string(),
-        BF::TokenBudget => "The most text (in tokens) the book may add to one prompt. 0 = no limit. Left / Right: 100, Enter: type a number.".to_string(),
+        BF::TokenBudget => "The most text (in tokens) the book may add to one prompt. 0 = a quarter of the prompt. Left / Right: 100, Enter: type a number.".to_string(),
     }
 }
 
@@ -1965,7 +1965,7 @@ impl Tui {
             BF::ScanDepth => (arrows(&format!("{} latest messages", b.scan_depth)), false),
             BF::TokenBudget => {
                 if b.token_budget == 0 {
-                    (arrows("0 (no limit)"), false)
+                    (arrows("0 (default share)"), false)
                 } else {
                     (arrows(&format!("{} tokens", b.token_budget)), false)
                 }

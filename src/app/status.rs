@@ -80,7 +80,7 @@ impl App {
     /// trimmed to the context window, so the count is the full total.
     pub(super) fn full_prompt_text(&self) -> String {
         // A chars-per-token this large keeps the history trimming from cutting anything.
-        const NO_TRIM: f32 = 1.0e6;
+        const NO_TRIM: f32 = textgen::NO_TRIM;
         let history = &self.chat.messages[..];
         let note = Note::from_chat(&self.chat);
         match jstr(&self.settings, "main_api").as_str() {
