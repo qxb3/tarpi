@@ -772,7 +772,25 @@ async fn main() -> Result<()> {
             }
             Some(app::Exit::NewChat) => want = Want::New,
             Some(app::Exit::Pick) => {
-                // The last chat is gone: the `choose a character` window again.
+                // The last chat is gone, or the character was deleted: the
+                // `choose a character` window again. A deleted character has
+                // to be replaced to build the screen behind the window.
+                let mut fresh = charstore::list();
+                if !fresh
+                    .iter()
+                    .any(|c| jstr(c, "avatar") == jstr(&entry, "avatar"))
+                {
+                    if fresh.is_empty() {
+                        charstore::ensure_default()
+                            .context("could not create the default character")?;
+                        fresh = charstore::list();
+                    }
+                    if fresh.is_empty() {
+                        bail!("no characters, and the default one could not be created");
+                    }
+                    fresh.sort_by_key(|c| char_display_name(c).to_lowercase());
+                    entry = fresh[0].clone();
+                }
                 arrival = Arrival::Start;
                 startup_pick = true;
                 pending_new = false;

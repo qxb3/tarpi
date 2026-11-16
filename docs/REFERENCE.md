@@ -865,7 +865,7 @@ On a device that uses `tarpi connect`, the characters folder *is* the local copy
 
 `/chars` opens the window with every character. Press `d` on one and it asks `Delete 'Tarpi' and its chats? y = yes, other = no`. **Only `y` says yes; Enter does not.** Then the card file is deleted from the characters folder, and the character's folder in `chats/` goes with it (the `_before-summary` copies too). The window stays open with a note saying what was deleted (`deleted Tarpi and its 3 chats`), and the list is shorter.
 
-When the character you delete is the one you are chatting with, the question adds `(quits tarpi)`. After the `y`, tarpi stops the reply that is being written, deletes everything and exits, printing `Deleted "Tarpi" and its 3 chats.` In a `/one-shot` chat a reply that is being written can't be stopped, so the open character can't be deleted until it is done.
+When the character you delete is the one you are chatting with, tarpi stops the reply that is being written, deletes everything and goes back to the `choose a character` window (the one from start-up), just like deleting the character's last chat. If it was the only character, the default one is written and offered there. In a `/one-shot` chat a reply that is being written can't be stopped, so the open character can't be deleted until it is done.
 
 **This cannot be undone.** With `tarpi connect`, the files go from the local copy and the sync deletes them on the server too (see [Importing and deleting while connected](#importing-and-deleting-while-connected)). A file that was changed on the other side in the meantime is never deleted, so a chat another device wrote just before is kept in `chats/` (not shown while the card is gone; importing a card of the same name shows it again).
 

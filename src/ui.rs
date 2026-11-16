@@ -1287,23 +1287,22 @@ pub fn draw_picker(f: &mut Frame, area: Rect, p: &mut Picker, full: bool) {
     f.render_widget(Clear, rect);
 
     let bottom: Line<'static> = if let Some(key) = &p.confirm {
-        let (shown, open_now) = p
+        let shown = p
             .items
             .iter()
             .find(|i| i.key == *key)
-            .map(|i| (i.label.clone(), i.current))
-            .unwrap_or_else(|| (key.clone(), false));
+            .map(|i| i.label.clone())
+            .unwrap_or_else(|| key.clone());
         // Where deleting takes more with it (a character's chats) the window
-        // says so, and that deleting the open one closes tarpi.
-        // (The window is at most 76 columns wide, so the question is kept short.)
+        // says so. (The window is at most 76 columns wide, so the question is
+        // kept short.)
         let text = if p.delete_what.is_empty() {
             format!(" Delete '{}'? y = yes, any other key = no ", shown)
         } else {
             format!(
-                " Delete '{}'{}{}? y = yes, other = no ",
+                " Delete '{}'{}? y = yes, other = no ",
                 fit_cols(&shown, 12),
-                p.delete_what,
-                if open_now { " (quits tarpi)" } else { "" }
+                p.delete_what
             )
         };
         Line::from(Span::styled(text, Style::default().fg(Color::Red)))

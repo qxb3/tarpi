@@ -55,8 +55,8 @@ pub enum Exit {
     NewChat,
     /// Chat with another character (its card file name).
     Character(String),
-    /// The `choose a character` window, as at start-up (the last chat of the
-    /// character was deleted).
+    /// The `choose a character` window, as at start-up (the character's last
+    /// chat was deleted, or the character of this chat was).
     Pick,
 }
 

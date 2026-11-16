@@ -166,9 +166,11 @@ impl App {
 
     /// Delete a character chosen in the `/chars` window (the question was
     /// asked by the window): its card and every chat it has. The window stays
-    /// open, except when it is the character of this chat: then tarpi quits.
-    /// Under `tarpi connect` the files go from the local copy and the sync
-    /// passes the delete on (to the server and so to the other devices).
+    /// open, except when it is the character of this chat: then tarpi goes
+    /// back to the `choose a character` window, as when the last chat of the
+    /// character is deleted. Under `tarpi connect` the files go from the local
+    /// copy and the sync passes the delete on (to the server and so to the
+    /// other devices).
     pub(super) async fn character_delete(&mut self, avatar: &str) {
         let current = avatar == self.chat.avatar && !self.startup_pick;
         // A reply that is being written in a one-shot chat can't be stopped,
@@ -194,6 +196,10 @@ impl App {
             .unwrap_or(0);
         if current {
             // Stop first: finishing a generation would save the chat again.
+            // Then back to the `choose a character` window, like deleting the
+            // last chat of the character, instead of leaving tarpi.
+            self.picker = None;
+            self.exit_to = Some(Exit::Pick);
             self.quit().await;
         }
         let outcome = match charstore::delete(avatar) {
@@ -217,8 +223,9 @@ impl App {
         }
         match (outcome, current) {
             (Ok(()), true) => {
+                // Nothing to show on this screen any more: the next round
+                // opens the `choose a character` window (`Exit::Pick`).
                 self.picker = None;
-                self.exit_note = Some(format!("Deleted \"{}\"{}.", name, what));
             }
             (Ok(()), false) => {
                 if let Some((_, p)) = self.picker.as_mut() {
@@ -230,6 +237,7 @@ impl App {
                 // Not gone: stay in the chat (the card may be half deleted).
                 if current && !card_gone {
                     self.should_quit = false;
+                    self.exit_to = None;
                 }
                 if current && card_gone {
                     self.picker = None;
