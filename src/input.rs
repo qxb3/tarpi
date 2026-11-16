@@ -2295,7 +2295,8 @@ mod tests {
         assert_eq!(i.text, "one two");
         assert_eq!(i.mode, Mode::Normal);
         keys(&mut i, "x");
-        assert_eq!(i.text, "ne two");
+        // The cursor stayed on the `n` (index 1), so `x` takes that one.
+        assert_eq!(i.text, "oe two");
     }
 
     #[test]

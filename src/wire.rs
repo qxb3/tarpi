@@ -942,7 +942,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_silent_peer_is_noticed() {
-        let (mut c, s) = pair().await;
+        let (c, s) = pair().await;
         // `s` is kept open but never speaks (no beats).
         let _keep = s;
         let _ = c.set_nodelay(true);
