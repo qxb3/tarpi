@@ -1,5 +1,5 @@
 //! `/import`: the background download and what happens when it is done
-//! (including the lorebook question that may follow).
+//! (the duplicate question, and the lorebook question that may follow).
 
 use super::*;
 
@@ -15,10 +15,8 @@ impl App {
             return;
         }
         let job = tokio::spawn(async move {
-            let saved = crate::import::import(&arg).await?;
-            let name = if saved.name.is_empty() { saved.avatar.clone() } else { saved.name.clone() };
-            crate::connect::report(format!("imported character {} ({})", name, saved.avatar));
-            Ok::<_, anyhow::Error>(saved)
+            let ready = crate::import::prepare(&arg).await?;
+            Ok::<_, anyhow::Error>(ready)
         });
         self.status = None;
         self.import_job = Some((job, Instant::now()));
@@ -33,50 +31,7 @@ impl App {
             return;
         };
         match job.now_or_never() {
-            Some(Ok(Ok(saved))) => {
-                let name = if saved.name.is_empty() { saved.avatar.clone() } else { saved.name.clone() };
-                // A card with a lorebook: ask whether to copy it into /lore
-                // and link it to this character.
-                let ask = charstore::get(&saved.avatar)
-                    .and_then(|card| crate::lorestore::from_card(&card, &saved.avatar))
-                    .ok()
-                    // Not again when this card's book is already among the
-                    // user's lorebooks. A copy remembers its character, so a
-                    // book of the same name from another character does not
-                    // count (only older copies, with no character, go by name).
-                    .filter(|imp| {
-                        !crate::lorestore::list()
-                            .0
-                            .iter()
-                            .any(|b| b.is_copy_of(&saved.avatar, &imp.book.name))
-                    })
-                    .map(|imp| {
-                        LoreAsk::new(saved.avatar.clone(), name.clone(), imp.book.name.clone(), imp.book.entries.len())
-                    });
-                let asking = ask.is_some();
-                if let Some(a) = ask {
-                    self.lore_pending.push(a);
-                    self.promote_lore_ask();
-                }
-                // A card imported again may carry a changed lorebook while the
-                // copy made earlier is still the one in use: say so.
-                let outdated = !asking && !crate::lorestore::outdated_copies(&saved.avatar).is_empty();
-                self.set_status(
-                    format!(
-                        "imported \"{}\" ({}) \u{2014} {}",
-                        name,
-                        saved.avatar,
-                        if asking {
-                            "it has a lorebook"
-                        } else if outdated {
-                            "its lorebook copy in /lore is out of date (the card's book changed)"
-                        } else {
-                            "switch to it with /chars"
-                        }
-                    ),
-                    false,
-                );
-            }
+            Some(Ok(Ok(ready))) => self.import_ready(ready),
             Some(Ok(Err(e))) => {
                 // One row: the message may have line breaks (a download that failed several ways).
                 let msg = format!("{:#}", e).split_whitespace().collect::<Vec<_>>().join(" ");
@@ -87,7 +42,108 @@ impl App {
         }
     }
 
-    /// Is a window open that the lorebook question must not cover?
+    /// The card is read: a name that is already taken is asked about first
+    /// (and a *Yes* saves it as `Name-1`, `Name-2`, ...); any other card is
+    /// saved at once.
+    fn import_ready(&mut self, ready: crate::import::Ready) {
+        let base = charstore::stem_for(&ready.name, &ready.file_name);
+        if !charstore::stem_taken(&base) && !charstore::name_taken(&ready.name) {
+            self.import_saved(ready);
+            return;
+        }
+        let (new_name, stem) = charstore::duplicate_name(&ready.name, &ready.file_name);
+        let character = if ready.name.trim().is_empty() {
+            base.clone()
+        } else {
+            ready.name.trim().to_string()
+        };
+        let avatar = format!("{}.png", stem);
+        let lorebook = card_lorebook(&ready, &avatar);
+        self.import_pending.push(ImportAsk::new(
+            character.clone(),
+            new_name.clone(),
+            lorebook,
+            ready,
+        ));
+        self.promote_import_ask();
+        self.set_status(
+            format!(
+                "\"{}\" is already in your characters \u{2014} import it as \"{}\" ({})?",
+                character, new_name, avatar
+            ),
+            false,
+        );
+    }
+
+    /// Save a card that raised no question, then do what follows an import.
+    fn import_saved(&mut self, ready: crate::import::Ready) {
+        match crate::import::save(&ready) {
+            Ok(saved) => {
+                report_import(&saved);
+                self.imported(saved);
+            }
+            Err(e) => {
+                let msg = format!("{:#}", e).split_whitespace().collect::<Vec<_>>().join(" ");
+                self.set_status(format!("import failed: {}", msg), true);
+            }
+        }
+    }
+
+    /// What happens after a card was written: if it carries a lorebook not
+    /// copied yet, ask whether to copy it into `/lore` and link it.
+    fn imported(&mut self, saved: charstore::Saved) {
+        let name = if saved.name.is_empty() {
+            saved.avatar.clone()
+        } else {
+            saved.name.clone()
+        };
+        let ask = charstore::get(&saved.avatar)
+            .and_then(|card| crate::lorestore::from_card(&card, &saved.avatar))
+            .ok()
+            // Not again when this card's book is already among the user's
+            // lorebooks. A copy remembers its character, so a book of the same
+            // name from another character does not count (only older copies,
+            // with no character, go by name).
+            .filter(|imp| {
+                !crate::lorestore::list()
+                    .0
+                    .iter()
+                    .any(|b| b.is_copy_of(&saved.avatar, &imp.book.name))
+            })
+            .map(|imp| {
+                LoreAsk::new(
+                    saved.avatar.clone(),
+                    name.clone(),
+                    imp.book.name.clone(),
+                    imp.book.entries.len(),
+                )
+            });
+        let asking = ask.is_some();
+        if let Some(a) = ask {
+            self.lore_pending.push(a);
+            self.promote_lore_ask();
+        }
+        // A card imported again may carry a changed lorebook while the
+        // copy made earlier is still the one in use: say so.
+        let outdated = !asking && !crate::lorestore::outdated_copies(&saved.avatar).is_empty();
+        self.set_status(
+            format!(
+                "imported \"{}\" ({}) \u{2014} {}",
+                name,
+                saved.avatar,
+                if asking {
+                    "it has a lorebook"
+                } else if outdated {
+                    "its lorebook copy in /lore is out of date (the card's book changed)"
+                } else {
+                    "switch to it with /chars"
+                }
+            ),
+            false,
+        );
+    }
+
+    /// Is a window open that the import or lorebook question must not cover?
     pub(super) fn other_window_open(&self) -> bool {
         self.show_help
             || self.prompt_view.is_some()
@@ -95,12 +151,87 @@ impl App {
             || self.card_modal.is_some()
             || self.pos_edit.is_some()
             || self.picker.is_some()
+            || self.import_ask.is_some()
+            || self.lore_ask.is_some()
+    }
+
+    /// Show the next waiting duplicate question when nothing else is open.
+    pub(super) fn promote_import_ask(&mut self) {
+        if self.import_ask.is_none() && !self.import_pending.is_empty() && !self.other_window_open()
+        {
+            self.import_ask = Some(self.import_pending.remove(0));
+        }
     }
 
     /// Show the next waiting lorebook question when nothing else is open.
     pub(super) fn promote_lore_ask(&mut self) {
         if self.lore_ask.is_none() && !self.lore_pending.is_empty() && !self.other_window_open() {
             self.lore_ask = Some(self.lore_pending.remove(0));
+        }
+    }
+
+    /// The answer to the duplicate question: *Yes* writes the card under its
+    /// numbered name and copies its lorebook (linked to it), *No* leaves the
+    /// card out completely.
+    pub(super) fn import_ask_action(&mut self, act: ImportAskAction) {
+        match act {
+            ImportAskAction::None => {}
+            ImportAskAction::No => {
+                if let Some(a) = self.import_ask.take() {
+                    self.set_status(
+                        format!("\"{}\" was not imported", a.character),
+                        false,
+                    );
+                }
+                self.promote_import_ask();
+            }
+            ImportAskAction::Yes => {
+                let Some(a) = self.import_ask.take() else {
+                    return;
+                };
+                let saved = match crate::import::save(&a.ready) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let mut a = a;
+                        a.note = Some(format!("could not import: {:#}", e));
+                        self.import_ask = Some(a);
+                        return;
+                    }
+                };
+                report_import(&saved);
+                let mut msg = format!(
+                    "imported duplicate \"{}\" as \"{}\" ({})",
+                    a.character, a.new_name, saved.avatar
+                );
+                let mut err = false;
+                if a.lorebook.is_some() {
+                    let result = charstore::get(&saved.avatar)
+                        .and_then(|card| crate::lorestore::from_card(&card, &saved.avatar))
+                        .map(|mut imp| {
+                            imp.book
+                                .characters
+                                .push(saved.avatar.trim_end_matches(".png").to_string());
+                            imp
+                        })
+                        .and_then(crate::lorestore::add);
+                    match result {
+                        Ok(b) => msg.push_str(&format!(
+                            " \u{2014} lorebook '{}' ({}) copied and linked",
+                            b.name,
+                            plural(b.entries.len(), "entry", "entries")
+                        )),
+                        Err(e) => {
+                            err = true;
+                            msg.push_str(&format!(
+                                " \u{2014} could not copy its lorebook: {:#}",
+                                e
+                            ));
+                        }
+                    }
+                }
+                self.set_status(msg, err);
+                self.promote_import_ask();
+            }
         }
     }
 
@@ -157,4 +288,32 @@ impl App {
             }
         }
     }
+}
+
+/// Tell `tarpi connect`, if it is running, that a card was added.
+fn report_import(saved: &charstore::Saved) {
+    let name = if saved.name.is_empty() {
+        saved.avatar.clone()
+    } else {
+        saved.name.clone()
+    };
+    crate::connect::report(format!("imported character {} ({})", name, saved.avatar));
+}
+
+/// The lorebook in the waiting card, under the name it will get (`Name-1`
+/// when that name is taken): its entries.
+fn card_lorebook(ready: &crate::import::Ready, avatar: &str) -> Option<(String, usize)> {
+    let card = charstore::raw_card(&ready.bytes)
+        .ok()
+        .map(|raw| charstore::normalize(&raw))?;
+    let imp = crate::lorestore::from_card(&card, avatar).ok()?;
+    Some((
+        crate::lorestore::next_name(&imp.book.name),
+        imp.book.entries.len(),
+    ))
+}
+
+/// `1 entry`, `2 entries`.
+fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{} {}", n, if n == 1 { one } else { many })
 }

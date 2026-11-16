@@ -983,8 +983,31 @@ fn from_st(raw: &Value, entries: &Map<String, Value>) -> Imported {
     Imported { book, notes }
 }
 
+/// The name a new book gets: its own, or `Name-1`, `Name-2`, ... when a book
+/// with that name is already there.
+pub fn next_name(name: &str) -> String {
+    let books = list().0;
+    numbered_name(name, |n| {
+        books
+            .iter()
+            .any(|b| b.name.trim().eq_ignore_ascii_case(n))
+    })
+}
+
+fn numbered_name(name: &str, taken: impl Fn(&str) -> bool) -> String {
+    let base = name.trim();
+    if !taken(base) {
+        return name.to_string();
+    }
+    (1..)
+        .map(|n| format!("{}-{}", base, n))
+        .find(|n| !taken(n))
+        .unwrap()
+}
+
 /// Save an imported book as a new file; the book is returned with its id.
-pub fn add(imp: Imported) -> Result<Book> {
+pub fn add(mut imp: Imported) -> Result<Book> {
+    imp.book.name = next_name(&imp.book.name);
     let mut b = imp.book;
     b.id = String::new();
     save(&mut b)?;
@@ -1304,6 +1327,18 @@ mod tests {
             let gone = check_seen(None, seen).unwrap_err().to_string();
             assert!(gone.contains("deleted"));
         }
+    }
+
+    #[test]
+    fn a_name_that_is_taken_gets_a_number() {
+        let taken = |n: &str| {
+            ["Lorebook", "Lorebook-1", "Other"]
+                .iter()
+                .any(|x| x.eq_ignore_ascii_case(n))
+        };
+        assert_eq!(numbered_name("Fresh", taken), "Fresh");
+        assert_eq!(numbered_name("Lorebook", taken), "Lorebook-2");
+        assert_eq!(numbered_name("lorebook", taken), "lorebook-2");
     }
 
     #[test]

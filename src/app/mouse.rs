@@ -5,6 +5,11 @@ use super::*;
 
 impl App {
     pub(super) async fn on_mouse(&mut self, m: MouseEvent) {
+        if let Some(a) = self.import_ask.as_mut() {
+            let act = a.on_mouse(m);
+            self.import_ask_action(act);
+            return;
+        }
         if let Some(a) = self.lore_ask.as_mut() {
             let act = a.on_mouse(m);
             self.lore_ask_action(act);

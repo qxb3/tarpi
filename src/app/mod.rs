@@ -15,7 +15,7 @@
 //! | `chat_ops` | one-shot, undo, new / delete chat, regenerate, branches, swipes |
 //! | `pickers`, `persona_ui`, `sysprompt_ui`, `prompt_view` | the choose-one windows |
 //! | `card_modal`, `note_config` | the `/char`, `/char-img`, `/note`, `/memory` and `/config` windows |
-//! | `import_flow` | `/import` and the lorebook question after it |
+//! | `import_flow` | `/import`, the duplicate question, and the lorebook question after it |
 //! | `spellcheck` | spell checking of the input box |
 //! | `connection`, `generation` | the API connection, and writing replies |
 //! | `summarize` | `/summarize` |
@@ -58,6 +58,7 @@ use crate::formatting;
 use crate::gen::{GenEvent, GenMsg};
 use crate::health::Health;
 use crate::history::History;
+use crate::importask::{Action as ImportAskAction, ImportAsk};
 use crate::input::{Input, Mode};
 use crate::loreask::{Action as LoreAskAction, LoreAsk};
 use crate::picker::{Action as PickAction, Item as PickItem, Picker};
@@ -128,7 +129,13 @@ pub struct App {
     /// A running `/summarize` (its passes are generated one after the other).
     summary_job: Option<summary::Job>,
     /// A running `/import` (a download can take a while) and when it started.
-    import_job: Option<(JoinHandle<anyhow::Result<charstore::Saved>>, Instant)>,
+    import_job: Option<(JoinHandle<anyhow::Result<crate::import::Ready>>, Instant)>,
+    /// The question `/import` asks when the card's name is taken: import it
+    /// anyway (as `Name-1`), with its lorebook, or leave it out?
+    pub import_ask: Option<ImportAsk>,
+    /// Questions that came up while another window was open; asked one at a
+    /// time, as soon as nothing else is in the way.
+    import_pending: Vec<ImportAsk>,
     /// Said on the terminal once the chat screen has closed (see `main`).
     pub exit_note: Option<String>,
     gen_tx: UnboundedSender<GenMsg>,
@@ -329,6 +336,8 @@ impl App {
             gen_handle: None,
             summary_job: None,
             import_job: None,
+            import_ask: None,
+            import_pending: Vec::new(),
             exit_note: None,
             gen_tx,
             should_quit: false,

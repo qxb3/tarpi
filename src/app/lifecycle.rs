@@ -19,6 +19,7 @@ impl App {
             }
         }
         self.collect_import();
+        self.promote_import_ask();
         self.promote_lore_ask();
         if let Some((_, _, when)) = &self.status {
             if when.elapsed() >= Duration::from_secs(10) {

@@ -52,13 +52,33 @@ impl Kind {
     }
 }
 
-/// Add the card `arg` names to the characters folder: a card file (`.png` /
-/// `.json`), a chub.ai / pygmalion.chat character link, a direct link to a
-/// card file, or the card's JSON text. The card is checked first and a name
-/// that is taken gets `-2`, `-3`, ... (see `charstore::save`).
-pub async fn import(arg: &str) -> Result<charstore::Saved> {
+/// A card that was read and checked, but not written to the characters folder
+/// yet: the duplicate question comes before saving.
+pub struct Ready {
+    pub bytes: Vec<u8>,
+    pub file_name: String,
+    pub name: String,
+}
+
+/// Read the card `arg` names: a card file (`.png` / `.json`), a chub.ai /
+/// pygmalion.chat character link, a direct link to a card file, or the card's
+/// JSON text. The card is checked before anything is written; saving is a
+/// separate step (`save`) so that a card whose name is taken can be confirmed
+/// first. A confirmed duplicate gets `-1`, `-2`, ... after its name (see
+/// `charstore::save`).
+pub async fn prepare(arg: &str) -> Result<Ready> {
     let (bytes, file_name) = fetch(arg).await?;
-    charstore::save(&bytes, &file_name, None, false)
+    let name = charstore::card_name(&bytes)?;
+    Ok(Ready {
+        bytes,
+        file_name,
+        name,
+    })
+}
+
+/// Write a card returned by [`prepare`] into the characters folder, unchanged.
+pub fn save(ready: &Ready) -> Result<charstore::Saved> {
+    charstore::save(&ready.bytes, &ready.file_name, None, false)
 }
 
 /// The card's bytes and a file name for it, checked to be a usable card.

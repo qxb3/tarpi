@@ -19,6 +19,7 @@ mod health;
 mod history;
 mod import;
 mod import_st;
+mod importask;
 mod input;
 mod jv;
 mod lorebook;

@@ -26,6 +26,7 @@ impl App {
                 if self.picker.is_some()
                     || self.pos_edit.is_some()
                     || self.prompt_view.is_some()
+                    || self.import_ask.is_some()
                     || self.lore_ask.is_some()
                 {
                     return;
@@ -55,6 +56,11 @@ impl App {
         // The path menu only lives while the box holds an `/import` path.
         if self.path_open && crate::pathcomp::typed_arg(&self.input.text).is_none() {
             self.path_open = false;
+        }
+        if let Some(a) = self.import_ask.as_mut() {
+            let act = a.handle_key(k);
+            self.import_ask_action(act);
+            return;
         }
         if let Some(a) = self.lore_ask.as_mut() {
             let act = a.handle_key(k);

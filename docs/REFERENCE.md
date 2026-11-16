@@ -742,6 +742,7 @@ Before every reply, the latest messages (the book's `scan_depth`, 4 when it has 
 - **No** (Esc, `n` or `q`) leaves it. `c` in `/lore` copies it later.
 - Left / Right, Tab or `h` / `l` move between the buttons, and a click on a button answers.
 - It is not asked when you already have a copy of this card's lorebook. A copy remembers its character, so a book of the same name that came from another character does not count (only older copies, which remember no character, are recognised by their name).
+- A copy (or an imported book) whose name another book already has gets the next free number: `Lorebook-1`, `Lorebook-2`, and so on.
 - If another window is open when the import finishes, the question waits until it is closed.
 - While a copy of a character's own book (one made this way or with `c`) is on for that character, the card's own copy is left out of the prompt, so the entries are not sent twice.
 - A copy keeps being used as it is even when the card's own book changes later (the card is imported again, or its book edited). `/lore` marks such a copy `(card changed)` and `/import` says so when it imports the card again. To take over the card's version, delete the copy (`d`) and copy the card's book again (`c`).
@@ -827,7 +828,14 @@ Limit: it matches words, not meaning, so "car" does not find "automobile".
 
 **Paths** are read like a shell would: `~` is your home folder, a relative path starts from the folder tarpi was started in, and quotes, `\ ` (a backslash before a space, as a terminal pastes a dragged file) and `file://` links are understood. `/import` with nothing after it shows what it takes. After `/import ` press Tab to browse (see [Path menu](#path-menu-import)).
 
-**Where it goes.** The card is saved as it came into `~/.config/tarpi/characters/`, named after the character (`Tarpi.png`, or `Tarpi-2.png` when that name is taken; a PNG stays a PNG, JSON stays JSON).
+**Where it goes.** The card is saved into `~/.config/tarpi/characters/` as it came (a PNG stays a PNG, JSON stays JSON), named after the character: `Tarpi.png`, or `Tarpi-1.png` when that name is taken.
+
+**A name that is taken.** If another character already has the card's name, a small window asks before anything is written:
+
+- **Yes** (Enter or `y`) imports it under the next free numbered name: `Tarpi-1`, then `Tarpi-2`, and so on. The number goes into the card's own name too, so `/chars` lists `Tarpi` and `Tarpi-1` rather than two `Tarpi` rows.
+- **No** (Esc, `n` or `q`, or a click on *No*) imports nothing: no card file is written.
+- If the card carries a lorebook, the window names it. *Yes* copies it as well, linked to the new character, under the next free numbered name (`Lorebook-1` when `Lorebook` is taken).
+- Left / Right, Tab or `h` / `l` move between the buttons, and a click on a button answers. If another window is open when the import finishes, the question waits until it is closed.
 
 **Checked first.** Before saving, tarpi checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and says so if not.
 
@@ -849,7 +857,7 @@ Before a chat is open, `/import` is not available. With no character yet, `tarpi
 On a device that uses `tarpi connect`, the characters folder *is* the local copy of the server's data (see [Sharing between devices](#sharing-between-devices-serve-and-connect)). So `/import` and the delete in `/chars` change that copy, and the running sync passes it on at once (a final sync also runs when you quit).
 
 - The server's log shows `added character Tarpi (uploaded)`, `deleted ...` lines and, from the device itself, `imported character Tarpi (Tarpi.png)` / `deleted character Tarpi and its 3 chats`. Every other connected device has the change at its next sync.
-- A card name that the server already has is noticed, because the copy is brought up to date before the screen opens (you get `Tarpi-2.png`).
+- A card name that the server already has is noticed, because the copy is brought up to date before the screen opens (you get `Tarpi-1.png`).
 - Two devices importing the same new name at the same moment end up as a conflict: the newer file wins and the older one is kept beside it.
 - Without `tarpi connect`, `/import` and the delete change this device's own `~/.config/tarpi/` only.
 

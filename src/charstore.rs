@@ -190,6 +190,12 @@ pub fn raw_card(bytes: &[u8]) -> Result<Value> {
         .map_err(|e| anyhow!("not a PNG, and not valid JSON either ({})", e))
 }
 
+/// The character name in a card's bytes, after normalization.
+pub fn card_name(bytes: &[u8]) -> Result<String> {
+    let card = normalize(&raw_card(bytes)?);
+    Ok(jstr(&card, "name"))
+}
+
 /// Check that `bytes` is a PNG with a usable card inside (the same reading
 /// `save` does), for `tarpi import` to refuse a plain picture early.
 pub fn check_png_card(bytes: &[u8]) -> Result<()> {
@@ -388,6 +394,58 @@ fn exists(stem: &str) -> bool {
     path_for(stem).is_ok()
 }
 
+/// The file stem a new card gets from its `name` (or from `hint`, the original
+/// file name, when the name has no usable characters), before any number is
+/// added for a name that is taken.
+pub fn stem_for(name: &str, hint: &str) -> String {
+    let hint_stem = Path::new(hint)
+        .file_stem()
+        .and_then(|x| x.to_str())
+        .unwrap_or("");
+    let mut base = sanitize_stem(name);
+    if base.is_empty() {
+        base = sanitize_stem(hint_stem);
+    }
+    if base.is_empty() {
+        base = "character".to_string();
+    }
+    base
+}
+
+/// Whether a card already uses this file stem (`Sofia` for `Sofia.png`).
+pub fn stem_taken(stem: &str) -> bool {
+    exists(stem)
+}
+
+/// Whether another card is already called `name` (ignoring case and the spaces
+/// around it).
+pub fn name_taken(name: &str) -> bool {
+    let n = name.trim();
+    !n.is_empty()
+        && list()
+            .iter()
+            .any(|c| jstr(c, "name").trim().eq_ignore_ascii_case(n))
+}
+
+/// The name and file stem a card that is imported again gets: `<name>-1`
+/// (`Sofia-1`, the name's spaces kept), or `-2`, `-3`, ... when that is taken
+/// too. `name` may be empty, as some cards are: the file stem is used then.
+pub fn duplicate_name(name: &str, hint: &str) -> (String, String) {
+    let base = stem_for(name, hint);
+    for n in 1.. {
+        let display = if name.trim().is_empty() {
+            format!("{}-{}", base, n)
+        } else {
+            format!("{}-{}", name.trim(), n)
+        };
+        let stem = stem_for(&display, hint);
+        if !exists(&stem) && !name_taken(&display) {
+            return (display, stem);
+        }
+    }
+    unreachable!()
+}
+
 /// The raw card, whether it was a `ccv3` PNG, and the file's bytes.
 fn read_card(path: &Path, png: bool) -> Result<(Value, bool, Vec<u8>)> {
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
@@ -507,27 +565,32 @@ pub struct Saved {
     pub name: String,
 }
 
-/// Put a card file (PNG with a card, or card JSON) into the folder, unchanged.
+/// Put a card file (PNG with a card, or card JSON) into the folder.
 ///
-/// The file is named after the character (`Sofia.png`, `Sofia-2.png` when
+/// The file is named after the character (`Sofia.png`, `Sofia-1.png` when
 /// taken; `hint` is the original file name, used when the card has no name).
-/// With `keep_stem` it gets exactly that name instead and an existing card of
-/// that name is left alone, or replaced when `overwrite` is set.
+/// A card imported under a taken name gets that number in its name too, so the
+/// two are told apart in `/chars`. With `keep_stem` it gets exactly that name
+/// instead and an existing card of that name is left alone, or replaced when
+/// `overwrite` is set.
 pub fn save(bytes: &[u8], hint: &str, keep_stem: Option<&str>, overwrite: bool) -> Result<Saved> {
     let png = bytes.starts_with(&PNG_SIG);
-    let raw = if png {
-        read_png_card(bytes)?.0
+    let (raw, had_v3) = if png {
+        read_png_card(bytes)?
     } else {
         let text = String::from_utf8_lossy(bytes);
-        serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}'))
-            .context("not a PNG, and not valid JSON either")?
+        let v = serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}'))
+            .context("not a PNG, and not valid JSON either")?;
+        (v, false)
     };
     if !looks_like_card(&raw) {
         bail!("this is not a character card");
     }
-    let card = normalize(&raw);
-    let name = jstr(&card, "name");
+    let mut card = normalize(&raw);
+    let mut name = jstr(&card, "name");
     let d = dir()?;
+    // A renamed duplicate is written with its new name in the card itself.
+    let mut rewritten: Option<Vec<u8>> = None;
 
     let stem = match keep_stem {
         Some(s) => {
@@ -546,28 +609,27 @@ pub fn save(bytes: &[u8], hint: &str, keep_stem: Option<&str>, overwrite: bool) 
             s.to_string()
         }
         None => {
-            let hint_stem = Path::new(hint)
-                .file_stem()
-                .and_then(|x| x.to_str())
-                .unwrap_or("");
-            let mut base = sanitize_stem(&name);
-            if base.is_empty() {
-                base = sanitize_stem(hint_stem);
+            let base = stem_for(&name, hint);
+            if !exists(&base) && !name_taken(&name) {
+                base
+            } else {
+                let (display, stem) = duplicate_name(&name, hint);
+                name = display;
+                card["name"] = json!(name.clone());
+                if let Some(data) = card.get_mut("data").and_then(|d| d.as_object_mut()) {
+                    data.insert("name".to_string(), json!(name.clone()));
+                }
+                rewritten = Some(if png {
+                    rewrite_png(bytes, &card, had_v3)?
+                } else {
+                    serde_json::to_vec_pretty(&card).context("writing the card")?
+                });
+                stem
             }
-            if base.is_empty() {
-                base = "character".to_string();
-            }
-            if exists(&base) {
-                base = (2..)
-                    .map(|n| format!("{}-{}", base, n))
-                    .find(|s| !exists(s))
-                    .unwrap();
-            }
-            base
         }
     };
     let file = d.join(format!("{}.{}", stem, if png { "png" } else { "json" }));
-    write_atomic(&file, bytes)?;
+    write_atomic(&file, rewritten.as_deref().unwrap_or(bytes))?;
     Ok(Saved {
         avatar: format!("{}.png", stem),
         name,
