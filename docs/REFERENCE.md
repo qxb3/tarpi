@@ -832,9 +832,9 @@ Limit: it matches words, not meaning, so "car" does not find "automobile".
 
 **A name that is taken.** If another character already has the card's name, a small window asks before anything is written:
 
-- **Yes** (Enter or `y`) imports it under the next free numbered name: `Tarpi-1`, then `Tarpi-2`, and so on. The number goes into the card's own name too, so `/chars` lists `Tarpi` and `Tarpi-1` rather than two `Tarpi` rows.
-- **No** (Esc, `n` or `q`, or a click on *No*) imports nothing: no card file is written.
-- If the card carries a lorebook, the window names it. *Yes* copies it as well, linked to the new character, under the next free numbered name (`Lorebook-1` when `Lorebook` is taken).
+- **Import** (Enter or `i`) imports it under the next free numbered name: `Tarpi-1`, then `Tarpi-2`, and so on. The number goes into the card's own name too, so `/chars` lists `Tarpi` and `Tarpi-1` rather than two `Tarpi` rows.
+- **Cancel** (Esc, `c` or `q`, or a click on *Cancel*) imports nothing: no card file is written.
+- If the card carries a lorebook, the window names it. *Import* copies it as well, linked to the new character, under the next free numbered name (`Lorebook-1` when `Lorebook` is taken).
 - Left / Right, Tab or `h` / `l` move between the buttons, and a click on a button answers. If another window is open when the import finishes, the question waits until it is closed.
 
 **Checked first.** Before saving, tarpi checks that the input really is a card (a PNG with an embedded `chara`/`ccv3` chunk, or JSON with `spec`, `name` or `char_name`) and says so if not.

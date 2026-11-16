@@ -1505,7 +1505,8 @@ pub fn draw_pos_edit(f: &mut Frame, area: Rect, e: &mut PosEdit) {
 }
 
 /// The question `/import` asks when the card's name is taken: import it again
-/// under the numbered name (and its lorebook), or leave it out (Yes / No).
+/// under the numbered name (and its lorebook), or leave it out
+/// (Import / Cancel).
 pub fn draw_import_ask(f: &mut Frame, area: Rect, a: &mut crate::importask::ImportAsk) {
     let w = area.width.min(62);
     // Borders (2), the text, an empty row and the buttons.
@@ -1518,7 +1519,7 @@ pub fn draw_import_ask(f: &mut Frame, area: Rect, a: &mut crate::importask::Impo
     let bottom: Line<'static> = if let Some(msg) = &a.note {
         Line::from(Span::styled(format!(" {} ", msg), Style::default().fg(Color::Red)))
     } else {
-        Line::from(" y yes \u{b7} n / Esc no \u{b7} \u{2190}/\u{2192} choose \u{b7} Enter ")
+        Line::from(" i import \u{b7} c / Esc cancel \u{b7} \u{2190}/\u{2192} choose \u{b7} Enter ")
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1561,28 +1562,29 @@ pub fn draw_import_ask(f: &mut Frame, area: Rect, a: &mut crate::importask::Impo
     while (lines.len() as u16) < button_row {
         lines.push(Line::from(""));
     }
-    lines.truncate(button_row as usize);
-    let yes = "  Yes  ";
-    let no = "  No  ";
+    lines.truncate(button_row as usize);    let import = "  Import  ";
+    let cancel = "  Cancel  ";
     let lit = Style::default().add_modifier(Modifier::REVERSED);
-    let (ys, ns) = if a.yes {
+    let (is, cs) = if a.import {
         (lit, Style::default())
     } else {
         (Style::default(), lit)
     };
-    let total = (yes.len() + 2 + no.len()) as u16;
+    let total = (import.len() + 2 + cancel.len()) as u16;
     let x0 = inner.x + inner.width.saturating_sub(total) / 2;
     let y = inner.y + button_row;
-    a.yes_area = Rect::new(x0, y, yes.len() as u16, 1).intersection(inner);
-    a.no_area = Rect::new(x0 + yes.len() as u16 + 2, y, no.len() as u16, 1).intersection(inner);
+    a.import_area = Rect::new(x0, y, import.len() as u16, 1).intersection(inner);
+    a.cancel_area =
+        Rect::new(x0 + import.len() as u16 + 2, y, cancel.len() as u16, 1).intersection(inner);
     lines.push(Line::from(vec![
         Span::raw(" ".repeat((x0 - inner.x) as usize)),
-        Span::styled(yes, ys),
+        Span::styled(import, is),
         Span::raw("  "),
-        Span::styled(no, ns),
+        Span::styled(cancel, cs),
     ]));
     f.render_widget(Paragraph::new(lines), inner);
 }
+
 
 /// The question after `/import` when the card has a lorebook: copy it into
 /// `/lore` and link it to the character (Yes / No).

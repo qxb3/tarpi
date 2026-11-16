@@ -170,13 +170,13 @@ impl App {
         }
     }
 
-    /// The answer to the duplicate question: *Yes* writes the card under its
-    /// numbered name and copies its lorebook (linked to it), *No* leaves the
-    /// card out completely.
+    /// The answer to the duplicate question: *Import* writes the card under
+    /// its numbered name and copies its lorebook (linked to it), *Cancel*
+    /// leaves the card out completely.
     pub(super) fn import_ask_action(&mut self, act: ImportAskAction) {
         match act {
             ImportAskAction::None => {}
-            ImportAskAction::No => {
+            ImportAskAction::Cancel => {
                 if let Some(a) = self.import_ask.take() {
                     self.set_status(
                         format!("\"{}\" was not imported", a.character),
@@ -185,7 +185,7 @@ impl App {
                 }
                 self.promote_import_ask();
             }
-            ImportAskAction::Yes => {
+            ImportAskAction::Import => {
                 let Some(a) = self.import_ask.take() else {
                     return;
                 };
