@@ -48,7 +48,8 @@ pub fn next_chat_name(char_name: &str, existing: &[String]) -> String {
     format!("{}{:02}", safe, max + 1)
 }
 
-/// File name (without `.jsonl`) of an entry from `/api/characters/chats`.
+/// File name (without `.jsonl`) of a chat entry: its `file_id`, or else its
+/// `file_name` (the shape SillyTavern uses when listing chats).
 pub fn file_id(c: &Value) -> String {
     let id = jstr(c, "file_id");
     if !id.is_empty() {
@@ -133,7 +134,6 @@ impl ChatState {
         }
     }
 
-    /// Header followed by messages, ready for `/api/chats/save`.
     /// Is this chat marked `/one-shot`? (Kept in the chat file's metadata.)
     pub fn is_one_shot(&self) -> bool {
         self.header
@@ -155,6 +155,8 @@ impl ChatState {
         self.header["chat_metadata"]["tarpi_one_shot"] = json!(true);
     }
 
+    /// The header followed by every message: one JSON value per line of the
+    /// `.jsonl` chat file.
     pub fn lines(&self) -> Vec<Value> {
         let mut out = Vec::with_capacity(self.messages.len() + 1);
         out.push(self.header.clone());

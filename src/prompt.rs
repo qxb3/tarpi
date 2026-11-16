@@ -1,11 +1,22 @@
-//! Builds the chat-completion prompt the same way SillyTavern's frontend does
-//! (prompt manager order, character card fields, persona, depth injections,
-//! example dialogue, history trimming). The server only forwards what we send,
-//! so this is where the "character" actually gets applied.
+//! Card macros and placeholders, plus a legacy chat-completion prompt builder.
 //!
-//! Not supported yet: vector memory, group chats. (The Author's Note and the
-//! card's lorebook are added in `textgen`, see `note` and `lorebook`;
-//! summaries are separate chat branches, see `summary`.)
+//! The prompt that is actually sent to the backend is built in `textgen`
+//! (context and instruct templates, persona, system prompt, example dialogue,
+//! Author's Note, lorebooks, vector memory, history trimming). This file keeps
+//! what that builder and the rest of the app share:
+//!
+//! - `{{macro}}` substitution (`subst`, `subst_card`, `subst_display`), including
+//!   the old `<USER>` / `<BOT>` placeholders that many cards still use;
+//! - cutting `//` and `/* */` card notes out of what the model sees
+//!   (`strip_comments`, `strip_card_comments`);
+//! - `est_tokens`, the characters-per-token estimate.
+//!
+//! `build_chat_completion` is an older chat-style builder modelled on
+//! SillyTavern's prompt manager. Only a branch of `app::status` that the
+//! current settings never select still calls it.
+//!
+//! Not supported: group chats. (Summaries are separate chat branches, see
+//! `summary`; vector memory is in `memory`.)
 
 use crate::cardedit::comment_ranges;
 use crate::character::Character;
@@ -243,7 +254,8 @@ pub fn subst(text: &str, c: &Ctx) -> String {
 }
 
 /// The old `<USER>`, `<BOT>`, `<CHAR>` and `<GROUP>` placeholders that many
-/// cards still use. SillyTavern replaces them like `{{user}}` / `{{char}}`.
+/// cards still use. They are replaced like `{{user}}` / `{{char}}`, which is
+/// how other card front-ends treat them.
 fn legacy_tags(text: String, user: &str, char_name: &str) -> String {
     if !text.contains('<') {
         return text;
@@ -298,8 +310,8 @@ pub fn subst_display(text: &str, user: &str, char_name: &str) -> String {
 }
 
 /// Full macro substitution for text typed by the user or taken from the card
-/// (greetings): the card's own fields and the persona are available too, as in
-/// SillyTavern.
+/// (greetings): the card's own fields and the persona are available too, the
+/// same way other card front-ends do it.
 pub fn subst_card(text: &str, user: &str, persona: &str, ch: &Character) -> String {
     // Card notes (`//`, `/* */`) are not part of what a greeting says.
     let ch = strip_card_comments(ch);
@@ -547,6 +559,9 @@ fn pick_order(o: &Value) -> Vec<(String, bool)> {
     }
 }
 
+/// Legacy chat-style prompt (system / user / assistant messages) in the order
+/// of SillyTavern's prompt manager. Not used for normal replies, see the
+/// module header.
 pub fn build_chat_completion(a: &BuildArgs) -> Vec<ChatMsg> {
     let o = a.oai;
     let cpt = a.chars_per_token;
