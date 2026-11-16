@@ -14,6 +14,8 @@ pub fn make_greeting(ch: &Character, user_name: &str, persona: &str) -> Option<V
     let all: Vec<String> = all
         .iter()
         .map(|g| chat::tidy(&prompt::subst_card(g, user_name, persona, ch)))
+        // A greeting that is only a comment counts as empty.
+        .filter(|g| !g.trim().is_empty())
         .collect();
     if all.is_empty() {
         None
@@ -41,6 +43,7 @@ pub fn sync_greetings(
     let cards: Vec<String> = cards
         .iter()
         .map(|g| chat::tidy(&prompt::subst_card(g, user_name, persona, ch)))
+        .filter(|g| !g.trim().is_empty())
         .collect();
     if cards.len() < 2 {
         return false;
@@ -79,6 +82,41 @@ pub fn sync_greetings(
     true
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn card(first: &str, alts: &[&str]) -> Character {
+        Character {
+            name: "Al".into(),
+            first_mes: first.into(),
+            alternate_greetings: alts.iter().map(|s| s.to_string()).collect(),
+            ..Character::default()
+        }
+    }
+
+    #[test]
+    fn a_comment_is_not_part_of_a_greeting() {
+        let ch = card("Hello. // a note", &["Alt /* another */ there"]);
+        let msg = make_greeting(&ch, "U", "").unwrap();
+        let text = chat::mes(&msg).to_string();
+        assert!(text.contains("Hello."));
+        assert!(!text.contains("a note"));
+        let swipes = msg.get("swipes").and_then(|s| s.as_array()).unwrap();
+        let all: String = swipes
+            .iter()
+            .filter_map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!all.contains("another"));
+    }
+
+    #[test]
+    fn a_comment_only_greeting_is_no_greeting() {
+        assert!(make_greeting(&card("// note only", &[]), "U", "").is_none());
+    }
+}
+
 impl App {
     /// Which card greeting message `idx` shows: only the very first chat
     /// message can be one. The text it shows is matched against the card's
@@ -104,7 +142,8 @@ impl App {
         }
         let shown = chat::tidy(chat::mes(m));
         let by_text = cards.iter().find(|(_, raw)| {
-            chat::tidy(&prompt::subst_card(raw, &self.user_name, &self.persona, ch)) == shown
+            let text = chat::tidy(&prompt::subst_card(raw, &self.user_name, &self.persona, ch));
+            !text.trim().is_empty() && text == shown
         });
         if let Some((slot, _)) = by_text {
             return Some(*slot);

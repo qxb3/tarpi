@@ -49,7 +49,7 @@ const DIM: Color = Color::Rgb(128, 128, 128);
 
 // ------------------------------------------------------------------- state
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Screen {
     Books,
     Book,
@@ -57,7 +57,7 @@ enum Screen {
 }
 
 /// The settings of a book.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum BF {
     Name,
     Description,
@@ -85,7 +85,7 @@ enum EF {
 }
 
 /// A row of the book screen.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum BRow {
     Header(&'static str),
     Setting(BF),

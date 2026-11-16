@@ -98,6 +98,9 @@ pub struct CardModal {
     picks: Vec<(usize, Pick)>,
     /// The next digit typed replaces a number row's value instead of adding.
     fresh: bool,
+    /// Show `//` and `/* */` notes in gray (the `/char` window). They stay in
+    /// the card but are cut from the prompt (`prompt::strip_card_comments`).
+    pub comments: bool,
 }
 
 fn norm(s: &str) -> String {
@@ -196,6 +199,7 @@ impl CardModal {
             (cn + 2, Pick::Words(ROLES)),
         ];
         m.title = "character card".to_string();
+        m.comments = true;
         // `/char` opens for reading and moving around: NORMAL mode (does
         // nothing when vim modes are off).
         m.input.enter_normal();
@@ -484,6 +488,7 @@ impl CardModal {
             hits: Vec::new(),
             picks: Vec::new(),
             fresh: true,
+            comments: false,
         }
     }
 
@@ -765,9 +770,81 @@ impl CardModal {
     }
 }
 
+/// Ranges of `text` that are `//` or `/* */` comments, as `(start, end)` char
+/// indices, the delimiters included. The line break after a `//` comment is
+/// not included. The card window draws these gray; the prompt builder cuts
+/// them out (`prompt::strip_comments`).
+///
+/// `//` only counts at the start of a line or after whitespace, so a URL such
+/// as `https://example.com` in a card is left alone. `/* */` may span lines,
+/// does not nest, and an unclosed `/*` runs to the end of the field.
+pub fn comment_ranges(text: &str) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '/' && i + 1 < chars.len() {
+            match chars[i + 1] {
+                '/' if at_line_start(&chars, i) => {
+                    let start = i;
+                    while i < chars.len() && chars[i] != '\n' {
+                        i += 1;
+                    }
+                    // A CRLF line break is not part of the comment.
+                    let mut end = i;
+                    if end > start && chars[end - 1] == '\r' {
+                        end -= 1;
+                    }
+                    out.push((start, end));
+                    continue;
+                }
+                '*' => {
+                    let start = i;
+                    i += 2;
+                    while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                        i += 1;
+                    }
+                    if i + 1 < chars.len() {
+                        i += 2;
+                    } else {
+                        i = chars.len();
+                    }
+                    out.push((start, i));
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Whether the `/` at `i` stands at the start of a line or after whitespace
+/// (so `https://` is not taken for a comment).
+fn at_line_start(chars: &[char], i: usize) -> bool {
+    i == 0 || chars[i - 1].is_whitespace()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn comment_ranges_are_char_indices() {
+        assert_eq!(comment_ranges("é // ü"), vec![(2, 6)]);
+    }
+
+    #[test]
+    fn a_url_is_not_a_comment() {
+        assert!(comment_ranges("see https://example.com/x").is_empty());
+        assert_eq!(comment_ranges("a // note"), vec![(2, 9)]);
+    }
+
+    #[test]
+    fn block_comments_do_not_nest() {
+        assert_eq!(comment_ranges("/* a /* b */ c */"), vec![(0, 12)]);
+    }
 
     #[test]
     fn undo_history_is_kept_per_field() {

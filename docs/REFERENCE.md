@@ -591,6 +591,8 @@ All fields except the card file (read-only) can be edited, including the name. R
 
 The **Character's note** (SillyTavern's depth prompt, kept in the card as `extensions.depth_prompt`) is a text like the others, with two rows under it: **Depth** (*before the last N messages*, `0` is after the last one) and **Role** (`system`, `user` or `assistant`). Change them with ←/→ (or `h` / `l`), digits for the depth, ↑/↓ to move, or a click on the left or right half. It is sent with every reply, independently of the chat's Author's Note. An empty text sends nothing.
 
+**Comments.** The card's text fields (description, personality, scenario, the first message, example dialogue, system prompt, post-history instructions, the alternate greetings and the Character's note) take `//` and `/* */` comments, for notes to yourself that the character should never say. `//` comments out the rest of the line; it counts at the start of a line or right after a space, so a URL such as `https://example.com` stays part of the text. `/* ... */` may span several lines, and an unclosed `/*` comments out the rest of the field. Comments stay in the card file and are drawn gray in this window, but they are cut out before the prompt is built: nothing of a comment is sent to the model, and a field holding only a comment counts as empty. Greetings are made without their notes too. The Name is the one text field without comments (there a `//` is part of the name).
+
 | Key / click | What it does |
 | --- | --- |
 | Tab | With `spellcheck: true`: spelling suggestions for the misspelled word at the cursor (see [Configuration](#configuration)). It does not jump to the next field. |

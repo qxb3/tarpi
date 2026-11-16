@@ -12,7 +12,7 @@ use crate::chat;
 use crate::jv::*;
 use crate::lorebook::Place;
 use crate::note::{self, Note};
-use crate::prompt::{subst, Ctx};
+use crate::prompt::{strip_card_comments, subst, Ctx};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -755,16 +755,19 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
     let ins = Instruct::from_value(sub(pu, "instruct"));
     let sysp = sub(pu, "sysprompt");
     let user = a.user_name;
-    let chn = a.ch.name.as_str();
+    // `//` and `/* */` notes in the card are cut here: they are shown in
+    // `/char` but never reach the model (see `prompt::strip_comments`).
+    let ch = strip_card_comments(a.ch);
+    let chn = ch.name.as_str();
     let is_instruct = ins.enabled;
 
     // ---- macro context
     let mut ctx = names_ctx(user, chn);
-    ctx.description = subst(&a.ch.description, &ctx).trim().to_string();
-    ctx.personality = subst(&a.ch.personality, &ctx).trim().to_string();
-    ctx.scenario = subst(&a.ch.scenario, &ctx).trim().to_string();
+    ctx.description = subst(&ch.description, &ctx).trim().to_string();
+    ctx.personality = subst(&ch.personality, &ctx).trim().to_string();
+    ctx.scenario = subst(&ch.scenario, &ctx).trim().to_string();
     ctx.persona = subst(a.persona, &ctx).trim().to_string();
-    ctx.mes_examples = subst(&a.ch.mes_example, &ctx);
+    ctx.mes_examples = subst(&ch.mes_example, &ctx);
     for m in a.history.iter().rev() {
         if chat::is_system(m) {
             continue;
@@ -807,15 +810,15 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
         let content = jstr(sysp, "content");
         let mut c = ctx_clone(&ctx);
         c.original = content.clone();
-        system = if prefer_char_prompt && !a.ch.system_prompt.trim().is_empty() {
-            subst(&a.ch.system_prompt, &c)
+        system = if prefer_char_prompt && !ch.system_prompt.trim().is_empty() {
+            subst(&ch.system_prompt, &c)
         } else {
             subst(&content, &ctx)
         };
         let ph = jstr(sysp, "post_history");
         c.original = ph.clone();
-        post_history = if prefer_char_jb && !a.ch.post_history_instructions.trim().is_empty() {
-            subst(&a.ch.post_history_instructions, &c)
+        post_history = if prefer_char_jb && !ch.post_history_instructions.trim().is_empty() {
+            subst(&ch.post_history_instructions, &c)
         } else {
             subst(&ph, &ctx)
         };
@@ -979,7 +982,7 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
             text: std::mem::take(&mut combined_story),
         });
     }
-    if let Some(dp) = &a.ch.depth_prompt {
+    if let Some(dp) = &ch.depth_prompt {
         let text = subst(&dp.prompt, &ctx);
         if !text.trim().is_empty() {
             injects.push(Inject {

@@ -7,6 +7,7 @@
 //! card's lorebook are added in `textgen`, see `note` and `lorebook`;
 //! summaries are separate chat branches, see `summary`.)
 
+use crate::cardedit::comment_ranges;
 use crate::character::Character;
 use crate::chat;
 use crate::jv::*;
@@ -300,6 +301,9 @@ pub fn subst_display(text: &str, user: &str, char_name: &str) -> String {
 /// (greetings): the card's own fields and the persona are available too, as in
 /// SillyTavern.
 pub fn subst_card(text: &str, user: &str, persona: &str, ch: &Character) -> String {
+    // Card notes (`//`, `/* */`) are not part of what a greeting says.
+    let ch = strip_card_comments(ch);
+    let text = strip_comments(text);
     let mut c = Ctx {
         user: user.to_string(),
         char_name: ch.name.clone(),
@@ -310,7 +314,59 @@ pub fn subst_card(text: &str, user: &str, persona: &str, ch: &Character) -> Stri
     c.scenario = subst(&ch.scenario, &c).trim().to_string();
     c.persona = subst(persona, &c).trim().to_string();
     c.mes_examples = subst(&ch.mes_example, &c);
-    subst(text, &c)
+    subst(&text, &c)
+}
+
+/// `text` with every card comment (`//` and `/* */`, see
+/// `cardedit::comment_ranges`) cut out. A comment that fits on one line
+/// becomes a single space (so `foo/*x*/bar` does not turn into one word); one
+/// that spans lines keeps its line breaks, so the rest of the field stays
+/// where it was.
+pub fn strip_comments(text: &str) -> String {
+    let found = comment_ranges(text);
+    if found.is_empty() {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0usize;
+    for (start, end) in found {
+        out.extend(&chars[i..start]);
+        let newlines = chars[start..end].iter().filter(|&&c| c == '\n').count();
+        if newlines > 0 {
+            for _ in 0..newlines {
+                out.push('\n');
+            }
+        } else if end < chars.len() && chars[end] != '\n' {
+            out.push(' ');
+        }
+        i = end;
+    }
+    out.extend(&chars[i..]);
+    out
+}
+
+/// A copy of the card with comments cut from every text field that reaches
+/// the prompt. The name is left alone: it is not prompt text (it names the
+/// card file and the chat folder).
+pub fn strip_card_comments(ch: &Character) -> Character {
+    let mut c = ch.clone();
+    c.description = strip_comments(&c.description);
+    c.personality = strip_comments(&c.personality);
+    c.scenario = strip_comments(&c.scenario);
+    c.first_mes = strip_comments(&c.first_mes);
+    c.mes_example = strip_comments(&c.mes_example);
+    c.system_prompt = strip_comments(&c.system_prompt);
+    c.post_history_instructions = strip_comments(&c.post_history_instructions);
+    c.alternate_greetings = c
+        .alternate_greetings
+        .iter()
+        .map(|g| strip_comments(g))
+        .collect();
+    if let Some(dp) = c.depth_prompt.as_mut() {
+        dp.prompt = strip_comments(&dp.prompt);
+    }
+    c
 }
 
 // ---------------------------------------------------------------- examples
@@ -494,6 +550,8 @@ fn pick_order(o: &Value) -> Vec<(String, bool)> {
 pub fn build_chat_completion(a: &BuildArgs) -> Vec<ChatMsg> {
     let o = a.oai;
     let cpt = a.chars_per_token;
+    // Card notes (`//`, `/* */`) stay in `/char`; the model never sees them.
+    let ch = strip_card_comments(a.ch);
 
     // ---- macro context (card fields are substituted once, up front)
     let mut ctx = Ctx {
@@ -501,11 +559,11 @@ pub fn build_chat_completion(a: &BuildArgs) -> Vec<ChatMsg> {
         char_name: a.ch.name.clone(),
         ..Ctx::default()
     };
-    ctx.description = subst(&a.ch.description, &ctx).trim().to_string();
-    ctx.personality = subst(&a.ch.personality, &ctx).trim().to_string();
-    ctx.scenario = subst(&a.ch.scenario, &ctx).trim().to_string();
+    ctx.description = subst(&ch.description, &ctx).trim().to_string();
+    ctx.personality = subst(&ch.personality, &ctx).trim().to_string();
+    ctx.scenario = subst(&ch.scenario, &ctx).trim().to_string();
     ctx.persona = subst(a.persona, &ctx).trim().to_string();
-    ctx.mes_examples = subst(&a.ch.mes_example, &ctx);
+    ctx.mes_examples = subst(&ch.mes_example, &ctx);
     for m in a.history.iter().rev() {
         if chat::is_system(m) {
             continue;
@@ -600,18 +658,18 @@ pub fn build_chat_completion(a: &BuildArgs) -> Vec<ChatMsg> {
                 if other == "main"
                     && prefer_char_prompt
                     && !forbid
-                    && !a.ch.system_prompt.trim().is_empty()
+                    && !ch.system_prompt.trim().is_empty()
                 {
                     ctx.original = content.clone();
-                    content = a.ch.system_prompt.clone();
+                    content = ch.system_prompt.clone();
                 }
                 if other == "jailbreak"
                     && prefer_char_jb
                     && !forbid
-                    && !a.ch.post_history_instructions.trim().is_empty()
+                    && !ch.post_history_instructions.trim().is_empty()
                 {
                     ctx.original = content.clone();
-                    content = a.ch.post_history_instructions.clone();
+                    content = ch.post_history_instructions.clone();
                 }
                 let text = subst(&content, &ctx);
                 ctx.original.clear();
@@ -631,7 +689,7 @@ pub fn build_chat_completion(a: &BuildArgs) -> Vec<ChatMsg> {
     }
 
     // Character "depth prompt" (Character's Note) and persona-at-depth.
-    if let Some(dp) = &a.ch.depth_prompt {
+    if let Some(dp) = &ch.depth_prompt {
         let text = subst(&dp.prompt, &ctx);
         if !text.trim().is_empty() {
             injections.push((dp.depth, seq, ChatMsg::new(&dp.role, text)));
@@ -835,4 +893,98 @@ pub fn build_chat_completion(a: &BuildArgs) -> Vec<ChatMsg> {
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn card_comments_never_reach_the_chat_completion_prompt() {
+        let ch = Character {
+            name: "Al".into(),
+            description: "A quiet knight. // an author's note".into(),
+            personality: "Calm /* except in battle */".into(),
+            scenario: "A castle".into(),
+            system_prompt: "Stay in character. /* always */".into(),
+            mes_example: "<START>\n{{user}}: hi\n{{char}}: Hello. // cut".into(),
+            ..Character::default()
+        };
+        let null = Value::Null;
+        let args = BuildArgs {
+            oai: &null,
+            power_user: &null,
+            ch: &ch,
+            user_name: "U",
+            persona: "",
+            persona_position: 0,
+            history: &[],
+            chars_per_token: 3.2,
+            continue_last: false,
+        };
+        let text: String = build_chat_completion(&args)
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("A quiet knight."));
+        assert!(text.contains("Calm"));
+        assert!(!text.contains("author's note"));
+        assert!(!text.contains("except in battle"));
+        assert!(!text.contains("// cut"));
+    }
+
+    #[test]
+    fn line_comments_are_cut_to_the_end_of_the_line() {
+        assert_eq!(strip_comments("Alice // note\nBob"), "Alice \nBob");
+        assert_eq!(strip_comments("// only a note\nBob"), "\nBob");
+        assert_eq!(strip_comments("Alice // note"), "Alice ");
+        // A URL is not a comment.
+        assert_eq!(
+            strip_comments("see https://example.com/x"),
+            "see https://example.com/x"
+        );
+    }
+
+    #[test]
+    fn block_comments_are_cut_and_count_as_space() {
+        assert_eq!(strip_comments("Alice /* note */ waves"), "Alice   waves");
+        assert_eq!(strip_comments("foo/*x*/bar"), "foo bar");
+        assert_eq!(strip_comments("/* all of it */"), "");
+        // A block may span lines, and an unclosed one runs to the end.
+        assert_eq!(strip_comments("A\n/* one\ntwo */\nB"), "A\n\n\nB");
+        assert_eq!(strip_comments("A /* never closed\nB"), "A \n");
+        assert_eq!(strip_comments("/* a /* b */ c */"), "  c */");
+    }
+
+    #[test]
+    fn the_card_copy_cuts_every_prompt_field() {
+        let mut ch = Character {
+            name: "Alice".into(),
+            description: "A /* quiet */ knight".into(),
+            personality: "Calm // except in battle".into(),
+            scenario: "Castle".into(),
+            first_mes: "Well? // greeting note".into(),
+            mes_example: "{{user}}: hi // nope".into(),
+            system_prompt: "Stay in character. /* always */".into(),
+            post_history_instructions: "No anachronisms. // modern".into(),
+            alternate_greetings: vec!["Alt /* x */ greeting".into()],
+            ..Character::default()
+        };
+        ch.depth_prompt = Some(crate::character::DepthPrompt {
+            prompt: "Tense. /* mood */".into(),
+            depth: 4,
+            role: "system".into(),
+        });
+        let c = strip_card_comments(&ch);
+        assert_eq!(c.name, "Alice");
+        assert_eq!(c.description, "A   knight");
+        assert_eq!(c.personality, "Calm ");
+        assert_eq!(c.first_mes, "Well? ");
+        assert_eq!(c.mes_example, "{{user}}: hi ");
+        assert_eq!(c.system_prompt, "Stay in character. ");
+        assert_eq!(c.post_history_instructions, "No anachronisms. ");
+        assert_eq!(c.alternate_greetings, vec!["Alt   greeting"]);
+        assert_eq!(c.depth_prompt.unwrap().prompt, "Tense. ");
+    }
 }

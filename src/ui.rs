@@ -551,8 +551,9 @@ fn input_row(
     found: &[(usize, usize)],
     replaced: bool,
     misspelled: &[(usize, usize)],
+    comment: &[(usize, usize)],
 ) -> Line<'static> {
-    if sel.is_none() && found.is_empty() && misspelled.is_empty() {
+    if sel.is_none() && found.is_empty() && misspelled.is_empty() && comment.is_empty() {
         return Line::from(row.to_string());
     }
     // VISUAL selection: reverse video. `:s` matches: black on yellow.
@@ -565,11 +566,15 @@ fn input_row(
     let spell_style = Style::default()
         .add_modifier(Modifier::UNDERLINED)
         .underline_color(red);
+    // `//` and `/* */` notes of a card (`/char`): gray, and no spell marks.
+    let note_style = Style::default().fg(Color::DarkGray);
     let style_at = |i: usize| -> Style {
         if sel.map_or(false, |(s, e)| i >= s && i < e) {
             sel_style
         } else if found.iter().any(|&(s, e)| i >= s && i < e) {
             find_style
+        } else if comment.iter().any(|&(s, e)| i >= s && i < e) {
+            note_style
         } else if misspelled.iter().any(|&(s, e)| i >= s && i < e) {
             spell_style
         } else {
@@ -598,6 +603,33 @@ fn input_row(
         if st != Style::default() {
             spans.push(Span::styled(" ".to_string(), st));
         }
+    }
+    Line::from(spans)
+}
+
+/// One display row of a card field that is not being edited, with `//` and
+/// `/* */` notes drawn gray (`comment` holds their char ranges).
+fn comment_row(row: &str, start: usize, base: Style, comment: &[(usize, usize)]) -> Line<'static> {
+    if comment.is_empty() {
+        return Line::from(Span::styled(row.to_string(), base));
+    }
+    let note = Style::default().fg(Color::DarkGray);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut buf = String::new();
+    let mut cur = base;
+    let mut idx = start;
+    for c in row.chars() {
+        let inside = comment.iter().any(|&(s, e)| idx >= s && idx < e);
+        let st = if inside { note } else { base };
+        if !buf.is_empty() && st != cur {
+            spans.push(Span::styled(std::mem::take(&mut buf), cur));
+        }
+        cur = st;
+        buf.push(c);
+        idx += 1;
+    }
+    if !buf.is_empty() {
+        spans.push(Span::styled(buf, cur));
     }
     Line::from(spans)
 }
@@ -1744,6 +1776,11 @@ fn draw_card_modal(
             None
         };
         let view: &str = preview.as_deref().unwrap_or(fld.text.as_str());
+        let notes = if m.comments {
+            crate::cardedit::comment_ranges(view)
+        } else {
+            Vec::new()
+        };
         let found: &[(usize, usize)] = if focused {
             live.as_ref().map_or(&[], |l| l.marks.as_slice())
         } else {
@@ -1812,9 +1849,10 @@ fn draw_card_modal(
                         found,
                         preview.is_some(),
                         &misspelled,
+                        &notes,
                     ));
                 } else {
-                    lines.push(Line::from(Span::styled(row.clone(), style)));
+                    lines.push(comment_row(row, starts[r], style, &notes));
                 }
                 if let Some(n) = num {
                     lines[before].spans.insert(0, n);
@@ -2159,6 +2197,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 found,
                 replaced_view,
                 &misspelled,
+                &[],
             )
         })
         .collect();
