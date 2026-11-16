@@ -124,6 +124,7 @@ and Enter to run it.
 /chars          switch to another character
 /chats          open, create or delete chats with this character
 /regen          get a different reply to your last message
+/swipe [nudge]  get a new swipe of the last reply, optionally steered
 /undo           delete the last message
 /help           every key and command
 /quit           exit
@@ -203,6 +204,7 @@ Type these in the chat box. Type `/` to see the menu.
 /new            new chat, keeping this one
 /newchat        delete this chat and start a new one  (/nc)
 /regen [nudge]  regenerate the last reply, optionally steered
+/swipe [nudge]  new swipe of the last reply, optionally steered
 /continue       continue the last reply  (/c)
 /undo [n]       delete the last message, or the last n  (/u)
 /summarize      summary of the chat as a new branch  (/summ)

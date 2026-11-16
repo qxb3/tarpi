@@ -140,6 +140,16 @@ impl App {
                     self.regenerate(if nudge.is_empty() { None } else { Some(nudge) })
                         .await;
                 }
+                "swipe" => {
+                    // Anything after the command is a nudge for this swipe.
+                    let nudge = cmd
+                        .trim_start_matches(|c: char| !c.is_whitespace())
+                        .trim()
+                        .to_string();
+                    self.input.clear();
+                    self.swipe_command(if nudge.is_empty() { None } else { Some(nudge) })
+                        .await;
+                }
                 "continue" | "cont" | "c" => {
                     self.input.clear();
                     self.continue_message().await;

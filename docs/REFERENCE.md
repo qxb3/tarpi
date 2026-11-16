@@ -118,6 +118,7 @@ Type these in the message box. Type `/` to open a menu of them.
 | `/new` | New chat with this character right away (keeps the current one). |
 | `/newchat` or `/nc` | Deletes this chat and starts a new one. |
 | `/regen [nudge]` | Writes the last reply again, optionally steered (see [Nudging a regeneration](#nudging-a-regeneration)). |
+| `/swipe [nudge]` | Writes a **new swipe** of the last reply, keeping the ones it already has, optionally steered like `/regen`. |
 | `/continue` or `/c` | Keeps writing the last reply. |
 | `/undo [n]` or `/u [n]` | Deletes the last message, or the last `n`. |
 | `/summarize` or `/summ` | Writes a summary of a long chat as a new branch (see [Summarizing a long chat](#summarizing-a-long-chat)). |
@@ -630,12 +631,13 @@ The focused field is edited with the same editor as the chat box, so the vim mod
 
 *In plain words: `/regen` with a few words tells the model which way to go this time.*
 
-`/regen <text>` writes the last reply again with a direction for the model, for example `/regen she hesitates, then refuses` or `/regen shorter, more dialogue`.
+`/regen <text>` writes the last reply again with a direction for the model, for example `/regen she hesitates, then refuses` or `/regen shorter, more dialogue`. `/swipe <text>` takes a nudge the same way, for a new swipe instead of a replacement.
 
 - The nudge is added to that one prompt as the very last system message, right before the character's turn, as `[Direction for <char>'s next reply: <text>]`. Macros like `{{user}}` work in it.
 - It is **never saved** to the chat.
 - The new reply replaces the old one and its swipes, as usual.
-- A plain `/regen` or Ctrl+R has no nudge.
+- A plain `/regen` or Ctrl+R has no nudge, and neither has a plain `/swipe`.
+- A `/swipe` nudge steers that swipe only: it is not stored, and swiping to an older version shows that version as it was.
 
 ---
 
@@ -976,7 +978,7 @@ The count is exact when the API connection's own tokenizer (llama.cpp's `/tokeni
 | Click in the input box | Move the cursor there (also while editing a message). |
 | Click a message | Edit that message in the input box, in INSERT mode (Enter / **Save** saves, Shift+Enter adds a line, Esc cancels; the cursor starts at the end of the text; your unsent draft comes back). |
 | Ctrl+S, `:w` (vim modes on), or the **Card save** button | Only while editing the character's greeting (the very first message, at a swipe that came from the card): also writes the edit into the character card itself, as `first_mes` or the matching alternate greeting. It is permanent and new chats get it. **Save** / Enter only changes this chat. |
-| Ctrl+R or `/regen [nudge]` | Regenerate the last reply (`/regen make her more guarded` steers just this reply). The new reply replaces it and wipes all its swipes (it ends up with a single one). Swipes are only added by actually swiping: ←/→ past the last swipe, a tap on the `‹n/m›` counter, or a sideways drag. |
+| Ctrl+R or `/regen [nudge]` | Regenerate the last reply (`/regen make her more guarded` steers just this reply). The new reply replaces it and wipes all its swipes (it ends up with a single one). Swipes are only added by actually swiping — ←/→ past the last swipe, a tap on the `‹n/m›` counter, or a sideways drag — or with `/swipe [nudge]`. |
 | Ctrl+P | Edit the character's very last reply (opens in the input box like a click on it; Enter saves, Esc cancels). |
 | Ctrl+O | Edit your own very last message the same way. |
 | ←/→ | Previous / next swipe (→ past the last generates a new one). Only while the input box is empty and no message is being edited; with a draft in the box they move the text cursor. In a new chat, while the greeting is the only message, they switch between the card's alternate greetings instead (wrapping around). Older chats get the card's alternate greetings too. |

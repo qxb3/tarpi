@@ -241,6 +241,31 @@ impl App {
         self.save().await;
     }
 
+    /// `/swipe [nudge]`: write a new swipe of the last reply, keeping the
+    /// ones it already has. Left / Right past the last swipe does the same
+    /// without a nudge.
+    pub(super) async fn swipe_command(&mut self, nudge: Option<String>) {
+        if self.one_shot_blocks("swipes") {
+            return;
+        }
+        if self.is_generating() || self.editing.is_some() {
+            return;
+        }
+        self.auto_closed = None;
+        let Some(last) = self.chat.messages.last() else {
+            return;
+        };
+        if self.chat.messages.len() < 2 || chat::is_user(last) {
+            self.set_status(
+                "nothing to swipe yet \u{2014} send a message first (Ctrl+\u{2192} cycles greetings)",
+                false,
+            );
+            return;
+        }
+        self.next_nudge = nudge;
+        self.start_generation(true).await;
+    }
+
     /// Left / Right (empty input box): browse swipes of the last reply (or, while the greeting is the only message, the alternate greetings); going past the
     /// last one generates a new swipe (like the web UI).
     pub(super) async fn swipe(&mut self, dir: i32) {

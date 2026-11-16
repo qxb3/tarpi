@@ -62,6 +62,7 @@ pub const COMMANDS: &[Cmd] = &[
     cmd("new", "", "new chat with this character"),
     cmd("newchat", "nc", "delete this chat, start a new one"),
     cmd_args("regen", "", "regenerate the last reply [nudge]"),
+    cmd_args("swipe", "", "write a new swipe of the last reply [nudge]"),
     cmd("continue", "c", "continue the last reply"),
     cmd_args("undo", "u", "delete the last message [n]"),
     cmd("summarize", "summ", "summary of the chat as a new branch"),
@@ -122,6 +123,7 @@ mod tests {
         let fill = |w: &str| matches(w)[0].fill();
         assert_eq!(fill("import"), "/import ");
         assert_eq!(fill("regen"), "/regen ");
+        assert_eq!(fill("swipe"), "/swipe ");
         assert_eq!(fill("undo"), "/undo ");
         assert_eq!(fill("chats"), "/chats");
         assert_eq!(fill("config"), "/config");
