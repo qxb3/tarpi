@@ -2271,17 +2271,21 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Vec::new()
     };
     let shown: Vec<Line<'static>> = (first_row..first_row + visible_rows)
-        .map(|r| {
-            input_row(
-                &input_lines[r],
-                row_starts[r],
+        .map(|r| match (input_lines.get(r), row_starts.get(r)) {
+            (Some(text), Some(&start)) => input_row(
+                text,
+                start,
                 &text_chars,
                 selection,
                 found,
                 replaced_view,
                 &misspelled,
                 &[],
-            )
+            ),
+            // The box is taller than its text (the "Card save" button and
+            // short screens set a minimum height): the rows below are blank.
+            // Emptying a message being edited used to index past the end here.
+            _ => Line::from(""),
         })
         .collect();
     f.render_widget(Paragraph::new(shown).block(block), input_area);
