@@ -22,6 +22,7 @@ mod import_st;
 mod importask;
 mod input;
 mod jv;
+mod leakguard;
 mod lorebook;
 mod memory;
 mod lorestore;

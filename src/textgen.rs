@@ -483,6 +483,62 @@ fn instruct_stop_strings(ins: &Instruct, ctx_v: &Value, user: &str, ch: &str) ->
     result
 }
 
+/// What a reply must never contain, beyond the stop strings: the user's name
+/// at the start of a line, and the instruct template's own turn markers. A
+/// model that starts writing these has lost the thread and is about to play
+/// the user or run on into a new turn; the reply is cut there.
+fn guard_markers(ins: &Instruct, user: &str, ch: &str) -> Vec<String> {
+    fn add(out: &mut Vec<String>, m: String) {
+        if !m.is_empty() && !out.contains(&m) {
+            out.push(m);
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    if user.trim().chars().count() >= 2 {
+        add(&mut out, format!("\n{}:", user.trim()));
+    }
+    if !ins.enabled {
+        return out;
+    }
+    // Prefixes: a marker on a line of its own. Plain words (`User:`) only
+    // count at the start of a line; control tokens (`<|im_start|>`) anywhere.
+    let seqs: [(&String, &str, bool); 8] = [
+        (&ins.input_sequence, user, false),
+        (&ins.first_input_sequence, user, false),
+        (&ins.last_input_sequence, user, false),
+        (&ins.system_sequence, "System", false),
+        (&ins.last_system_sequence, "System", false),
+        (&ins.output_sequence, ch, true),
+        (&ins.first_output_sequence, ch, true),
+        (&ins.last_output_sequence, ch, true),
+    ];
+    for (raw, name, is_bot) in seqs {
+        for line in expand_seq(ins, raw, user, ch, name).split('\n') {
+            let t = line.trim();
+            let control = t.starts_with('<') || t.starts_with('[');
+            // The character's own name line is ordinary text in some styles.
+            if is_bot && !control && !ch.is_empty() && t.contains(ch) {
+                continue;
+            }
+            if control && t.chars().count() >= 3 {
+                add(&mut out, t.to_string());
+            } else if !control && t.chars().count() >= 4 {
+                add(&mut out, format!("\n{}", t));
+            }
+        }
+    }
+    // Suffixes close a turn: only the control-token kind is a safe marker.
+    for raw in [&ins.input_suffix, &ins.output_suffix, &ins.system_suffix, &ins.stop_sequence] {
+        for line in expand_seq(ins, raw, user, ch, "").split('\n') {
+            let t = line.trim();
+            if (t.starts_with('<') || t.starts_with('[')) && t.chars().count() >= 3 {
+                add(&mut out, t.to_string());
+            }
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------- examples
 
 /// Port of `parseExampleIntoIndividual` (used by instruct example formatting).
@@ -732,6 +788,11 @@ pub struct TgArgs<'a> {
 pub struct TgPrompt {
     pub prompt: String,
     pub stop: Vec<String>,
+    /// Text a reply must never contain (the user's own `\nName:` line, the
+    /// instruct template's turn markers). Unlike `stop` it is not sent to the
+    /// server: the reply is cut here if the model writes it anyway. See
+    /// [`crate::leakguard`].
+    pub guard: Vec<String>,
     /// Byte offset in `prompt` where its messages start: before it is the
     /// pre-prompt (system prompt, card, examples; no messages) of the
     /// `/prompt` window. `0` when not worked out.
@@ -1278,6 +1339,7 @@ pub fn build_prompt(a: &TgArgs) -> TgPrompt {
     TgPrompt {
         prompt,
         stop: uniq,
+        guard: guard_markers(&ins, user, chn),
         split,
         view,
         hidden,
@@ -1319,6 +1381,7 @@ pub fn build_summary_prompt(settings: &Value, user: &str, ch: &str, body: &str) 
     TgPrompt {
         prompt: prompt.replace('\r', ""),
         stop: uniq,
+        guard: Vec::new(),
         split: 0,
         view: 0,
         hidden: 0,

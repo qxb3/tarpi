@@ -24,6 +24,7 @@ pub mod openrouter;
 
 use crate::api::short;
 use crate::gen::{GenEvent, GenMsg};
+use crate::leakguard::LeakGuard;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -562,6 +563,12 @@ pub struct DirectRequest {
     pub conn: Connection,
     pub body: Value,
     pub stream: bool,
+    /// The stop strings sent with the request. The reply is also cut at
+    /// them here, for a server that lets one slip through.
+    pub stop: Vec<String>,
+    /// More text that must never reach the screen: the user's own `\nName:`
+    /// line and the instruct template's turn markers (see [`LeakGuard`]).
+    pub guard: Vec<String>,
 }
 
 /// Build the request for `prompt` (already formatted) with the connection's settings.
@@ -577,6 +584,8 @@ pub fn build_request(c: &Connection, prompt: &str, stop: &[String]) -> Result<Di
         conn: c.clone(),
         body: p.build_body(&params, prompt, stop),
         stream: p.streaming(&params),
+        stop: stop.to_vec(),
+        guard: Vec::new(),
     })
 }
 
@@ -626,7 +635,15 @@ async fn run_inner(req: &DirectRequest, id: u64, tx: &UnboundedSender<GenMsg>) -
         if out.is_empty() {
             bail!("the model returned an empty response");
         }
-        let _ = tx.send((id, GenEvent::Chunk(out)));
+        let mut guard = LeakGuard::new(&req.stop, &req.guard);
+        let first = guard.push(&out);
+        let mut text = first.text;
+        if !first.stop {
+            text.push_str(&guard.finish());
+        }
+        if !text.is_empty() {
+            let _ = tx.send((id, GenEvent::Chunk(text)));
+        }
         return Ok(());
     }
 
@@ -638,64 +655,100 @@ async fn run_inner(req: &DirectRequest, id: u64, tx: &UnboundedSender<GenMsg>) -
         .and_then(|b| b.as_bool())
         .unwrap_or(false);
     let mut buf: Vec<u8> = Vec::new();
+    let mut guard = LeakGuard::new(&req.stop, &req.guard);
     let mut done = false;
     let mut got_usage = false;
     // `[DONE]` is the last thing a server says: nothing more to wait for.
     let mut end = false;
-    loop {
-        let chunk = if done {
-            // Text is over: wait only a moment for the usage report.
-            match tokio::time::timeout(USAGE_WAIT, resp.chunk()).await {
-                Ok(r) => r.context("stream interrupted")?,
-                Err(_) => break,
+    let read: Result<()> = async {
+        loop {
+            let chunk = if done {
+                // Text is over: wait only a moment for the usage report.
+                match tokio::time::timeout(USAGE_WAIT, resp.chunk()).await {
+                    Ok(r) => r.context("stream interrupted")?,
+                    Err(_) => break,
+                }
+            } else {
+                resp.chunk().await.context("stream interrupted")?
+            };
+            let Some(chunk) = chunk else { break };
+            buf.extend_from_slice(&chunk);
+            while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
+                let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
+                let line = String::from_utf8_lossy(&line_bytes).trim().to_string();
+                if let Some(u) = usage_of_line(p, &line) {
+                    got_usage = true;
+                    let _ = tx.send((id, GenEvent::Usage(u)));
+                }
+                if line.strip_prefix("data:").map(str::trim) == Some("[DONE]") {
+                    end = true;
+                }
+                if done {
+                    continue;
+                }
+                match p.parse_stream_line(&line) {
+                    Piece::Text(t) => {
+                        if send_guarded(&mut guard, &t, id, tx) {
+                            // The model began writing a turn marker: the reply
+                            // ends here. Returning drops the connection, which
+                            // tells the server to stop generating.
+                            return Ok(());
+                        }
+                    }
+                    Piece::Done => {
+                        done = true;
+                        // Show the held-back tail now, not after the wait for
+                        // the usage report.
+                        let rest = guard.finish();
+                        if !rest.is_empty() {
+                            let _ = tx.send((id, GenEvent::Chunk(rest)));
+                        }
+                    }
+                    Piece::Error(e) => bail!("{}", e),
+                    Piece::Skip => {}
+                }
             }
-        } else {
-            resp.chunk().await.context("stream interrupted")?
-        };
-        let Some(chunk) = chunk else { break };
-        buf.extend_from_slice(&chunk);
-        while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
-            let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
-            let line = String::from_utf8_lossy(&line_bytes).trim().to_string();
+            if end || (done && (got_usage || !wants_usage)) {
+                break;
+            }
+        }
+        if !buf.is_empty() {
+            let line = String::from_utf8_lossy(&buf).trim().to_string();
             if let Some(u) = usage_of_line(p, &line) {
-                got_usage = true;
                 let _ = tx.send((id, GenEvent::Usage(u)));
             }
-            if line.strip_prefix("data:").map(str::trim) == Some("[DONE]") {
-                end = true;
-            }
-            if done {
-                continue;
-            }
-            match p.parse_stream_line(&line) {
-                Piece::Text(t) => {
-                    let _ = tx.send((id, GenEvent::Chunk(t)));
+            if !done {
+                match p.parse_stream_line(&line) {
+                    Piece::Text(t) => {
+                        if send_guarded(&mut guard, &t, id, tx) {
+                            return Ok(());
+                        }
+                    }
+                    Piece::Error(e) => bail!("{}", e),
+                    _ => {}
                 }
-                Piece::Done => done = true,
-                Piece::Error(e) => bail!("{}", e),
-                Piece::Skip => {}
             }
         }
-        if end || (done && (got_usage || !wants_usage)) {
-            break;
-        }
+        Ok::<(), anyhow::Error>(())
     }
-    if !buf.is_empty() {
-        let line = String::from_utf8_lossy(&buf).trim().to_string();
-        if let Some(u) = usage_of_line(p, &line) {
-            let _ = tx.send((id, GenEvent::Usage(u)));
-        }
-        if !done {
-            match p.parse_stream_line(&line) {
-                Piece::Text(t) => {
-                    let _ = tx.send((id, GenEvent::Chunk(t)));
-                }
-                Piece::Error(e) => bail!("{}", e),
-                _ => {}
-            }
-        }
+    .await;
+    // The text is over, or the stream broke: show what the guard held back
+    // (nothing, if it stopped on a marker).
+    let rest = guard.finish();
+    if !rest.is_empty() {
+        let _ = tx.send((id, GenEvent::Chunk(rest)));
     }
-    Ok(())
+    read
+}
+
+/// Pass a piece of the reply through the guard and on to the UI. `true` when
+/// the guard found a marker and the reply must end now.
+fn send_guarded(guard: &mut LeakGuard, piece: &str, id: u64, tx: &UnboundedSender<GenMsg>) -> bool {
+    let out = guard.push(piece);
+    if !out.text.is_empty() {
+        let _ = tx.send((id, GenEvent::Chunk(out.text)));
+    }
+    out.stop
 }
 
 /// How long to keep listening for the usage report once the text has ended.

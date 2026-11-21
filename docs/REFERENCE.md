@@ -349,6 +349,8 @@ The first time you open it, a connection named `local` (llama.cpp at `http://127
 - *Context size* is how much history tarpi sends. **Keep it at or below the server's `-c`.**
 - `stop strings`, `DRY breakers` and `Sampler order` are text fields (the first two a JSON list). A value that is not valid is refused when you press Enter.
 
+**Leak guard.** Whatever the server does with the stop strings, tarpi also watches the reply as it arrives. If the model starts writing a turn marker (`<|im_start|>`, `<|eot_id|>`, `[INST]`, `### Instruction:`, any `<|...|>` token, also with stray spaces or full-width brackets), a line that begins with your name (`You:`, also indented or in markdown such as `**You:**`), the instruct template's own prefixes, or one of the stop strings, the reply is cut right before it and the request is dropped, so the server stops generating. A tail that might be the start of a marker is held back for a moment, so you never see one appear and vanish, and the result is the same however the server splits the stream. A marker that is cut short at the end of the reply is trimmed off. Nothing to set up: it is always on.
+
 ### OpenAI-compatible connections
 
 *In plain words: use this for any server that offers the OpenAI "text completions" API.*

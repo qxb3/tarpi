@@ -31,7 +31,9 @@ impl App {
             continue_text,
             nudge,
         });
-        conn::build_request(c, &tp.prompt, &tp.stop)
+        let mut req = conn::build_request(c, &tp.prompt, &tp.stop)?;
+        req.guard = tp.guard;
+        Ok(req)
     }
 
     /// Clean up a finished reply the way the web UI does.
